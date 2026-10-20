@@ -13,4 +13,5 @@ jobs:
         with:
           python-version: '3.11'
       - run: bash -n scripts/switch.sh
+      - run: bash -n scripts/legacy-switch.sh
       - run: python3 -m unittest discover -s test -p 'test_*.py'
