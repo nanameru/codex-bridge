@@ -83,6 +83,39 @@ node codex-bridge.mjs
 復元元がない場合は、モデル選択の指定を外して Codex の既定値へ戻します。
 バックアップや保存情報はローカルに保持し、Git に含めないでください。
 
+**これらは新規チャットの既定設定の切り替えです。既存チャットの接続先は切り替わりません。**
+メニューバーアプリの「GPT」表示も既定設定を示します。既存の OpenCode チャットで
+モデル名だけを GPT に変えても、そのチャットの接続先は OpenCode のまま残ることがあります。
+
+### 旧メニューバーアプリを使っている場合
+
+`home-runner/app/CodexSwitch` は `~/home-runner/scripts/bridge-switch.sh` を呼びます。
+本リポジトリを更新しただけではその旧スクリプトは更新されません。
+修正版への入口として `scripts/legacy-switch.sh` を同パスへ配置してください。
+元のスクリプトは配置前にバックアップし、実行権限を付けます。
+この入口は既定で `~/codex-bridge/scripts/switch.sh` へ転送します。
+別の場所へ clone した場合は `CODEX_BRIDGE_HOME` でリポジトリの場所を指定できます。
+
+### GPTに戻した既存チャットが Model is unavailable になる場合
+
+既存チャットの提供元が `codex-bridge` のまま、OpenCode にないモデル名を送っている可能性があります。
+全体設定を通常 Codex へ戻した上で、履歴付きで OpenAI 接続の新しいチャットへ分岐できます。
+
+```bash
+./scripts/switch.sh off
+python3 scripts/recover_thread.py <元のチャットID> --model gpt-6.1-sol
+```
+
+このコマンドは Codex CLI のローカル `app-server` にある `thread/read` / `thread/fork` /
+`thread/name/set` を使用します。Codex CLI 0.163 で検証しています。
+元の会話と履歴ファイルは保持し、DBや会話ファイルを直接編集しません。
+復旧先には「通常Codexで再開: …」という名前を付けます。その新しいチャットを一覧から開いてください。
+元の会話を実行中と検出した場合は終了を待ちます。既存のサーバーやアプリの停止・再起動は行いません。
+コマンド自体はメッセージを送信せず、推論 API を呼び出しません。通常 Codex の既存ログインを使用します。
+
+チャットIDは Codex が管理するスレッドIDです。復旧後も元のチャットでモデル名だけを
+変更して使うと同じ不一致が起き得るため、通常 Codex へ戻す際は復旧先を使ってください。
+
 ---
 
 ## 仕組み

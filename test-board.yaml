@@ -16,3 +16,25 @@ cases:
     test_file: test/test_switch.py
     issues: [1]
     notes: "8件の回帰テスト。接続定義保持、元設定復元、自動再起動なし、不正入力、旧版移行を検証。"
+  - id: TC-002
+    title: "切替アプリの接続: 実配布先から安全な切替スクリプトを呼ぶ"
+    feature: "切替アプリの接続"
+    scenario: "実配布先から安全な切替スクリプトを呼ぶ"
+    status: done
+    priority: medium
+    type: regression
+    source: [scripts/legacy-switch.sh]
+    test_file: test/test_recover_thread.py
+    issues: [3]
+    notes: "旧メニューバー用の入口でも8件の設定切替回帰テストが成功。実配布先と同一内容を確認。"
+  - id: TC-003
+    title: "会話の復旧: 元の会話を保持してOpenAIへ履歴付き分岐する"
+    feature: "会話の復旧"
+    scenario: "元の会話を保持してOpenAIへ履歴付き分岐する"
+    status: done
+    priority: medium
+    type: regression
+    source: [scripts/recover_thread.py]
+    test_file: test/test_recover_thread.py
+    issues: [3]
+    notes: "正式fork・接続先・実行中拒否・推論なし・stdio・異常メタデータ・終了タイムアウト・o系モデルを検証。全27件成功。現環境でも履歴保持とOpenAI接続を確認。"

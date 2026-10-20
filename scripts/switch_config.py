@@ -122,6 +122,7 @@ def switch(mode, root):
     if mode == "off" and state_path.exists():
         state_path.unlink()
     print({"on": "→ ブリッジ経由", "off": "→ 通常モデルの設定", "repair": "→ 接続定義を保持・修復"}[mode])
+    print("変更対象は新規チャットの既定設定です。既存チャットの接続先は変わりません。")
     print("設定検証: OK。アプリや app-server の再起動は行っていません。")
     print("反映されない場合は、実行中の作業が完了してからアプリを開き直してください。")
 

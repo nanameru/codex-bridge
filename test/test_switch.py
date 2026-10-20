@@ -10,6 +10,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "switch.sh"
 
 
 class SwitchTests(unittest.TestCase):
+    script = SCRIPT
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -31,7 +33,7 @@ class SwitchTests(unittest.TestCase):
 
     def switch(self, mode, success=True):
         result = subprocess.run(
-            ["bash", str(SCRIPT), mode], env=self.environment,
+            ["bash", str(self.script), mode], env=self.environment,
             capture_output=True, text=True,
         )
         if success:

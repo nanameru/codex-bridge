@@ -39,6 +39,13 @@ In another terminal:
 
 If settings do not refresh, reopen the app after active work finishes. Switching never
 restarts app-server or quits the app. Each change creates a unique local backup.
+These settings apply to new chats. Existing chats retain their provider even when
+the menu bar shows GPT. Changing only their model can send a native GPT model to OpenCode.
+Use `python3 scripts/recover_thread.py <thread-id> --model gpt-6.1-sol` after
+switching off to fork the history into a native OpenAI chat. The original stays intact;
+no inference request is made. The recovered chat is named `通常Codexで再開: …`.
+Legacy `home-runner` menu apps must have their `scripts/bridge-switch.sh` entry point
+replaced with this repo's `scripts/legacy-switch.sh` to use the updated switch logic.
 Remote "open in another app" ownership conflicts require checking other clients
 and server connections; keeping the provider does not fix remote ownership routing.
 
