@@ -30,6 +30,7 @@ test("restores freeform outputs while leaving regular functions unchanged", () =
   assert.deepEqual(result.output[1], output[1]);
   assert.throws(() => nativeToolPayload({ item: { ...output[0], arguments: "{}" } }, new Set(["apply_patch"])));
   assert.throws(() => nativeToolPayload({ item: { ...output[0], arguments: "" } }, new Set(["apply_patch"])));
+  assert.throws(() => nativeToolPayload({ response: { response: {} } }, new Set(["apply_patch"])));
 });
 
 test("adapts split UTF-8 SSE items and final response without buffering the whole stream", async () => {

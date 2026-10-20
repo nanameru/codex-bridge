@@ -25,7 +25,10 @@ export function openCodeBody(body) {
   return result;
 }
 
-export function nativeToolPayload(payload, customNames) {
+export function nativeToolPayload(payload, customNames, depth = 0) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || depth > 1) {
+    throw new Error("invalid response envelope");
+  }
   const item = (value) => {
     if (value?.type !== "function_call" || !customNames.has(value.name)) return value;
     const { arguments: argumentsText, ...rest } = value;
@@ -37,7 +40,7 @@ export function nativeToolPayload(payload, customNames) {
   let result = { ...payload };
   if (payload.item) result.item = item(payload.item);
   if (Array.isArray(payload.output)) result.output = payload.output.map(item);
-  if (payload.response) result.response = nativeToolPayload(payload.response, customNames);
+  if (payload.response) result.response = nativeToolPayload(payload.response, customNames, depth + 1);
   return result;
 }
 
@@ -76,6 +79,7 @@ export function toolResponseStream(customNames, contentType, maxBytes) {
     flush(callback) {
       try {
         buffer += decoder.decode();
+        if (Buffer.byteLength(buffer) > maxBytes) throw new Error("upstream event too large");
         if (buffer.trim()) this.push(isSse ? event(buffer) : JSON.stringify(nativeToolPayload(JSON.parse(buffer), customNames)));
         callback();
       } catch (error) { callback(error); }
