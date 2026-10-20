@@ -63,10 +63,25 @@ node codex-bridge.mjs
 別ターミナルで Codex をブリッジ経由にします。
 
 ```bash
-./scripts/switch.sh on        # ~/.codex/config.toml を書き換えてアプリを再起動
+./scripts/switch.sh on        # ~/.codex/config.toml の既定モデルを切り替える
 ```
 
 これで ChatGPT アプリのモデル選択に OpenCode Go のモデルが並びます。
+
+切り替えには Python 3.11 以上が必要です。アプリや app-server は自動再起動しません。
+反映されない場合は、実行中の作業が完了してからアプリを開き直してください。
+
+```bash
+./scripts/switch.sh off       # 切替前の通常モデル設定を復元
+./scripts/switch.sh repair    # モデル選択を変えず、欠けた接続定義のみを追加
+```
+
+`off` 後も `codex-bridge` の接続定義を残し、既存チャットが接続先を見つけられるようにします。
+初回 `on` 前のモデル・provider・カタログを `CODEX_HOME/codex-bridge-switch-state.json`
+（既定 `~/.codex/`）へ保存し、繰り返し `on` しても上書きしません。
+旧版からの移行で保存情報がない場合、通常モデルだった `config.toml.bak.switch` を参照します。
+復元元がない場合は、モデル選択の指定を外して Codex の既定値へ戻します。
+バックアップや保存情報はローカルに保持し、Git に含めないでください。
 
 ---
 
@@ -224,10 +239,35 @@ curl -s -X POST http://127.0.0.1:8788/v1/responses \
 
 ### 設定を壊した
 
-`~/.codex/config.toml.bak.switch` にバックアップがあります。
+新しい切替処理は、変更のたびに `~/.codex/config.toml.bak.switch.<一意な文字列>` へ
+バックアップを作成します。旧版の `config.toml.bak.switch` も上書きせず保持します。
+`CODEX_HOME` を指定した場合、保存先もそのディレクトリになります。
+
+`Model provider 'codex-bridge' not found` が出た場合は、まず接続定義だけを修復します。
 
 ```bash
-cp ~/.codex/config.toml.bak.switch ~/.codex/config.toml
+./scripts/switch.sh repair
+```
+
+### リモート利用中に「別のアプリで開いています」と表示される
+
+これはチャットの書き込み権限の競合を示す表示です。ログの
+`already has an active writer` は、別のサーバー等がそのチャットの書き込み権限を
+保持していることを示します。リモート再接続で元のサーバー以外へ接続して発生した
+[報告](https://github.com/openai/codex/issues/49268)もありますが、原因は環境ごとに確認が必要です。
+
+他の端末の同じチャットや自動 SSH 接続を確認し、実行中の処理が終わってから
+不要なクライアントの接続を閉じて「再試行」してください。元の処理が継続していることもあります。
+ロックファイルや会話 DB の削除、全サーバーの強制終了は行わず、競合している接続を特定します。
+本スクリプトはアプリやサーバーを再起動しませんが、Codex 側のリモート再接続競合そのものを
+修正するものではありません。
+
+### 設定切替の回帰テスト
+
+外部 API や起動中のアプリに触れず、一時 `CODEX_HOME` で検証できます。
+
+```bash
+python3 -m unittest discover -s test -p 'test_*.py'
 ```
 
 ---

@@ -1,0 +1,18 @@
+version: 1
+project:
+  name: codex-bridge
+  repo: nanameru/codex-bridge
+  test_command: python3 -m unittest discover -s test -p 'test_*.py'
+source_roots: [src, scripts]
+cases:
+  - id: TC-001
+    title: "モデル切替: on offで接続定義と元設定を保持する"
+    feature: "モデル切替"
+    scenario: "on offで接続定義と元設定を保持する"
+    status: done
+    priority: medium
+    type: regression
+    source: [scripts/switch.sh, scripts/switch_config.py]
+    test_file: test/test_switch.py
+    issues: [1]
+    notes: "8件の回帰テスト。接続定義保持、元設定復元、自動再起動なし、不正入力、旧版移行を検証。"

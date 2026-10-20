@@ -32,12 +32,20 @@ cd src && node codex-bridge.mjs
 In another terminal:
 
 ```bash
-./scripts/switch.sh on    # rewrites ~/.codex/config.toml and restarts the app
+./scripts/switch.sh on    # selects the bridge without restarting the app
+./scripts/switch.sh off   # restores the original model selection; keeps the provider
+./scripts/switch.sh repair # restores a missing provider without changing selection
 ```
+
+If settings do not refresh, reopen the app after active work finishes. Switching never
+restarts app-server or quits the app. Each change creates a unique local backup.
+Remote "open in another app" ownership conflicts require checking other clients
+and server connections; keeping the provider does not fix remote ownership routing.
 
 ## Requirements
 
 - Node.js 20+
+- Python 3.11+ for configuration switching
 - Codex CLI 0.163+ (or the ChatGPT desktop app with Codex)
 - An OpenCode Go subscription, logged in (or `OPENCODE_API_KEY`)
 
