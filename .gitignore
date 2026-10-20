@@ -2,3 +2,4 @@ node_modules/
 *.log
 models.openai.json
 .DS_Store
+__pycache__/
