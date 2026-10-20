@@ -43,6 +43,46 @@ class FakeServer:
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_handles_missing_or_invalid_thread_metadata(self):
+        for response in [{}, {"thread": None}, {"thread": {}}, {"thread": {"id": ""}}, None]:
+            with self.subTest(response=response), self.assertRaisesRegex(RuntimeError, "thread"):
+                RECOVERY.thread_from_response(response)
+
+    def test_handles_missing_fork_metadata_without_naming_a_thread(self):
+        server = FakeServer()
+        original = server.request("thread/read", {})
+        with mock.patch.object(server, "request", side_effect=[{}, original, {}]) as request:
+            with self.assertRaisesRegex(RuntimeError, "thread"):
+                RECOVERY.recover(server, "original", "gpt-test")
+        self.assertEqual([call.args[0] for call in request.call_args_list], [
+            "initialize", "thread/read", "thread/fork",
+        ])
+
+    def test_kills_only_its_child_if_graceful_shutdown_times_out(self):
+        server = RECOVERY.LocalServer.__new__(RECOVERY.LocalServer)
+        server.process = mock.Mock()
+        expired = RECOVERY.subprocess.TimeoutExpired("fake-codex", 5)
+        server.process.wait.side_effect = [expired, expired, 0]
+        server.close()
+        server.process.terminate.assert_called_once_with()
+        server.process.kill.assert_called_once_with()
+        server.process.stdout.close.assert_called_once_with()
+        self.assertEqual(server.process.wait.call_count, 3)
+
+    def test_accepts_native_reasoning_and_codex_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for model in ["o1", "o3", "o4-mini", "codex-mini-latest"]:
+                with self.subTest(model=model):
+                    Path(directory, "config.toml").write_text(f'model="{model}"\n')
+                    with mock.patch.dict(RECOVERY.os.environ, {"CODEX_HOME": directory}), mock.patch(
+                        "sys.argv", ["recover_thread.py", "original"]
+                    ), mock.patch.object(RECOVERY, "LocalServer") as server, mock.patch.object(
+                        RECOVERY, "recover", return_value={"model": model}
+                    ) as recover, mock.patch("builtins.print"):
+                        RECOVERY.main()
+                        recover.assert_called_once_with(server.return_value, "original", model)
+                        server.return_value.close.assert_called_once_with()
+
     def test_rejects_bridge_defaults_before_opening_a_server(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "config.toml").write_text('model="gpt-test"\nmodel_provider="codex-bridge"\n')

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -48,10 +49,16 @@ class LocalServer:
                 raise RuntimeError(f"ローカル管理操作がタイムアウトしました: {method}")
             if message is None:
                 raise RuntimeError("ローカル app-server が終了しました")
+            if not isinstance(message, dict):
+                raise RuntimeError("ローカル app-server の応答形式が不正です")
             if message.get("id") != identifier or "method" in message:
                 continue
             if "error" in message:
-                raise RuntimeError(message["error"].get("message", "管理操作に失敗しました"))
+                error = message["error"]
+                detail = error.get("message") if isinstance(error, dict) else None
+                raise RuntimeError(detail or "管理操作に失敗しました")
+            if "result" not in message:
+                raise RuntimeError("ローカル app-server の応答に result がありません")
             return message["result"]
 
     def close(self):
@@ -60,11 +67,24 @@ class LocalServer:
         except (BrokenPipeError, OSError):
             pass
         try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.terminate()
-            self.process.wait(timeout=5)
-        self.process.stdout.close()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+        finally:
+            self.process.stdout.close()
+
+
+def thread_from_response(response):
+    thread = response.get("thread") if isinstance(response, dict) else None
+    if not isinstance(thread, dict) or not isinstance(thread.get("id"), str) or not thread["id"]:
+        raise RuntimeError("ローカル app-server の応答に有効な thread がありません")
+    return thread
 
 
 def recover(server, identifier, model):
@@ -72,7 +92,9 @@ def recover(server, identifier, model):
         "clientInfo": {"name": "codex-bridge-recovery", "version": "1.0"},
     })
     server.send({"method": "initialized"})
-    original = server.request("thread/read", {"threadId": identifier, "includeTurns": False})["thread"]
+    original = thread_from_response(server.request(
+        "thread/read", {"threadId": identifier, "includeTurns": False},
+    ))
     if original.get("modelProvider") != "codex-bridge":
         raise ValueError("このチャットは codex-bridge 接続ではありません")
     if original.get("status", {}).get("type") == "active":
@@ -81,7 +103,7 @@ def recover(server, identifier, model):
         "threadId": identifier, "model": model, "modelProvider": "openai",
         "excludeTurns": True,
     })
-    restored = result["thread"]
+    restored = thread_from_response(result)
     if (result.get("modelProvider") != "openai"
             or restored.get("modelProvider") != "openai"
             or result.get("model") != model
@@ -104,7 +126,9 @@ def main():
     if data.get("model_provider", "openai") != "openai":
         raise ValueError("先に switch.sh off で既定の接続先を通常Codexへ戻してください")
     model = arguments.model or data.get("model")
-    if not isinstance(model, str) or not model.startswith("gpt-"):
+    if not isinstance(model, str) or not (
+        model.startswith(("gpt-", "codex-")) or re.fullmatch(r"o[0-9]+(?:[-.][A-Za-z0-9_.-]+)?", model)
+    ):
         raise ValueError("通常Codexのモデルを --model で指定してください")
     server = LocalServer(arguments.codex)
     try:
@@ -117,5 +141,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         raise SystemExit(f"復旧できません: {error}")

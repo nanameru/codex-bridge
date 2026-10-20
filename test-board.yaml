@@ -37,4 +37,4 @@ cases:
     source: [scripts/recover_thread.py]
     test_file: test/test_recover_thread.py
     issues: [3]
-    notes: "正式なfork操作・接続先検証・実行中拒否・推論呼出しなし・stdio応答を検証。現環境でもOpenAI接続へ分岐を確認。"
+    notes: "正式fork・接続先・実行中拒否・推論なし・stdio・異常メタデータ・終了タイムアウト・o系モデルを検証。全27件成功。現環境でも履歴保持とOpenAI接続を確認。"
