@@ -1,5 +1,66 @@
 # codex-bridge
 
+## 同じチャットで GPT ↔ OpenCode を切り替える（統合モード）
+
+モデル名で送信先を選ぶ共通routerを使用できます。GPTはOpenAIへ、
+`OpenCode · …` のモデルは既存のOpenCodeブリッジへ転送します。
+これにより、チャットに保存されたproviderが`openai`でも`codex-bridge`でも、
+接続を読み直した後は、同じ会話ID・履歴のまま対応モデルを切り替えられます。
+
+```text
+Codex ── 共通router（127.0.0.1:8790） ┬─ GPT → OpenAI（既存のCodexログイン）
+                                    └─ OpenCode → 既存bridge（127.0.0.1:8788）
+```
+
+準備: Node.js 22.16以上、Python 3.11以上、ログイン済みCodex、
+OpenCodeブリッジの起動、`models_cache.json`と`model-catalog.json`が必要です。
+OpenAIのネイティブカタログはCodexが取得したキャッシュを使用します。
+
+```bash
+python3 scripts/unified_config.py prepare
+python3 scripts/install_router_service.py   # macOSの常駐設定。他OSはnode src/model-router.mjs
+python3 scripts/unified_config.py on
+```
+
+既存のアプリやapp-serverは再起動しません。すでに開いていた会話の接続には古い設定が
+残ることがあるため、実行中の作業が完了してからアプリを開き直してください。
+以降は、そのチャット内のモデル選択で双方向に切り替えられ、毎回の分岐は不要です。
+
+- GPTのモデル名はそのまま使用します。OpenCodeモデルは`opencode/…`の名前空間で区別します。
+  同名のモデルが両方にある場合も選択した送信先を維持します。
+- ChatGPTの認証はCodexからOpenAIへだけ中継します。OpenCode側へは認証・アカウントの
+  ヘッダーを渡さず、認証ファイルのコピーや新しいAPIキーの発行は行いません。
+- リクエスト本文やtokenをrouterのログへ保存しません。SSEは逐次転送します。
+- provider固有のreasoningは転送先に合わせて取り扱い、freeformツールの履歴・応答を変換します。
+  画像、組込みツール、コンテキスト長などは各モデル・providerの対応範囲に従います。
+- OpenAI側だけが読める暗号化された圧縮履歴、`item_reference`、`previous_response_id`だけで
+  会話を継続する入力は他providerへ持ち出せないため、履歴を黙って捨てず422を返します。
+  全履歴を送るCodex 0.163で、同じ会話のGPT→DeepSeek→GPT・逆順を検証しています。
+- OpenCodeのremote compactionは未対応です。カタログの掲載は各アカウントの利用権限を
+  保証しません。実応答の検証対象はGPT-6.1 SolとDeepSeek V4.1 Flashです。
+- routerの実行ファイルは`CODEX_HOME/router-runtime/<revision>/`へ配置されるため、
+  Gitのブランチ切替で稼働ファイルが消えません。
+
+元の接続設定へ戻すには次を使用します。独立した設定変更や会話データは保持します。
+
+```bash
+python3 scripts/unified_config.py off
+```
+
+統合中のメニューバーアプリや`switch.sh on/off`は、最初に選ぶモデルの既定値を切り替えます。
+どちらでも同じrouterを使うため、会話中の実際の転送先は選択モデルで決まります。
+routerコードの更新は接続中の処理がない時に`install_router_service.py --update-if-idle`で行います。
+カタログを更新した場合も、routerをアイドル時に読み直してから有効化してください。
+
+```bash
+node --test test/model-router.test.mjs test/tool-adapter.test.mjs
+python3 -m unittest discover -s test -p 'test_*.py'
+python3 test/codex-router-e2e.py   # Codex実行ファイル＋模擬接続先。推論APIは呼ばない
+RUN_LIVE_ROUTER=1 python3 test/live-router-smoke.py  # 実モデルを3回呼ぶ任意の確認
+```
+
+以下は従来の単一providerブリッジの説明です。統合モードでは上記routerが前段に入ります。
+
 **Codex（Responses API）から OpenCode Go の全モデルを使えるようにする翻訳プロキシ。**
 
 ```
@@ -83,7 +144,7 @@ node codex-bridge.mjs
 復元元がない場合は、モデル選択の指定を外して Codex の既定値へ戻します。
 バックアップや保存情報はローカルに保持し、Git に含めないでください。
 
-**これらは新規チャットの既定設定の切り替えです。既存チャットの接続先は切り替わりません。**
+**単一providerモードでは新規チャットの既定設定の切り替えです。既存チャットの接続先は切り替わりません。**
 メニューバーアプリの「GPT」表示も既定設定を示します。既存の OpenCode チャットで
 モデル名だけを GPT に変えても、そのチャットの接続先は OpenCode のまま残ることがあります。
 
@@ -97,6 +158,9 @@ node codex-bridge.mjs
 別の場所へ clone した場合は `CODEX_BRIDGE_HOME` でリポジトリの場所を指定できます。
 
 ### GPTに戻した既存チャットが Model is unavailable になる場合
+
+統合モードを有効にして接続を読み直せば、同じチャットでも送信先が切り替わります。
+以下の履歴付き分岐は、単一providerモードを継続する場合の復旧方法です。
 
 既存チャットの提供元が `codex-bridge` のまま、OpenCode にないモデル名を送っている可能性があります。
 全体設定を通常 Codex へ戻した上で、履歴付きで OpenAI 接続の新しいチャットへ分岐できます。
