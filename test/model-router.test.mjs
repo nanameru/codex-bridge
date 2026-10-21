@@ -310,6 +310,19 @@ test("records per-stage timings and cache outcomes without logging credentials o
   }
 });
 
+test("records received bytes for rejected and empty input", async (context) => {
+  const metrics = [];
+  const { send, base } = await fixture(context, { maxBytes: 200, onMetric: (metric) => metrics.push(metric) });
+  const oversized = await send({ model: "gpt-test", input: "x".repeat(300) });
+  await oversized.text();
+  assert.equal(oversized.status, 413);
+  assert.ok(metrics[0].received_bytes > 200);
+  const empty = await fetch(base + "/responses", { method: "POST", headers: { authorization: "Bearer test" }, body: "" });
+  await empty.text();
+  assert.equal(empty.status, 400);
+  assert.equal(metrics[1].received_bytes, 0);
+});
+
 test("streams first output before completion even with metrics enabled", async (context) => {
   let controller;
   const metrics = [];

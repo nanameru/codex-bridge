@@ -85,6 +85,13 @@ test("does not cache requests lacking a usable thread ID", async () => {
   assert.equal(calls, 5);
 });
 
+test("handles cancellation during synchronous fetch setup before waiter registration", async () => {
+  const abort = new AbortController();
+  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 10000,
+    fetcher: async () => { abort.abort(); return completed(); } });
+  await assert.rejects(expand(body, { ...options(), signal: abort.signal }), { name: "AbortError" });
+});
+
 test("aborts generation when all waiters leave and never caches its result", async () => {
   let calls = 0;
   const expand = compactionHandoff({ model: "gpt-test", maxBytes: 10000,

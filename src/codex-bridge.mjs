@@ -633,7 +633,7 @@ const server = http.createServer(async (req, res) => {
       fetch(`${UPSTREAM_BASE}${path}`, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${getToken().token}`,
+          authorization: `Bearer ${authInfo.token}`,
           "content-type": "application/json",
           "user-agent": "codex-bridge/1.0",
           "x-opencode-session": upstreamSession(body, SESSION_ID),

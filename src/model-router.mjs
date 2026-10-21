@@ -109,12 +109,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     request.on("aborted", () => abort.abort());
     const started = performance.now();
     const metric = { event: "router_request", request_id: randomUUID(), path,
-      summary_cache: "unused", summary_ms: 0, stage: "input", response_bytes: 0 };
+      summary_cache: "unused", summary_ms: 0, stage: "input", received_bytes: 0, response_bytes: 0 };
     try {
       const chunks = [];
       let size = 0;
       for await (const chunk of request) {
         size += chunk.length;
+        metric.received_bytes = size;
         if (size > maxBytes) {
           fail(response, 413, "request_too_large", "入力が大きすぎます");
           return;

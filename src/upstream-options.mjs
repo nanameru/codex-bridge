@@ -9,7 +9,7 @@ export function reasoningOptions(model, effort) {
 
 export function upstreamSession(body, fallback) {
   const thread = body.client_metadata?.thread_id ?? body.prompt_cache_key
-    ?? body.client_metadata?.session_id ?? body.metadata?.thread_id;
+    ?? body.client_metadata?.session_id;
   return typeof thread === "string" && thread.length > 0 && thread.length <= 200
     ? "cxb-" + createHash("sha256").update(thread).digest("hex") : fallback;
 }

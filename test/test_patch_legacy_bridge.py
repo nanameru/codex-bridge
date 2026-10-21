@@ -22,6 +22,12 @@ class LegacyPatchTests(unittest.TestCase):
             patched_source("unrecognized source")
         with self.assertRaises(ValueError):
             patched_source(IMPORT)
+        original = "\n".join(old * count for old, _new, count in REPLACEMENTS)
+        complete = patched_source(original)
+        for old, new, _count in REPLACEMENTS[1:]:
+            with self.subTest(fragment=old):
+                with self.assertRaises(ValueError):
+                    patched_source(complete.replace(new, old, 1))
 
     def test_refuses_symlinks_and_existing_different_modules_without_writes(self):
         with tempfile.TemporaryDirectory() as directory:

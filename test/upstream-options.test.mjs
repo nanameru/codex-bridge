@@ -22,6 +22,7 @@ test("keeps session stable per thread across models without exposing thread IDs"
   assert.match(first, /^cxb-[a-f0-9]{64}$/);
   assert.equal(first, upstreamSession({ client_metadata: { thread_id: "private-thread" }, model: "other" }, "new-fallback"));
   assert.notEqual(first, upstreamSession({ prompt_cache_key: "other-thread" }, "fallback"));
+  assert.equal(upstreamSession({ metadata: { thread_id: "private-thread" } }, "fallback"), "fallback");
   for (const thread of [undefined, {}, "", "a".repeat(201)]) {
     assert.equal(upstreamSession({ prompt_cache_key: thread }, "fallback"), "fallback");
   }
