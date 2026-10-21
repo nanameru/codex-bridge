@@ -114,7 +114,7 @@ cases:
     source: [src/codex-bridge.mjs, src/upstream-options.mjs, scripts/patch_legacy_bridge.py]
     test_file: test/bridge-transport.test.mjs
     issues: [9]
-    notes: "標準ソースとLEGACY_BRIDGE_SOURCE指定の本番一時コピーで成功。パッチの冪等性/拒否はtest/test_patch_legacy_bridge.pyでも検証。"
+    notes: "標準ソースとLEGACY_BRIDGE_SOURCE指定の本番一時コピーで成功。sessionは36文字UUID v5で会話分離。既知の旧helperのみバックアップ付き更新し未知ファイルを拒否する回帰を追加。"
   - id: TC-011
     title: "待ち時間計測: 本文や認証を記録せずストリームを先行配送する"
     feature: "応答待ち時間改善"

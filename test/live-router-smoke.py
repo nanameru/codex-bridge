@@ -1,17 +1,52 @@
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import time
 from urllib.request import urlopen
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from recover_thread import LocalServer
 
 
-def main():
-    if os.environ.get("RUN_LIVE_ROUTER") != "1":
-        raise SystemExit("実モデルを3回呼び出します。実行する場合はRUN_LIVE_ROUTER=1を指定してください")
+@contextmanager
+def isolated_login():
+    base = os.environ.get("LIVE_ROUTER_BASE_URL", "http://127.0.0.1:8790/v1")
+    parsed = urlparse(base)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.path != "/v1" or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("実応答テストの接続先はloopback HTTP /v1に限定します")
+    previous = os.environ.get("CODEX_HOME")
+    source = Path(previous) if previous else Path.home() / ".codex"
+    with tempfile.TemporaryDirectory(prefix="codex-live-smoke-") as directory:
+        root = Path(directory)
+        for name in ["auth.json", "unified-model-catalog.json", "models_cache.json"]:
+            if not (source / name).exists():
+                if name == "models_cache.json":
+                    continue
+                raise SystemExit("既存のログインと統合カタログが必要です: " + name)
+            destination = root / name
+            destination.write_bytes((source / name).read_bytes())
+            destination.chmod(0o600)
+        config = ('model="gpt-6.1-sol"\nopenai_base_url=' + json.dumps(base) + '\n'
+                  + 'model_catalog_json=' + json.dumps(str(root / "unified-model-catalog.json"))
+                  + '\n[model_providers.codex-bridge]\nname="live-smoke"\nwire_api="responses"\n'
+                  + 'requires_openai_auth=true\nbase_url=' + json.dumps(base) + '\n')
+        (root / "config.toml").write_text(config)
+        (root / "config.toml").chmod(0o600)
+        os.environ["CODEX_HOME"] = directory
+        try:
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous
+
+
+def run_checks():
     ready = False
     for _attempt in range(30):
         try:
@@ -58,13 +93,21 @@ def main():
                 turn = message.get("params", {}).get("turn", {})
                 if message.get("method") == "turn/completed" and turn.get("id") == turn_id:
                     if turn["status"] != "completed" or "ROUTE_OK" not in text:
-                        raise RuntimeError("モデルの正常な実応答を確認できません: " + model)
+                        raise RuntimeError("モデルの正常な実応答を確認できません: " + model
+                                           + " " + json.dumps(turn.get("error"), ensure_ascii=False))
                     if tool_mode and commands != 2:
                         raise RuntimeError("2回のツール往復を確認できません: " + model)
                     print(model + f": ROUTE_OK confirmed on same thread, {commands} commands", flush=True)
                     break
     finally:
         server.close()
+
+
+def main():
+    if os.environ.get("RUN_LIVE_ROUTER") != "1":
+        raise SystemExit("実モデルを3回呼び出します。実行する場合はRUN_LIVE_ROUTER=1を指定してください")
+    with isolated_login():
+        run_checks()
 
 
 if __name__ == "__main__":

@@ -2,12 +2,31 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from patch_legacy_bridge import IMPORT, REPLACEMENTS, patched_source, prepare
+from patch_legacy_bridge import IMPORT, REPLACEMENTS, patched_source, prepare, main
 
 
 class LegacyPatchTests(unittest.TestCase):
+    def test_upgrades_known_helper_with_one_backup_and_preserves_bridge_source(self):
+        repository = Path(__file__).resolve().parents[1]
+        previous = (repository / "test/fixtures/upstream-options-v1.mjs").read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "bridge.mjs"
+            target.write_text("export {};\n")
+            module = target.with_name("upstream-options.mjs")
+            module.write_bytes(previous)
+            with mock.patch("patch_legacy_bridge.patched_source", side_effect=lambda source: source), \
+                    mock.patch.object(sys, "argv", ["patch_legacy_bridge.py", str(target), "--apply"]):
+                main()
+                main()
+            self.assertEqual(module.read_bytes(), (repository / "src/upstream-options.mjs").read_bytes())
+            self.assertEqual(target.read_text(), "export {};\n")
+            backups = list(Path(directory).glob("upstream-options.mjs.bak.latency.*"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_bytes(), previous)
+
     def test_patches_only_known_fragments_and_is_idempotent(self):
         source = "\n".join(old * count for old, _new, count in REPLACEMENTS)
         source += "\nPRESERVE_REASONING_AND_TIMEOUTS"
