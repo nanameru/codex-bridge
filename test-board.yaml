@@ -38,3 +38,58 @@ cases:
     test_file: test/test_recover_thread.py
     issues: [3]
     notes: "正式fork・接続先・実行中拒否・推論なし・stdio・異常メタデータ・終了タイムアウト・o系モデルを検証。全27件成功。現環境でも履歴保持とOpenAI接続を確認。"
+  - id: TC-004
+    title: "双方向モデル切替: 同じ会話の送信先を認証分離して振り分ける"
+    feature: "双方向モデル切替"
+    scenario: "同じ会話の送信先を認証分離して振り分ける"
+    status: done
+    priority: medium
+    type: regression
+    source: [src/model-router.mjs, src/tool-adapter.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [5]
+    notes: "認証分離、両方向、圧縮、未知モデル、履歴、リダイレクト拒否、タイムアウト。freeformツールはtest/tool-adapter.test.mjsで検証。"
+  - id: TC-005
+    title: "統合設定: 既存設定を保持して有効化と復元を行う"
+    feature: "統合設定"
+    scenario: "既存設定を保持して有効化と復元を行う"
+    status: done
+    priority: medium
+    type: regression
+    source: [scripts/unified_config.py, scripts/switch_config.py, scripts/install_router_service.py]
+    test_file: test/test_unified_config.py
+    issues: [5]
+    notes: "設定の可逆性、カタログ、legacy切替との共存、複数行文字列、常駐登録解除待ちを検証。"
+  - id: TC-006
+    title: "同じ会話IDでCodexのモデルを両方向に切り替える"
+    feature: "双方向モデル切替"
+    scenario: "ChatGPT型の偽認証と模擬接続先で実Codexの双方向切替と保存会話の再開を検証する"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/tool-adapter.mjs, scripts/unified_config.py]
+    test_file: test/codex-router-e2e.py
+    issues: [5]
+    notes: "ローカルCodex 0.163で双方向6ターンと同じIDでの保存会話再開2ターンを検証。外部推論なし。Codexとカタログが必要なためCI対象外。実応答も任意のlive-router-smoke.pyで確認済み。"
+  - id: TC-007
+    title: "推論履歴の往復: 説明文とツール呼び出しへ後置reasoningを引き継ぐ"
+    feature: "双方向モデル切替"
+    scenario: "後置reasoningと複合assistant応答を送信時に修復し、次のツール応答で欠落させない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/tool-adapter.mjs]
+    test_file: test/tool-adapter.test.mjs
+    issues: [5]
+    notes: "旧履歴の修復、SSE完了順序、説明文とツールへの推論共有、サイズ制限、途中失敗での実行抑止を検証。MOCK_TOOL_ROUNDTRIP=1で実Codexの双方向8ターン・16リクエストも検証する。"
+  - id: TC-008
+    title: "圧縮履歴の切替: 会話単位の引き継ぎ要約を分離する"
+    feature: "双方向モデル切替"
+    scenario: "対象会話の圧縮部分だけを要約し、他会話・認証・全体設定を変更せずOpenCodeへ渡す"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, src/model-router.mjs, scripts/install_router_service.py]
+    test_file: test/model-router.test.mjs
+    issues: [5]
+    notes: "チャット別・認証別キャッシュ、同時切替、native会話の非変更、失敗時停止、Content-Type欠落のSSE、接続中の更新拒否を検証。live-compaction-smoke.pyで既存の暗号化圧縮履歴→OpenAI要約→DeepSeekの正常応答も確認。"

@@ -79,8 +79,11 @@ def switch(mode, root):
     if mode == "on":
         if state is None and current.get("model_provider") != "codex-bridge":
             baseline = current
+        model = os.environ.get("DEFAULT_MODEL", "deepseek-v4.1-flash")
+        if (root / "unified-router-state.json").exists() and not model.startswith("opencode/"):
+            model = "opencode/" + model
         candidate = replace_selection(source, {
-            "model": os.environ.get("DEFAULT_MODEL", "deepseek-v4.1-flash"),
+            "model": model,
             "model_provider": "codex-bridge",
             "model_catalog_json": str(root / "model-catalog.json"),
         })
@@ -110,6 +113,10 @@ def switch(mode, root):
             'wire_api = "responses"\n'
             'stream_idle_timeout_ms = 300000\n'
         )
+    if (root / "unified-router-state.json").exists():
+        values = selection(tomllib.loads(candidate))
+        values["model_catalog_json"] = str(root / "unified-model-catalog.json")
+        candidate = replace_selection(candidate, values)
     tomllib.loads(candidate)
     if candidate != source:
         descriptor, backup_path = tempfile.mkstemp(prefix="config.toml.bak.switch.", dir=root)
@@ -122,7 +129,10 @@ def switch(mode, root):
     if mode == "off" and state_path.exists():
         state_path.unlink()
     print({"on": "→ ブリッジ経由", "off": "→ 通常モデルの設定", "repair": "→ 接続定義を保持・修復"}[mode])
-    print("変更対象は新規チャットの既定設定です。既存チャットの接続先は変わりません。")
+    if (root / "unified-router-state.json").exists():
+        print("統合routerでは同じチャットでも選択モデルに合わせて送信先を切り替えます。")
+    else:
+        print("変更対象は新規チャットの既定設定です。既存チャットの接続先は変わりません。")
     print("設定検証: OK。アプリや app-server の再起動は行っていません。")
     print("反映されない場合は、実行中の作業が完了してからアプリを開き直してください。")
 

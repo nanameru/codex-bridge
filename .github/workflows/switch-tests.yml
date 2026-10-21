@@ -12,6 +12,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16'
       - run: bash -n scripts/switch.sh
       - run: bash -n scripts/legacy-switch.sh
       - run: python3 -m unittest discover -s test -p 'test_*.py'
+      - run: node --test test/model-router.test.mjs test/tool-adapter.test.mjs
