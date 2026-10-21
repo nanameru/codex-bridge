@@ -34,6 +34,7 @@ const models = Object.entries(prov.models).map(([id, m]) => {
     vision,
     efforts: cur.efforts ?? ["low", "medium", "high"],
     tier: cur.tier ?? (vision ? "balanced" : "fast"),
+    ...(cur.compact == null ? {} : { compact: cur.compact }),
   };
 });
 
