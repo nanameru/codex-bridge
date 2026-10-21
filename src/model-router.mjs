@@ -8,10 +8,14 @@ import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash } from "node:crypto";
 import { openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
+import { compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
+// These JSON endpoints belong to OpenAI, irrespective of the selected chat model.
+const NATIVE_TOOL_PATHS = new Set(["/v1/images/generations", "/v1/images/edits", "/v1/alpha/search"]);
 const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.meta.url)))
-  .update(readFileSync(new URL("./tool-adapter.mjs", import.meta.url))).digest("hex");
+  .update(readFileSync(new URL("./tool-adapter.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./compaction-handoff.mjs", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
 export function catalogRoutes(catalog) {
@@ -53,8 +57,10 @@ function fail(response, status, code, message) {
 }
 
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
-  nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000 } = {}) {
+  nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
+  summaryModel = "gpt-6.1-sol" } = {}) {
   const routes = catalogRoutes(catalog);
+  const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes });
   const bridge = new URL(bridgeBase);
   if (bridge.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(bridge.hostname)
       || bridge.username || bridge.password || bridge.search || bridge.hash) {
@@ -81,7 +87,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       })) }));
       return;
     }
-    if (request.method !== "POST" || !["/v1/responses", "/v1/responses/compact"].includes(path)) {
+    const nativeTool = NATIVE_TOOL_PATHS.has(request.url);
+    if (request.method !== "POST" || (!nativeTool && !["/v1/responses", "/v1/responses/compact"].includes(path))) {
       fail(response, 404, "not_found", "未対応のパスです");
       return;
     }
@@ -134,12 +141,12 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 400, "invalid_request", "リクエストはJSON objectで指定してください");
         return;
       }
-      if ((body.tools != null && (!Array.isArray(body.tools) || body.tools.some((tool) => !tool || typeof tool.type !== "string")))
-          || (Array.isArray(body.input) && body.input.some((item) => !item || typeof item !== "object"))) {
+      if (!nativeTool && ((body.tools != null && (!Array.isArray(body.tools) || body.tools.some((tool) => !tool || typeof tool.type !== "string")))
+          || (Array.isArray(body.input) && body.input.some((item) => !item || typeof item !== "object")))) {
         fail(response, 400, "invalid_request", "toolsまたはinputの形式が不正です");
         return;
       }
-      const route = routes.get(body.model);
+      const route = nativeTool ? { provider: "openai" } : routes.get(body.model);
       if (!route) {
         fail(response, 400, "unknown_model", "統合カタログにないモデルです。カタログを再生成してください");
         return;
@@ -148,30 +155,43 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
         return;
       }
-      if (body.previous_response_id) {
+      if (!nativeTool && body.previous_response_id) {
         fail(response, 422, "history_required", "提供元をまたぐため、previous_response_idではなく全履歴を送信してください");
         return;
       }
       if (route.provider === "opencode" && Array.isArray(body.input)
-          && body.input.some((item) => ["compaction", "item_reference"].includes(item.type))) {
-        fail(response, 422, "history_required", "OpenCodeへ切り替えるには参照や暗号化された圧縮履歴ではなく、展開した履歴が必要です");
+          && body.input.some((item) => item.type === "item_reference")) {
+        fail(response, 422, "history_required", "参照IDだけでは履歴を引き継げません。展開した履歴が必要です");
         return;
       }
-      const headers = { "content-type": "application/json", accept: "text/event-stream, application/json" };
+      const headers = { "content-type": "application/json", accept: nativeTool ? "application/json" : "text/event-stream, application/json" };
+      const nativeDestination = nativeBase ?? (/^Bearer sk-/i.test(request.headers.authorization)
+        ? "https://api.openai.com/v1" : "https://chatgpt.com/backend-api/codex");
       let destination = bridge.href.replace(/\/$/, "");
       if (route.provider === "openai") {
-        destination = nativeBase ?? (/^Bearer sk-/i.test(request.headers.authorization)
-          ? "https://api.openai.com/v1" : "https://chatgpt.com/backend-api/codex");
+        destination = nativeDestination;
         for (const [name, value] of Object.entries(request.headers)) {
           if (typeof value === "string" && (NATIVE_HEADERS.includes(name) || name.startsWith("x-codex-") || name.startsWith("x-openai-"))) {
             headers[name] = value;
           }
         }
       }
-      const suffix = path.endsWith("/compact") ? "/responses/compact" : "/responses";
+      if (route.provider === "opencode" && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
+        if (routes.get(summaryModel)?.provider !== "openai") {
+          fail(response, 422, "summary_model_required", "圧縮履歴の引き継ぎに使うOpenAIモデルがカタログにありません");
+          return;
+        }
+        const summaryHeaders = { "content-type": "application/json", accept: "text/event-stream, application/json" };
+        for (const name of ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "user-agent"]) {
+          if (typeof request.headers[name] === "string") summaryHeaders[name] = request.headers[name];
+        }
+        body = await expandCompaction(body, { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
+          threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id });
+      }
+      const suffix = nativeTool ? path.slice(3) : path.endsWith("/compact") ? "/responses/compact" : "/responses";
       let routed;
       try {
-        routed = JSON.stringify(routedBody(body, route, maxBytes));
+        routed = JSON.stringify(nativeTool ? body : routedBody(body, route, maxBytes));
         if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
       } catch (error) {
         if (!(error instanceof RangeError)) throw error;
@@ -192,19 +212,21 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store" };
-      for (const name of ["retry-after", "x-request-id"]) {
+      for (const name of ["retry-after", "x-request-id", "x-codex-imagegen-request-id"]) {
         if (upstream.headers.has(name)) responseHeaders[name] = upstream.headers.get(name);
       }
       response.writeHead(upstream.status, responseHeaders);
-      const customNames = new Set((body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
+      const customNames = new Set((nativeTool ? [] : body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
       if (route.provider === "opencode" && upstream.ok) {
         await pipeline(Readable.fromWeb(upstream.body), toolResponseStream(customNames, responseHeaders["content-type"], maxBytes),
           response, { signal: abort.signal });
       } else {
         await pipeline(Readable.fromWeb(upstream.body), response, { signal: abort.signal });
       }
-    } catch {
-      if (!response.destroyed) fail(response, abort.signal.aborted ? 504 : 502, "upstream_error", "転送先への接続に失敗しました");
+    } catch (error) {
+      if (!response.destroyed) fail(response, abort.signal.aborted ? 504 : 502,
+        error instanceof HandoffError ? "compaction_handoff_failed" : "upstream_error",
+        error instanceof HandoffError ? error.message : "転送先への接続に失敗しました");
     } finally {
       clearTimeout(timer);
     }

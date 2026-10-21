@@ -82,3 +82,14 @@ cases:
     test_file: test/tool-adapter.test.mjs
     issues: [5]
     notes: "旧履歴の修復、SSE完了順序、説明文とツールへの推論共有、サイズ制限、途中失敗での実行抑止を検証。MOCK_TOOL_ROUNDTRIP=1で実Codexの双方向8ターン・16リクエストも検証する。"
+  - id: TC-008
+    title: "圧縮履歴の切替: 会話単位の引き継ぎ要約を分離する"
+    feature: "双方向モデル切替"
+    scenario: "対象会話の圧縮部分だけを要約し、他会話・認証・全体設定を変更せずOpenCodeへ渡す"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, src/model-router.mjs, scripts/install_router_service.py]
+    test_file: test/model-router.test.mjs
+    issues: [5]
+    notes: "チャット別・認証別キャッシュ、同時切替、native会話の非変更、失敗時停止、Content-Type欠落のSSE、接続中の更新拒否を検証。live-compaction-smoke.pyで既存の暗号化圧縮履歴→OpenAI要約→DeepSeekの正常応答も確認。"

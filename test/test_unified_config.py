@@ -15,6 +15,25 @@ import install_router_service
 
 
 class UnifiedConfigTests(unittest.TestCase):
+    def test_waits_for_active_conversations_without_stopping_them(self):
+        with mock.patch.object(install_router_service.subprocess, "run") as run, mock.patch.object(
+            install_router_service.time, "sleep"
+        ) as sleep:
+            run.side_effect = [mock.Mock(returncode=0), mock.Mock(returncode=0), mock.Mock(returncode=1)]
+            install_router_service.wait_for_idle(30)
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+            self.assertTrue(all(call.args[0][0] == "lsof" for call in run.call_args_list))
+
+    def test_refuses_a_busy_or_unreadable_connection_state(self):
+        for status in [0, 2]:
+            with mock.patch.object(install_router_service.subprocess, "run", return_value=mock.Mock(returncode=status)), mock.patch.object(
+                install_router_service.time, "sleep"
+            ) as sleep:
+                with self.assertRaises(SystemExit):
+                    install_router_service.wait_for_idle(0)
+                sleep.assert_not_called()
+
     def test_waits_until_old_launchd_registration_is_removed(self):
         with mock.patch.object(install_router_service.subprocess, "run") as run, mock.patch.object(
             install_router_service.time, "sleep"

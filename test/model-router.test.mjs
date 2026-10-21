@@ -74,6 +74,23 @@ test("never forwards native authentication or account headers to OpenCode", asyn
   assert.equal(calls[1].headers["x-secret"], undefined);
 });
 
+test("preserves the already-deployed native image and search endpoints independently of chat models", async (context) => {
+  const { base, calls } = await fixture(context);
+  for (const path of ["/images/generations", "/images/edits", "/alpha/search"]) {
+    const body = { model: "not-a-chat-model", input: "tool input", previous_response_id: "tool-specific-reference" };
+    const response = await fetch(base + path, { method: "POST", headers: {
+      "content-type": "application/json", authorization: "Bearer native-tool-token", "chatgpt-account-id": "tool-account",
+    }, body: JSON.stringify(body) });
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(calls.at(-1).provider, "openai");
+    assert.equal(calls.at(-1).path, "/v1" + path);
+    assert.equal(calls.at(-1).headers.authorization, "Bearer native-tool-token");
+    assert.deepEqual(calls.at(-1).body, body);
+  }
+  assert.equal((await fetch(base + "/alpha/search?other=1", { method: "POST" })).status, 404);
+});
+
 test("rejects unknown models and missing authentication before forwarding", async (context) => {
   const { calls, send } = await fixture(context);
   assert.equal((await send({ model: "unknown" })).status, 400);
@@ -152,11 +169,112 @@ test("limits decompressed data and rejects unsupported encodings", async (contex
   assert.equal(calls.length, 0);
 });
 
-test("does not silently discard compacted history when switching to OpenCode", async (context) => {
+test("rejects opaque references and a missing summary model without discarding history", async (context) => {
   const { calls, send } = await fixture(context);
   const response = await send({ model: "deepseek-test", input: [{ type: "compaction", encrypted_content: "native-opaque" }] });
   assert.equal(response.status, 422);
   assert.equal(calls.length, 0);
+  assert.equal((await send({ model: "deepseek-test", input: [{ type: "item_reference", id: "opaque" }] })).status, 422);
+});
+
+test("summarizes compacted context only for that thread and keeps native chats unchanged", async (context) => {
+  const forwarded = [];
+  let summaries = 0;
+  const { send } = await fixture(context, { summaryModel: "gpt-test", fetcher: async (_url, options) => {
+    const body = JSON.parse(options.body);
+    forwarded.push({ body, headers: options.headers });
+    const isSummary = body.instructions?.startsWith("Produce only");
+    if (isSummary) summaries++;
+    return Response.json({ status: "completed", output: [{ type: "message", role: "assistant", content: [
+      { type: "output_text", text: isSummary ? "handoff-" + summaries : "OK" },
+    ] }] });
+  } });
+  const input = [
+    { type: "message", role: "developer", content: "project constraints" },
+    { type: "compaction", encrypted_content: "opaque-native-history" },
+    { type: "message", role: "user", content: "latest request" },
+  ];
+  for (const thread of ["chat-A", "chat-A", "chat-B"]) {
+    const response = await send({ model: "deepseek-test", input, prompt_cache_key: thread }, { "chatgpt-account-id": "account-A" });
+    assert.equal(response.status, 200);
+    await response.text();
+  }
+  assert.equal(summaries, 2);
+  const go = forwarded.filter((call) => call.body.model === "deepseek-test");
+  assert.deepEqual(go.map((call) => call.body.input[1].content[0].text.match(/handoff-\d/)[0]), ["handoff-1", "handoff-1", "handoff-2"]);
+  for (const call of go) {
+    assert.equal(call.headers.authorization, undefined);
+    assert.equal(call.headers["chatgpt-account-id"], undefined);
+    assert.equal(call.body.input[0].role, "developer");
+    assert.equal(call.body.input.at(-1).content, "latest request");
+    assert.doesNotMatch(JSON.stringify(call.body), /opaque-native-history/);
+  }
+  const summary = forwarded[0];
+  assert.equal(summary.headers.authorization, "Bearer fake-native-token");
+  assert.equal(summary.headers["chatgpt-account-id"], "account-A");
+  assert.equal(summary.body.tools.length, 0);
+  assert.equal(summary.body.store, false);
+  assert.equal(summary.body.input.some((item) => item.type === "compaction"), true);
+  await (await send({ model: "gpt-test", input, prompt_cache_key: "chat-C" })).text();
+  assert.equal(summaries, 2);
+  assert.deepEqual(forwarded.at(-1).body.input, input);
+  assert.equal(input[1].type, "compaction");
+});
+
+test("does not reuse a handoff across accounts or forward a failed summary to OpenCode", async (context) => {
+  const summaries = [];
+  let goCalls = 0;
+  const { send } = await fixture(context, { summaryModel: "gpt-test", fetcher: async (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.model === "deepseek-test") {
+      goCalls++;
+      return Response.json({ status: "completed", output: [] });
+    }
+    summaries.push(options.headers["chatgpt-account-id"]);
+    if (options.headers["chatgpt-account-id"] === "fail") return new Response("", { status: 400 });
+    return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "handoff" }] }] });
+  } });
+  const body = { model: "deepseek-test", prompt_cache_key: "same-thread", input: [{ type: "compaction", encrypted_content: "opaque" }] };
+  for (const account of ["A", "B", "fail"]) {
+    const response = await send(body, { "chatgpt-account-id": account });
+    assert.equal(response.status, account === "fail" ? 502 : 200);
+    await response.text();
+  }
+  assert.deepEqual(summaries, ["A", "B", "fail"]);
+  assert.equal(goCalls, 2);
+});
+
+test("requires a completed summary and handles split SSE without sharing concurrent threads", async (context) => {
+  const outputs = [];
+  const { send } = await fixture(context, { summaryModel: "gpt-test", fetcher: async (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.model === "deepseek-test") {
+      outputs.push(body.input[0].content[0].text);
+      return Response.json({ status: "completed", output: [] });
+    }
+    const id = body.input.find((item) => item.type === "compaction").encrypted_content;
+    await new Promise((resolve) => setTimeout(resolve, id === "A" ? 10 : 0));
+    const status = id === "incomplete" ? "incomplete" : "completed";
+    const event = "data: " + JSON.stringify({ type: "response.completed", response: { status, output: [
+      { type: "message", content: [{ type: "output_text", text: "summary-" + id }] },
+    ] } }) + "\n\n";
+    return new Response(new ReadableStream({ start(controller) {
+      const bytes = new TextEncoder().encode(event);
+      for (const value of bytes) controller.enqueue(new Uint8Array([value]));
+      controller.close();
+    } }));
+  } });
+  const sendThread = async (thread) => {
+    const response = await send({ model: "deepseek-test", prompt_cache_key: thread,
+      input: [{ type: "compaction", encrypted_content: thread }] });
+    await response.text();
+    return response.status;
+  };
+  assert.deepEqual(await Promise.all([sendThread("A"), sendThread("B")]), [200, 200]);
+  assert.equal(outputs.filter((text) => text.includes("summary-A")).length, 1);
+  assert.equal(outputs.filter((text) => text.includes("summary-B")).length, 1);
+  assert.equal(await sendThread("incomplete"), 502);
+  assert.equal(outputs.length, 2);
 });
 
 test("times out an unresponsive upstream", async (context) => {

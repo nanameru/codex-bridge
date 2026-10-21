@@ -21,10 +21,28 @@ def wait_for_unload(service):
     raise SystemExit("常駐登録の解除待ちがタイムアウトしました")
 
 
+def wait_for_idle(timeout):
+    deadline = time.monotonic() + timeout
+    notified = False
+    while True:
+        connections = subprocess.run(["lsof", "-nP", "-iTCP:8790", "-sTCP:ESTABLISHED"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if connections.returncode == 1:
+            return
+        if connections.returncode != 0 or time.monotonic() >= deadline:
+            raise SystemExit("接続中または接続状態を確認できません。routerを更新していません")
+        if not notified:
+            print("会話の接続が空くまで待機します。実行中の接続は停止しません。", flush=True)
+            notified = True
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--update-if-idle", action="store_true")
+    parser.add_argument("--wait-idle", type=int, default=0)
     arguments = parser.parse_args()
+    if not 0 <= arguments.wait_idle <= 1800:
+        raise SystemExit("接続待機は0〜1800秒で指定してください")
     if sys.platform != "darwin":
         raise SystemExit("この常駐設定はmacOS専用です。その他のOSではnode src/model-router.mjsを起動してください")
     node = shutil.which("node")
@@ -35,7 +53,7 @@ def main():
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if not (root / "unified-model-catalog.json").exists():
         raise SystemExit("先にunified_config.py prepareを実行してください")
-    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs"]}
+    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs"]}
     revision = hashlib.sha256(b"".join(modules.values())).hexdigest()
     runtime = root / "router-runtime" / revision
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -60,9 +78,7 @@ def main():
         old = plistlib.loads(previous)
         if not arguments.update_if_idle or old.get("Label") != label or old.get("EnvironmentVariables", {}).get("CODEX_HOME") != str(root):
             raise SystemExit("既存の常駐設定が異なります。更新する場合は--update-if-idleを指定してください")
-        connections = subprocess.run(["lsof", "-nP", "-iTCP:8790", "-sTCP:ESTABLISHED"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if connections.returncode != 1:
-            raise SystemExit("接続中または接続状態を確認できません。routerを更新していません")
+        wait_for_idle(arguments.wait_idle)
         atomic_write(path.with_name(path.name + ".bak." + str(time.time_ns())), previous.decode("utf-8"))
         atomic_write(path, plistlib.dumps(payload).decode("utf-8"))
     if not path.exists():

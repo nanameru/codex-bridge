@@ -26,6 +26,13 @@ python3 scripts/unified_config.py on
 残ることがあるため、実行中の作業が完了してからアプリを開き直してください。
 以降は、そのチャット内のモデル選択で双方向に切り替えられ、毎回の分岐は不要です。
 
+更新時に他の会話が接続中なら、次のコマンドで最大15分、接続が空くまで待機できます。
+期限内に空かなければ更新を行わず終了します。
+
+```bash
+python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
+```
+
 - GPTのモデル名はそのまま使用します。OpenCodeモデルは`opencode/…`の名前空間で区別します。
   同名のモデルが両方にある場合も選択した送信先を維持します。
 - ChatGPTの認証はCodexからOpenAIへだけ中継します。OpenCode側へは認証・アカウントの
@@ -36,8 +43,14 @@ python3 scripts/unified_config.py on
   旧ストリームでreasoningが後置された履歴も送信時に並べ直し、説明文とツール呼び出しの
   両方へ既存の推論データを引き継ぎます。保存済み会話は変更せず、推論内容の捏造は行いません。
   画像、組込みツール、コンテキスト長などは各モデル・providerの対応範囲に従います。
-- OpenAI側だけが読める暗号化された圧縮履歴、`item_reference`、`previous_response_id`だけで
-  会話を継続する入力は他providerへ持ち出せないため、履歴を黙って捨てず422を返します。
+- OpenAIの暗号化された圧縮履歴からOpenCodeへ切り替えるときは、その会話の圧縮部分だけを
+  GPT-6.1 Solで通常の引き継ぎ要約に戻してから渡します。最初の切替には追加のOpenAI呼び出しと
+  待ち時間が発生し、そのアカウントでGPT-6.1 Solを利用できる必要があります。元の履歴は変更しません。
+  要約は会話・認証・元データごとに分離し、最大64件をメモリ内だけに保存します。
+  native GPTの会話にはこの追加処理を行わず、他チャットの選択モデルや全体設定も変更しません。
+  要約には通常の会話圧縮と同じく情報の省略があり得ます。要約に失敗した場合は履歴を捨てず停止します。
+- `item_reference`、`previous_response_id`だけで会話を継続する入力は他providerへ持ち出せないため、
+  履歴を黙って捨てず422を返します。
   全履歴を送るCodex 0.163で、同じ会話のGPT→DeepSeek→GPT・逆順を検証しています。
 - OpenCodeのremote compactionは未対応です。カタログの掲載は各アカウントの利用権限を
   保証しません。実応答の検証対象はGPT-6.1 SolとDeepSeek V4.1 Flashです。
@@ -384,6 +397,13 @@ MOCK_TOOL_ROUNDTRIP=1 python3 test/codex-router-e2e.py
 
 ```bash
 RUN_LIVE_ROUTER=1 LIVE_ROUTER_TOOLS=1 python3 test/live-router-smoke.py
+```
+
+圧縮履歴を持つ会話の接続確認は、元のrolloutを変更せずに行えます。既存ログインを使い、
+圧縮部分をOpenAIで要約してからOpenCodeの実応答を確認するため、両モデルの利用枠を消費します。
+
+```bash
+RUN_LIVE_ROUTER=1 python3 test/live-compaction-smoke.py --rollout /path/to/rollout.jsonl
 ```
 
 ---
