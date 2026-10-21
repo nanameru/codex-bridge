@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeToolCallId } from "./tool-adapter.mjs";
 
 export class HandoffError extends Error {}
 
@@ -15,7 +16,7 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
       throw new HandoffError("圧縮履歴の形式が不正です。元の会話を保持したまま停止しました");
     }
     const input = prefix.filter((item) => !["system", "developer"].includes(item.role)
-      && (item.type !== "reasoning" || !item.encrypted_content?.startsWith("cxb1:")));
+      && (item.type !== "reasoning" || !item.encrypted_content?.startsWith("cxb1:"))).map(normalizeToolCallId);
     const fingerprint = createHash("sha256").update(destination).update("\0").update(model).update("\0")
       .update(headers.authorization ?? "")
       .update("\0").update(headers["chatgpt-account-id"] ?? "").update("\0")

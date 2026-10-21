@@ -74,6 +74,28 @@ test("never forwards native authentication or account headers to OpenCode", asyn
   assert.equal(calls[1].headers["x-secret"], undefined);
 });
 
+test("repairs persisted legacy custom IDs before native responses and remote compaction", async (context) => {
+  const { calls, base, send } = await fixture(context);
+  const input = [
+    { type: "custom_tool_call", id: "fc_2020be0e36634c26", call_id: "call_original", name: "apply_patch", input: "patch" },
+    { type: "custom_tool_call_output", call_id: "call_original", output: "ok" },
+    { type: "function_call", id: "fc_regular", call_id: "call_regular", name: "shell", arguments: "{}" },
+    { type: "custom_tool_call", id: "ctc_valid", call_id: "call_valid", name: "apply_patch", input: "valid" },
+  ];
+  const original = structuredClone(input);
+  await (await send({ model: "gpt-test", input })).text();
+  const compact = await fetch(base + "/responses/compact", { method: "POST", headers: {
+    authorization: "Bearer fake-native-token", "content-type": "application/json",
+  }, body: JSON.stringify({ model: "gpt-test", input }) });
+  assert.equal(compact.status, 200);
+  await compact.text();
+  assert.deepEqual(calls.map((call) => call.path), ["/v1/responses", "/v1/responses/compact"]);
+  for (const call of calls) {
+    assert.deepEqual(call.body.input, [{ ...input[0], id: "ctc_2020be0e36634c26" }, ...input.slice(1)]);
+  }
+  assert.deepEqual(input, original);
+});
+
 test("preserves the already-deployed native image and search endpoints independently of chat models", async (context) => {
   const { base, calls } = await fixture(context);
   for (const path of ["/images/generations", "/images/edits", "/alpha/search"]) {

@@ -1,5 +1,14 @@
 import { Transform } from "node:stream";
 
+// Item IDs describe the wire type; call_id identifies the tool execution and
+// must survive provider switches unchanged. Also repairs already-saved history.
+export function normalizeToolCallId(item) {
+  const from = item.type === "custom_tool_call" ? "fc_" : item.type === "function_call" ? "ctc_" : undefined;
+  if (!from || typeof item.id !== "string" || !item.id.startsWith(from)) return item;
+  const to = item.type === "custom_tool_call" ? "ctc_" : "fc_";
+  return { ...item, id: to + item.id.slice(from.length) };
+}
+
 function orderedBridgeHistory(input, maxBytes) {
   const result = [];
   let size = 0;
@@ -55,8 +64,8 @@ export function openCodeBody(body, maxBytes = 32 * 1024 * 1024) {
     });
     result.input = orderedBridgeHistory(input.map((item) => {
       if (item.type === "custom_tool_call") {
-        return { type: "function_call", id: item.id, call_id: item.call_id, name: item.name,
-          arguments: JSON.stringify({ input: item.input }) };
+        return normalizeToolCallId({ type: "function_call", id: item.id, call_id: item.call_id, name: item.name,
+          arguments: JSON.stringify({ input: item.input }) });
       }
       if (item.type === "custom_tool_call_output") return { ...item, type: "function_call_output" };
       return item;
@@ -85,7 +94,7 @@ export function nativeToolPayload(payload, customNames, depth = 0) {
     if (!argumentsText && value.status !== "in_progress") throw new Error("custom tool arguments are missing");
     const argumentsValue = argumentsText ? JSON.parse(argumentsText) : { input: "" };
     if (typeof argumentsValue.input !== "string") throw new Error("custom tool input is missing");
-    return { ...rest, type: "custom_tool_call", input: argumentsValue.input };
+    return normalizeToolCallId({ ...rest, type: "custom_tool_call", input: argumentsValue.input });
   };
   let result = { ...payload };
   if (payload.item) result.item = item(payload.item);
@@ -119,6 +128,9 @@ export function toolResponseStream(customNames, contentType, maxBytes) {
     if (payload.type?.startsWith("response.function_call_arguments.") && customItems.has(payload.item_id)) return "";
     const headers = lines.filter((line) => !line.startsWith("data:"));
     const converted = nativeToolPayload(payload, customNames);
+    if (customItems.has(payload.item_id)) {
+      converted.item_id = normalizeToolCallId({ type: "custom_tool_call", id: payload.item_id }).id;
+    }
     const render = (value, prefix) => {
       if (typeof value.sequence_number === "number") value.sequence_number = sequence++;
       return prefix.join("\n") + "\ndata: " + JSON.stringify(value) + "\n\n";
