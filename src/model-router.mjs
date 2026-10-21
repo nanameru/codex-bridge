@@ -160,7 +160,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 422, "history_required", "OpenCodeへ切り替えるには参照や暗号化された圧縮履歴ではなく、展開した履歴が必要です");
         return;
       }
-      const headers = { "content-type": "application/json", accept: "text/event-stream, application/json" };
+      const headers = { "content-type": "application/json", accept: nativeTool ? "application/json" : "text/event-stream, application/json" };
       let destination = bridge.href.replace(/\/$/, "");
       if (route.provider === "openai") {
         destination = nativeBase ?? (/^Bearer sk-/i.test(request.headers.authorization)

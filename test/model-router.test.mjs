@@ -250,3 +250,13 @@ test("native tool destinations remain official for ChatGPT and API authenticatio
   }
   assert.deepEqual(destinations, ["https://chatgpt.com/backend-api/codex/images/edits", "https://api.openai.com/v1/images/edits"]);
 });
+
+test("native tools negotiate JSON rather than a conversation event stream", async (context) => {
+  const { base } = await fixture(context, { fetcher: async (_url, options) => {
+    assert.equal(options.headers.accept, "application/json");
+    return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { headers: { "content-type": "application/json" } });
+  } });
+  const response = await fetch(base + "/images/generations", { method: "POST", headers: { authorization: "Bearer fake" }, body: "{}" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { data: [{ b64_json: "AA==" }] });
+});
