@@ -137,6 +137,22 @@ class UnifiedConfigTests(unittest.TestCase):
                          ["opencode/deepseek-v4.1-flash", "gpt-other"])
         self.assertEqual([model["priority"] for model in result], [1, 2])
 
+    def test_prepare_sanitizes_display_text_and_rejects_bad_ids(self):
+        native = {"models": [{"slug": "gpt-test", "display_name": "GPT\u001b[31mX"}]}
+        opencode = {"models": [{"slug": "opencode-test", "display_name": "Go\u202eX"}]}
+        (self.root / "models_cache.json").write_text(json.dumps(native))
+        (self.root / "model-catalog.json").write_text(json.dumps(opencode))
+        source = self.root / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src/models.json").write_text('{"models":[{"id":"opencode-test"}]}')
+        catalog = json.loads(unified_config.prepare(self.root, source).read_text())
+        self.assertEqual(catalog["models"][0]["display_name"], "GPTX")
+        self.assertEqual(catalog["models"][1]["display_name"], "OpenCode · Go X")
+
+        (self.root / "models_cache.json").write_text(json.dumps({"models": [{"slug": "../evil"}]}))
+        with self.assertRaisesRegex(ValueError, "モデルID"):
+            unified_config.prepare(self.root, source)
+
 
 if __name__ == "__main__":
     unittest.main()

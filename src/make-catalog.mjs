@@ -7,10 +7,11 @@
  *   ~/.codex/model-catalog.json   … Codex の model_catalog_json
  *   ./models.openai.json          … codex-bridge の /v1/models
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { validateModels, writeFileAtomic } from "./catalog-safety.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PINNED = ["deepseek-v4.1-flash"];
@@ -52,7 +53,8 @@ export function orderModels(models) {
 }
 
 export function buildCatalog(models) {
-  const { ordered, priorities } = orderModels(models);
+  const safeModels = validateModels(models);
+  const { ordered, priorities } = orderModels(safeModels);
   return {
     models: ordered.map((m) => ({
       slug: m.id,
@@ -107,7 +109,7 @@ export function buildCatalog(models) {
 }
 
 export function buildOpenAIModels(models) {
-  const { ordered } = orderModels(models);
+  const { ordered } = orderModels(validateModels(models));
   return {
     object: "list",
     data: ordered.map((m) => ({
@@ -127,9 +129,9 @@ function main() {
   const { models } = JSON.parse(readFileSync(join(here, "models.json"), "utf8"));
   const catalog = buildCatalog(models);
   const out = join(homedir(), ".codex", "model-catalog.json");
-  writeFileSync(out, JSON.stringify(catalog, null, 2));
+  writeFileAtomic(out, JSON.stringify(catalog, null, 2), 0o600);
   console.log(`書き出し: ${out} (${catalog.models.length} モデル)`);
-  writeFileSync(join(here, "models.openai.json"), JSON.stringify(buildOpenAIModels(models), null, 2));
+  writeFileAtomic(join(here, "models.openai.json"), JSON.stringify(buildOpenAIModels(models), null, 2), 0o644);
   console.log("書き出し: models.openai.json");
 }
 
