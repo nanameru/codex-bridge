@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ from switch_config import atomic_write
 
 
 IMPORT = 'import { reasoningOptions, upstreamSession } from "./upstream-options.mjs";'
+PREVIOUS_HELPER_SHA256 = "48f7007270ccdbca4cb6658d339e518421b9f17806e677bf5c1705c7783cde13"
 REPLACEMENTS = [
     ('import http from "node:http";', IMPORT + '\nimport http from "node:http";', 1),
     ('presence_penalty: 0.1,', 'presence_penalty: 0.1,\n        ...reasoningOptions(model, body.reasoning?.effort),', 1),
@@ -38,8 +40,11 @@ def prepare(target):
         raise ValueError("シンボリックリンク先は更新できません")
     module = target.with_name("upstream-options.mjs")
     helper = Path(__file__).resolve().parents[1] / "src/upstream-options.mjs"
-    if module.is_symlink() or (module.exists() and module.read_bytes() != helper.read_bytes()):
+    if module.is_symlink():
         raise ValueError("既存のupstream-options.mjsは上書きしません")
+    if module.exists() and module.read_bytes() != helper.read_bytes():
+        if hashlib.sha256(module.read_bytes()).hexdigest() != PREVIOUS_HELPER_SHA256:
+            raise ValueError("既存のupstream-options.mjsは上書きしません")
     source = target.read_text()
     updated = patched_source(source)
     subprocess.run([shutil.which("node") or "node", "--check", "--input-type=module"],
@@ -61,7 +66,11 @@ def main():
     if source != updated:
         backup = arguments.target.with_name(arguments.target.name + ".bak.latency." + str(time.time_ns()))
         atomic_write(backup, source)
-    if not module.exists():
+    if module.exists() and module.read_text() != helper:
+        backup = module.with_name(module.name + ".bak.latency." + str(time.time_ns()))
+        atomic_write(backup, module.read_text())
+        atomic_write(module, helper)
+    elif not module.exists():
         atomic_write(module, helper)
     if source != updated:
         atomic_write(arguments.target, updated, arguments.target.stat().st_mode & 0o777)

@@ -394,6 +394,8 @@ MOCK_TOOL_ROUNDTRIP=1 python3 test/codex-router-e2e.py
 
 実モデルによる任意の確認は、既存のログインを使用するephemeral会話で3ターン実行します。
 `LIVE_ROUTER_TOOLS=1`では各ターンに無害な`printf`を2回実行します。実際の利用枠を消費します。
+既存ログインとカタログだけを権限600の一時設定へコピーし、検証終了時に削除します。
+ユーザーのモデル設定やMCP設定は変更しません。`LIVE_ROUTER_BASE_URL`で別のloopback `/v1`を検証できます。
 
 ```bash
 RUN_LIVE_ROUTER=1 LIVE_ROUTER_TOOLS=1 python3 test/live-router-smoke.py
@@ -422,7 +424,8 @@ DeepSeek V4の選択済み推論強度は、温度や短文指示だけでなく
 `none`は思考なし、`minimal/low`は`low`、`medium/high/xhigh`は`high`、`max/ultra`は`max`です。
 未指定時は上流既定を保ち、未対応モデルへこれらのパラメータは送信しません。
 [DeepSeek公式仕様](https://api-docs.deepseek.com/guides/thinking_mode/)に基づく変換です。
-OpenCodeへ送るセッションIDも、プロセス共通ではなく会話IDのハッシュにします。
+OpenCodeへ送るセッションIDも、プロセス共通ではなく会話IDから作るUUID v5（36文字）にします。
+実接続で68文字のハッシュ形式が429、UUID形式が200となる組合せを確認したため、UUID形式へ揃えています。
 [Go公式のセッション要件](https://opencode.ai/docs/go/#where-can-i-use-it)に沿ったもので、会話をまたぐ選択の共有は行いません。
 
 CLI起動のrouterは、リクエストごとにJSONの計測ログを出します。

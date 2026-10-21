@@ -78,5 +78,5 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.equal(sessions[0], sessions[1]);
   assert.equal(sessions[2], sessions[3]);
   assert.notEqual(sessions[0], sessions[2]);
-  assert.ok(sessions.every((session) => /^cxb-[a-f0-9]{64}$/.test(session)));
+  assert.ok(sessions.every((session) => /^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(session)));
 });

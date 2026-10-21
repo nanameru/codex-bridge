@@ -19,7 +19,8 @@ test("maps DeepSeek thinking controls without silently lowering the selected eff
 
 test("keeps session stable per thread across models without exposing thread IDs", () => {
   const first = upstreamSession({ prompt_cache_key: "private-thread" }, "fallback");
-  assert.match(first, /^cxb-[a-f0-9]{64}$/);
+  assert.equal(first, "7bc9fee4-565a-5ab1-b9e9-f516cb84efdb");
+  assert.match(first, /^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
   assert.equal(first, upstreamSession({ client_metadata: { thread_id: "private-thread" }, model: "other" }, "new-fallback"));
   assert.notEqual(first, upstreamSession({ prompt_cache_key: "other-thread" }, "fallback"));
   assert.equal(upstreamSession({ metadata: { thread_id: "private-thread" } }, "fallback"), "fallback");
