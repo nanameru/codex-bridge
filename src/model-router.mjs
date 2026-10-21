@@ -1,12 +1,12 @@
 import http from "node:http";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
 import { compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 
@@ -58,7 +58,7 @@ function fail(response, status, code, message) {
 
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
   nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
-  summaryModel = "gpt-6.1-sol" } = {}) {
+  summaryModel = "gpt-6.1-sol", onMetric = () => {} } = {}) {
   const routes = catalogRoutes(catalog);
   const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes });
   const bridge = new URL(bridgeBase);
@@ -107,11 +107,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     const timer = setTimeout(() => abort.abort(), timeoutMs);
     response.on("close", () => { if (!response.writableEnded) abort.abort(); });
     request.on("aborted", () => abort.abort());
+    const started = performance.now();
+    const metric = { event: "router_request", request_id: randomUUID(), path,
+      summary_cache: "unused", summary_ms: 0, stage: "input", received_bytes: 0, response_bytes: 0 };
     try {
       const chunks = [];
       let size = 0;
       for await (const chunk of request) {
         size += chunk.length;
+        metric.received_bytes = size;
         if (size > maxBytes) {
           fail(response, 413, "request_too_large", "入力が大きすぎます");
           return;
@@ -119,6 +123,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         chunks.push(chunk);
       }
       readingBody = false;
+      metric.received_bytes = size;
       if (abort.signal.aborted) return;
       let body;
       let payload = Buffer.concat(chunks);
@@ -151,6 +156,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 400, "unknown_model", "統合カタログにないモデルです。カタログを再生成してください");
         return;
       }
+      metric.provider = route.provider;
+      metric.model = nativeTool ? undefined : body.model;
+      metric.input_items = Array.isArray(body.input) ? body.input.length : undefined;
       if (route.provider === "opencode" && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
         return;
@@ -185,8 +193,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         for (const name of ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "user-agent"]) {
           if (typeof request.headers[name] === "string") summaryHeaders[name] = request.headers[name];
         }
-        body = await expandCompaction(body, { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
-          threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id });
+        metric.stage = "handoff";
+        const summaryStart = performance.now();
+        try {
+          body = await expandCompaction(body, { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
+            threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id,
+            observe: ({ cache }) => { metric.summary_cache = cache; } });
+        } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
       }
       const suffix = nativeTool ? path.slice(3) : path.endsWith("/compact") ? "/responses/compact" : "/responses";
       let routed;
@@ -198,10 +211,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 413, "request_too_large", "変換後の入力が大きすぎます");
         return;
       }
+      metric.forwarded_bytes = Buffer.byteLength(routed);
+      metric.stage = "upstream_headers";
+      const upstreamStart = performance.now();
       const upstream = await fetcher(destination.replace(/\/$/, "") + suffix, {
         method: "POST", headers, body: routed,
         signal: abort.signal, redirect: "manual",
       });
+      metric.upstream_headers_ms = Math.round(performance.now() - upstreamStart);
+      metric.upstream_status = upstream.status;
       if (upstream.status >= 300 && upstream.status < 400) {
         await upstream.body?.cancel();
         fail(response, 502, "upstream_redirect", "転送先のリダイレクトを拒否しました");
@@ -216,19 +234,34 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         if (upstream.headers.has(name)) responseHeaders[name] = upstream.headers.get(name);
       }
       response.writeHead(upstream.status, responseHeaders);
+      metric.stage = "upstream_stream";
+      const streamStart = performance.now();
+      const meter = new Transform({ transform(chunk, _encoding, callback) {
+        if (metric.first_upstream_byte_ms === undefined) {
+          metric.first_upstream_byte_ms = Math.round(performance.now() - upstreamStart);
+        }
+        metric.response_bytes += chunk.length;
+        callback(null, chunk);
+      } });
       const customNames = new Set((nativeTool ? [] : body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
       if (route.provider === "opencode" && upstream.ok) {
-        await pipeline(Readable.fromWeb(upstream.body), toolResponseStream(customNames, responseHeaders["content-type"], maxBytes),
+        await pipeline(Readable.fromWeb(upstream.body), meter, toolResponseStream(customNames, responseHeaders["content-type"], maxBytes),
           response, { signal: abort.signal });
       } else {
-        await pipeline(Readable.fromWeb(upstream.body), response, { signal: abort.signal });
+        await pipeline(Readable.fromWeb(upstream.body), meter, response, { signal: abort.signal });
       }
+      metric.upstream_stream_ms = Math.round(performance.now() - streamStart);
+      metric.stage = "complete";
     } catch (error) {
       if (!response.destroyed) fail(response, abort.signal.aborted ? 504 : 502,
         error instanceof HandoffError ? "compaction_handoff_failed" : "upstream_error",
         error instanceof HandoffError ? error.message : "転送先への接続に失敗しました");
     } finally {
       clearTimeout(timer);
+      metric.total_ms = Math.round(performance.now() - started);
+      metric.status = response.statusCode;
+      metric.outcome = abort.signal.aborted ? "aborted" : metric.stage === "complete" ? "complete" : "rejected";
+      try { onMetric(metric); } catch {}
     }
   });
   server.on("upgrade", (_request, socket) => {
@@ -240,7 +273,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const catalog = JSON.parse(readFileSync(join(root, "unified-model-catalog.json"), "utf8"));
-  const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1" });
+  const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
+    onMetric: (metric) => console.log(JSON.stringify(metric)) });
   server.listen(Number(process.env.ROUTER_PORT ?? 8790), "127.0.0.1", () => {
     console.log("Unified model router listening on loopback");
   });

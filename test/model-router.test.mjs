@@ -286,3 +286,61 @@ test("times out an unresponsive upstream", async (context) => {
   const response = await send({ model: "gpt-test" });
   assert.equal(response.status, 504);
 });
+
+test("records per-stage timings and cache outcomes without logging credentials or conversation", async (context) => {
+  const metrics = [];
+  const { send } = await fixture(context, { summaryModel: "gpt-test", onMetric: (metric) => metrics.push(metric),
+    fetcher: async () => Response.json({ status: "completed", output: [
+      { type: "message", content: [{ type: "output_text", text: "handoff" }] },
+    ] }) });
+  const body = { model: "deepseek-test", prompt_cache_key: "secret-thread", input: [
+    { type: "compaction", encrypted_content: "secret-history" }, { role: "user", content: "private text" },
+  ] };
+  for (let count = 0; count < 2; count++) await (await send(body)).text();
+  assert.deepEqual(metrics.map((metric) => metric.summary_cache), ["miss", "hit"]);
+  for (const metric of metrics) {
+    for (const name of ["summary_ms", "upstream_headers_ms", "first_upstream_byte_ms", "upstream_stream_ms", "total_ms"]) {
+      assert.equal(typeof metric[name], "number", name);
+      assert.ok(metric[name] >= 0, name);
+    }
+    assert.equal(metric.status, 200);
+    assert.equal(metric.outcome, "complete");
+    assert.ok(metric.received_bytes > 0 && metric.forwarded_bytes > 0 && metric.response_bytes > 0);
+    assert.doesNotMatch(JSON.stringify(metric), /secret-|private text|fake-native-token|authorization/);
+  }
+});
+
+test("records received bytes for rejected and empty input", async (context) => {
+  const metrics = [];
+  const { send, base } = await fixture(context, { maxBytes: 200, onMetric: (metric) => metrics.push(metric) });
+  const oversized = await send({ model: "gpt-test", input: "x".repeat(300) });
+  await oversized.text();
+  assert.equal(oversized.status, 413);
+  assert.ok(metrics[0].received_bytes > 200);
+  const empty = await fetch(base + "/responses", { method: "POST", headers: { authorization: "Bearer test" }, body: "" });
+  await empty.text();
+  assert.equal(empty.status, 400);
+  assert.equal(metrics[1].received_bytes, 0);
+});
+
+test("streams first output before completion even with metrics enabled", async (context) => {
+  let controller;
+  const metrics = [];
+  const { send } = await fixture(context, { onMetric: (metric) => metrics.push(metric),
+    fetcher: async () => new Response(new ReadableStream({ start(value) {
+      controller = value;
+      value.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"early"}\n\n'));
+    } }), { headers: { "content-type": "text/event-stream" } }) });
+  const response = await send({ model: "deepseek-test", stream: true });
+  const reader = response.body.getReader();
+  try {
+    const first = await reader.read();
+    assert.match(new TextDecoder().decode(first.value), /early/);
+    assert.equal(metrics.length, 0);
+  } finally {
+    controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed"}\n\n'));
+    controller.close();
+    while (!(await reader.read()).done) {}
+  }
+  assert.equal(metrics[0].outcome, "complete");
+});

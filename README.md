@@ -69,7 +69,7 @@ routerコードの更新は接続中の処理がない時に`install_router_serv
 カタログを更新した場合も、routerをアイドル時に読み直してから有効化してください。
 
 ```bash
-node --test test/model-router.test.mjs test/tool-adapter.test.mjs
+node --test test/*.test.mjs
 python3 -m unittest discover -s test -p 'test_*.py'
 python3 test/codex-router-e2e.py   # Codex実行ファイル＋模擬接続先。推論APIは呼ばない
 RUN_LIVE_ROUTER=1 python3 test/live-router-smoke.py  # 実モデルを3回呼ぶ任意の確認
@@ -405,6 +405,59 @@ RUN_LIVE_ROUTER=1 LIVE_ROUTER_TOOLS=1 python3 test/live-router-smoke.py
 ```bash
 RUN_LIVE_ROUTER=1 python3 test/live-compaction-smoke.py --rollout /path/to/rollout.jsonl
 ```
+
+### 応答待ち時間の改善と計測
+
+圧縮済み履歴を初めてOpenCodeへ引き継ぐときは、OpenAIでの要約が先に必要です。
+同じ会話・認証・圧縮履歴の要約をメモリ内で最大64件再利用し、同時要求も1回の要約を共有します。
+指示文や表示用IDの変更では再要約しませんが、現在の指示は毎回保持します。
+会話ID不明・認証更新・圧縮履歴の変更・router再起動では再利用しません。要約はディスクに保存しません。
+要約の`response.completed`を受信した時点で次へ進み、接続の終了まで待ち続けません。
+
+OpenCode向け入力は、隣接して完全一致する指示だけを取り除きます。
+最新依頼・ツール結果・推論履歴の任意切捨てはしないため、大量の履歴を持つ会話が必ず短時間になるわけではありません。
+元の会話・全体のモデル設定・OpenAIへの入力は変更しません。
+
+DeepSeek V4の選択済み推論強度は、温度や短文指示だけでなく実際の`thinking`と`reasoning_effort`へ変換します。
+`none`は思考なし、`minimal/low`は`low`、`medium/high/xhigh`は`high`、`max/ultra`は`max`です。
+未指定時は上流既定を保ち、未対応モデルへこれらのパラメータは送信しません。
+[DeepSeek公式仕様](https://api-docs.deepseek.com/guides/thinking_mode/)に基づく変換です。
+OpenCodeへ送るセッションIDも、プロセス共通ではなく会話IDのハッシュにします。
+[Go公式のセッション要件](https://opencode.ai/docs/go/#where-can-i-use-it)に沿ったもので、会話をまたぐ選択の共有は行いません。
+
+CLI起動のrouterは、リクエストごとにJSONの計測ログを出します。
+macOS常駐時は`~/.codex/log/model-router.log`で確認できます。
+
+- `summary_cache`: `unused` / `miss` / `shared` / `hit`
+- `summary_ms`: 要約生成または再利用を待った時間
+- `upstream_headers_ms`: 最終送信先の応答ヘッダまでの時間
+- `first_upstream_byte_ms`: 最終送信先の最初のデータまでの時間（回答の最初のトークンとは異なる）
+- `upstream_stream_ms` / `total_ms`: 本文転送時間 / 入力受信を含む合計時間
+- `received_bytes` / `forwarded_bytes` / `response_bytes`: 受信wire / 変換後送信 / 上流本文のbytes（トークン数ではない）
+
+本文・認証・会話ID・キャッシュキーは記録しません。`complete`は転送完了であり、HTTP 200内のモデルエラーがないことまでは保証しません。
+
+### 既存のhome-runner版への反映
+
+`~/home-runner/bridge/codex-bridge.mjs`は、推論履歴・通信タイムアウト等の追加修正を持つ別実装です。
+repoの旧ブリッジで丸ごと置き換えないでください。専用スクリプトで既知の箇所だけ更新します。
+
+```bash
+python3 scripts/patch_legacy_bridge.py ~/home-runner/bridge/codex-bridge.mjs
+LEGACY_BRIDGE_SOURCE=~/home-runner/bridge/codex-bridge.mjs node --test test/bridge-transport.test.mjs
+```
+
+前者は確認のみ、後者は一時コピーを更新して模擬上流で検証し、本番ファイルには触れません。
+本番反映を承認してから、ファイルのバックアップ付き更新とrouterの接続待ち更新を行います。
+
+```bash
+python3 scripts/patch_legacy_bridge.py ~/home-runner/bridge/codex-bridge.mjs --apply
+python3 scripts/install_router_service.py --update-if-idle --wait-idle 120
+```
+
+推論設定・会話セッションの変更は8788のプロセス再起動後に有効になります。
+このスクリプトは8788を再起動しません。実行中の会話がないことを確認してから管理元のサービスだけを再起動してください。
+routerのキャッシュ・計測だけを更新しても、旧8788の推論設定は変わりません。
 
 ---
 

@@ -44,7 +44,16 @@ function orderedBridgeHistory(input, maxBytes) {
 export function openCodeBody(body, maxBytes = 32 * 1024 * 1024) {
   const result = { ...body };
   if (Array.isArray(body.input)) {
-    result.input = orderedBridgeHistory(body.input.map((item) => {
+    let previousInstruction;
+    const input = body.input.filter((item) => {
+      const instruction = ["system", "developer"].includes(item.role)
+        && [undefined, "message"].includes(item.type)
+        ? JSON.stringify({ role: item.role, content: item.content }) : undefined;
+      const duplicate = instruction !== undefined && instruction === previousInstruction;
+      previousInstruction = instruction;
+      return !duplicate;
+    });
+    result.input = orderedBridgeHistory(input.map((item) => {
       if (item.type === "custom_tool_call") {
         return { type: "function_call", id: item.id, call_id: item.call_id, name: item.name,
           arguments: JSON.stringify({ input: item.input }) };
