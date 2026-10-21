@@ -27,6 +27,17 @@ cases:
     test_file: test/catalog-limits.test.mjs
     issues: [15, 17]
     notes: "全モデル50万。実効値はmin(50万, コンテキストの90%)。先頭順序は維持。"
+  - id: TC-016
+    title: "カタログ生成・同期: 外部入力とファイル書き込みを検証する"
+    feature: "カタログの安全性"
+    scenario: "外部JSONのスキーマ・表示文字・サイズを検証し、シンボリックリンクを拒否して原子的に書き込む"
+    status: done
+    priority: high
+    type: security
+    source: [src/catalog-safety.mjs, src/make-catalog.mjs, src/sync-models.mjs, scripts/unified_config.py]
+    test_file: test/catalog-safety.test.mjs
+    issues: [19]
+    notes: "ANSI/制御文字除去、ID/数値/efforts/compact検証、15秒・10MB上限、0600原子的書き込み、symlink拒否を検証。"
   - id: TC-001
     title: "モデル切替: on offで接続定義と元設定を保持する"
     feature: "モデル切替"
