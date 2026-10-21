@@ -38,6 +38,17 @@ cases:
     test_file: test/catalog-safety.test.mjs
     issues: [19]
     notes: "ANSI/制御文字除去、ID/数値/efforts/compact検証、15秒・10MB上限、0600原子的書き込み、symlink拒否を検証。"
+  - id: TC-017
+    title: "OpenCode入力予算: ツール定義を計測し上限超過を413で止める"
+    feature: "入力予算管理"
+    scenario: "推定トークンがhard limitを超えたら上流へ送らず、soft limitでは警告だけ記録する"
+    status: done
+    priority: high
+    type: security
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [21]
+    notes: "tools/instructions/input/変換後toolsのbytes、推定tokens、警告・413、upstream未接続を検証。"
   - id: TC-001
     title: "モデル切替: on offで接続定義と元設定を保持する"
     feature: "モデル切替"

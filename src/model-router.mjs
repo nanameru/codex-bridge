@@ -56,9 +56,29 @@ function fail(response, status, code, message) {
   response.end(JSON.stringify({ error: { type: code, message } }));
 }
 
+export function estimateInputTokens(value) {
+  const bytes = Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
+  let ascii = 0;
+  let nonAscii = 0;
+  for (const byte of bytes) {
+    if (byte < 0x80) ascii += 1;
+    else nonAscii += 1;
+  }
+  return Math.ceil(ascii / 4 + nonAscii / 2);
+}
+
+function envLimit(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
   nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
-  summaryModel = "gpt-6.1-sol", onMetric = () => {} } = {}) {
+  summaryModel = "gpt-6.1-sol", onMetric = () => {},
+  opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
+  opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
   const routes = catalogRoutes(catalog);
   const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes });
   const bridge = new URL(bridgeBase);
@@ -159,6 +179,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.provider = route.provider;
       metric.model = nativeTool ? undefined : body.model;
       metric.input_items = Array.isArray(body.input) ? body.input.length : undefined;
+      metric.tools_count = Array.isArray(body.tools) ? body.tools.length : 0;
+      metric.tools_bytes = Array.isArray(body.tools) ? Buffer.byteLength(JSON.stringify(body.tools)) : 0;
+      metric.instructions_bytes = typeof body.instructions === "string" ? Buffer.byteLength(body.instructions) : 0;
+      metric.input_bytes = Array.isArray(body.input) ? Buffer.byteLength(JSON.stringify(body.input)) : 0;
       if (route.provider === "opencode" && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
         return;
@@ -203,8 +227,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       const suffix = nativeTool ? path.slice(3) : path.endsWith("/compact") ? "/responses/compact" : "/responses";
       let routed;
+      let routedObject;
       try {
-        routed = JSON.stringify(nativeTool ? body : routedBody(body, route, maxBytes));
+        routedObject = nativeTool ? body : routedBody(body, route, maxBytes);
+        routed = JSON.stringify(routedObject);
         if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
       } catch (error) {
         if (!(error instanceof RangeError)) throw error;
@@ -212,6 +238,22 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       metric.forwarded_bytes = Buffer.byteLength(routed);
+      metric.forwarded_tools_bytes = Array.isArray(routedObject.tools)
+        ? Buffer.byteLength(JSON.stringify(routedObject.tools)) : 0;
+      metric.estimated_input_tokens = estimateInputTokens(routed);
+      if (route.provider === "opencode" && opencodeSoftLimitTokens > 0
+          && metric.estimated_input_tokens > opencodeSoftLimitTokens) {
+        metric.budget_warning = true;
+      }
+      if (route.provider === "opencode" && opencodeHardLimitTokens > 0
+          && metric.estimated_input_tokens > opencodeHardLimitTokens) {
+        metric.stage = "budget_rejected";
+        fail(response, 413, "input_budget_exceeded",
+          `OpenCodeの入力が推定${metric.estimated_input_tokens}トークンで上限${opencodeHardLimitTokens}を超えます。`
+          + `不要なMCPサーバーを無効化するか、/compact後に新しいチャットで再試行してください`
+          + `（tools=${metric.tools_count}, tools_bytes=${metric.tools_bytes}）。`);
+        return;
+      }
       metric.stage = "upstream_headers";
       const upstreamStart = performance.now();
       const upstream = await fetcher(destination.replace(/\/$/, "") + suffix, {
