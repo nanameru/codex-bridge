@@ -23,6 +23,10 @@ def isolated_login():
     with tempfile.TemporaryDirectory(prefix="codex-live-smoke-") as directory:
         root = Path(directory)
         for name in ["auth.json", "unified-model-catalog.json", "models_cache.json"]:
+            if not (source / name).exists():
+                if name == "models_cache.json":
+                    continue
+                raise SystemExit("既存のログインと統合カタログが必要です: " + name)
             destination = root / name
             destination.write_bytes((source / name).read_bytes())
             destination.chmod(0o600)
