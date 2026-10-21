@@ -14,6 +14,26 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { models } = JSON.parse(readFileSync(join(here, "models.json"), "utf8"));
+const PINNED = ["deepseek-v4.1-flash"];
+const pinnedOrder = new Map(PINNED.map((id, index) => [id, index]));
+const ordered = models.map((model, index) => ({ model, index }))
+  .sort((a, b) => {
+    const aPinned = pinnedOrder.has(a.model.id);
+    const bPinned = pinnedOrder.has(b.model.id);
+    if (aPinned && bPinned) return pinnedOrder.get(a.model.id) - pinnedOrder.get(b.model.id);
+    if (aPinned !== bPinned) return aPinned ? -1 : 1;
+    return a.index - b.index;
+  })
+  .map(({ model }) => model);
+const priorities = new Map();
+let nextPriority = PINNED.some((id) => models.some((model) => model.id === id)) ? 2 : 1;
+for (const model of ordered) {
+  if (pinnedOrder.has(model.id)) priorities.set(model.id, 1);
+  else {
+    priorities.set(model.id, nextPriority);
+    nextPriority += 1;
+  }
+}
 
 const effortDesc = {
   low: "速さ優先。短い修正や単純作業",
@@ -28,7 +48,7 @@ const INSTRUCTIONS = [
 ].join(" ");
 
 const catalog = {
-  models: models.map((m, i) => ({
+  models: ordered.map((m) => ({
     slug: m.id,
     base_instructions: INSTRUCTIONS,
     display_name: m.name,
@@ -41,7 +61,7 @@ const catalog = {
     shell_type: "default",
     visibility: "list",
     supported_in_api: true,
-    priority: i + 1,
+    priority: priorities.get(m.id),
     additional_speed_tiers: [],
     service_tiers: [],
     default_service_tier: null,
@@ -85,7 +105,7 @@ console.log(`書き出し: ${out} (${catalog.models.length} モデル)`);
 
 const openai = {
   object: "list",
-  data: models.map((m) => ({
+  data: ordered.map((m) => ({
     id: m.id,
     object: "model",
     created: 0,

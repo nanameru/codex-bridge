@@ -112,6 +112,31 @@ class UnifiedConfigTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "models_cache.json").read_text()), native)
         self.assertEqual(json.loads((self.root / "model-catalog.json").read_text()), opencode)
 
+    def test_pins_frequent_models_at_top_without_reordering_the_rest(self):
+        native = {"models": [{"slug": "gpt-other", "display_name": "Other"},
+                            {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol"}]}
+        opencode = {"models": [{"slug": "deepseek-v4.1-flash", "display_name": "DeepSeek V4.1 Flash"},
+                              {"slug": "glm-5.3", "display_name": "GLM-5.3"}]}
+        (self.root / "models_cache.json").write_text(json.dumps(native))
+        (self.root / "model-catalog.json").write_text(json.dumps(opencode))
+        source = self.root / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src/models.json").write_text(json.dumps({"models": [
+            {"id": "gpt-6.1-sol"}, {"id": "deepseek-v4.1-flash"}, {"id": "glm-5.3"},
+        ]}))
+        catalog = json.loads(unified_config.prepare(self.root, source).read_text())
+        self.assertEqual([model["slug"] for model in catalog["models"]], [
+            "opencode/deepseek-v4.1-flash", "gpt-6.1-sol", "gpt-other", "opencode/glm-5.3",
+        ])
+        self.assertEqual([model["priority"] for model in catalog["models"]], [1, 1, 2, 3])
+
+    def test_prioritize_handles_a_missing_pinned_model(self):
+        models = [{"slug": "gpt-other"}, {"slug": "opencode/deepseek-v4.1-flash"}]
+        result = unified_config.prioritize(models)
+        self.assertEqual([model["slug"] for model in result],
+                         ["opencode/deepseek-v4.1-flash", "gpt-other"])
+        self.assertEqual([model["priority"] for model in result], [1, 2])
+
 
 if __name__ == "__main__":
     unittest.main()
