@@ -17,16 +17,16 @@ cases:
     issues: [13]
     notes: "両方priority=1、以降は連番。片方欠損時の回帰と、実app-serverのmodel/listで先頭2件を確認。"
   - id: TC-015
-    title: "DeepSeekの長い履歴: 上流上限より前に自動圧縮する"
+    title: "OpenCode全モデル: 上流上限より前に自動圧縮する"
     feature: "長いセッションの安定化"
-    scenario: "DeepSeek V4.1 Flash / V4 Proのauto_compact_token_limitを50万に設定する"
+    scenario: "全OpenCodeモデルのauto_compact_token_limitを50万にし、小さいコンテキストは90%でクランプする"
     status: done
     priority: high
     type: regression
     source: [src/models.json, src/make-catalog.mjs, src/sync-models.mjs]
     test_file: test/catalog-limits.test.mjs
-    issues: [15]
-    notes: "経路依存の実効上限約58万トークンより前に圧縮。他モデルはnullのまま。"
+    issues: [15, 17]
+    notes: "全モデル50万。実効値はmin(50万, コンテキストの90%)。先頭順序は維持。"
   - id: TC-001
     title: "モデル切替: on offで接続定義と元設定を保持する"
     feature: "モデル切替"
