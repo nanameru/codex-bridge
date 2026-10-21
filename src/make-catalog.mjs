@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PINNED = ["deepseek-v4.1-flash"];
+const DEFAULT_AUTO_COMPACT_TOKEN_LIMIT = 500000;
 
 const effortDesc = {
   low: "速さ優先。短い修正や単純作業",
@@ -86,7 +87,7 @@ export function buildCatalog(models) {
       supports_image_detail_original: Boolean(m.vision),
       context_window: m.ctx,
       max_context_window: m.ctx,
-      auto_compact_token_limit: m.compact ?? null,
+      auto_compact_token_limit: m.compact ?? DEFAULT_AUTO_COMPACT_TOKEN_LIMIT,
       effective_context_window_percent: 95,
       experimental_supported_tools: ["computer_use", "browser_use", "web_search"],
       comp_hash: null,

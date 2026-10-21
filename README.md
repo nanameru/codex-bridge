@@ -37,9 +37,10 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 
 - GPTのモデル名はそのまま使用します。OpenCodeモデルは`opencode/…`の名前空間で区別します。
   同名のモデルが両方にある場合も選択した送信先を維持します。
-- OpenCode GoのDeepSeek V4.1 Flash / V4 Proは経路によって実効入力上限が約58万トークンになるため、
-  カタログの `auto_compact_token_limit` を50万トークンに設定します。Codexは上流で400になる前に
-  自動圧縮します。モデル自体の最大コンテキスト表示は100万トークンのままです。
+- OpenCode Goは経路によって実効入力上限がカタログ表示より低いことがあるため、全モデルの
+  `auto_compact_token_limit` を50万トークンに設定します。Codexは上流で400になる前に自動圧縮し、
+  コンテキストが50万未満のモデルは従来どおり90%の位置で圧縮します。モデル自体の最大コンテキスト表示は
+  変更しません。
 - ChatGPTの認証はCodexからOpenAIへだけ中継します。OpenCode側へは認証・アカウントの
   ヘッダーを渡さず、認証ファイルのコピーや新しいAPIキーの発行は行いません。
 - リクエスト本文やtokenをrouterのログへ保存しません。SSEは逐次転送します。

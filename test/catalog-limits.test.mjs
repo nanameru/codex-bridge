@@ -4,23 +4,20 @@ import test from "node:test";
 import { buildCatalog } from "../src/make-catalog.mjs";
 
 const { models } = JSON.parse(readFileSync(new URL("../src/models.json", import.meta.url), "utf8"));
-const longSessionModels = ["deepseek-v4.1-flash", "deepseek-v4-pro"];
-
-test("DeepSeek models compact before the lower OpenCode Go route limit", () => {
+test("every OpenCode model compacts before the lower route limit", () => {
   const catalog = buildCatalog(models);
-  for (const slug of longSessionModels) {
-    const model = catalog.models.find((candidate) => candidate.slug === slug);
-    assert.ok(model, slug);
-    assert.equal(model.context_window, 1000000);
+  for (const model of catalog.models) {
     assert.equal(model.auto_compact_token_limit, 500000);
-    assert.ok(model.auto_compact_token_limit < 582016);
+    const effective = Math.min(model.auto_compact_token_limit, Math.floor(model.context_window * 0.9));
+    assert.ok(effective <= 500000, model.slug);
   }
 });
 
-test("other models keep Codex's default automatic compaction", () => {
+test("small-context models compact earlier through Codex's 90% clamp", () => {
   const catalog = buildCatalog(models);
   for (const model of catalog.models) {
-    if (longSessionModels.includes(model.slug)) continue;
-    assert.equal(model.auto_compact_token_limit, null, model.slug);
+    const ninetyPercent = Math.floor(model.context_window * 0.9);
+    const effective = Math.min(model.auto_compact_token_limit, ninetyPercent);
+    assert.equal(effective, ninetyPercent < 500000 ? ninetyPercent : 500000, model.slug);
   }
 });
