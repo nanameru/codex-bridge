@@ -32,6 +32,9 @@ python3 scripts/unified_config.py on
   ヘッダーを渡さず、認証ファイルのコピーや新しいAPIキーの発行は行いません。
 - リクエスト本文やtokenをrouterのログへ保存しません。SSEは逐次転送します。
 - provider固有のreasoningは転送先に合わせて取り扱い、freeformツールの履歴・応答を変換します。
+  OpenCodeのストリームではreasoning完了をassistant項目の完了より先に渡します。
+  旧ストリームでreasoningが後置された履歴も送信時に並べ直し、説明文とツール呼び出しの
+  両方へ既存の推論データを引き継ぎます。保存済み会話は変更せず、推論内容の捏造は行いません。
   画像、組込みツール、コンテキスト長などは各モデル・providerの対応範囲に従います。
 - OpenAI側だけが読める暗号化された圧縮履歴、`item_reference`、`previous_response_id`だけで
   会話を継続する入力は他providerへ持ち出せないため、履歴を黙って捨てず422を返します。
@@ -365,6 +368,22 @@ curl -s -X POST http://127.0.0.1:8788/v1/responses \
 
 ```bash
 python3 -m unittest discover -s test -p 'test_*.py'
+node --test test/model-router.test.mjs test/tool-adapter.test.mjs
+```
+
+ローカルCodexと既存カタログがある場合、偽認証・模擬接続先だけで両方向の切替と保存会話の
+再開を確認できます。後者は説明文・ツール呼び出し・後置reasoningを再現し、8ターンで16リクエストを検証します。
+
+```bash
+python3 test/codex-router-e2e.py
+MOCK_TOOL_ROUNDTRIP=1 python3 test/codex-router-e2e.py
+```
+
+実モデルによる任意の確認は、既存のログインを使用するephemeral会話で3ターン実行します。
+`LIVE_ROUTER_TOOLS=1`では各ターンに無害な`printf`を2回実行します。実際の利用枠を消費します。
+
+```bash
+RUN_LIVE_ROUTER=1 LIVE_ROUTER_TOOLS=1 python3 test/live-router-smoke.py
 ```
 
 ---

@@ -71,3 +71,14 @@ cases:
     test_file: test/codex-router-e2e.py
     issues: [5]
     notes: "ローカルCodex 0.163で双方向6ターンと同じIDでの保存会話再開2ターンを検証。外部推論なし。Codexとカタログが必要なためCI対象外。実応答も任意のlive-router-smoke.pyで確認済み。"
+  - id: TC-007
+    title: "推論履歴の往復: 説明文とツール呼び出しへ後置reasoningを引き継ぐ"
+    feature: "双方向モデル切替"
+    scenario: "後置reasoningと複合assistant応答を送信時に修復し、次のツール応答で欠落させない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/tool-adapter.mjs]
+    test_file: test/tool-adapter.test.mjs
+    issues: [5]
+    notes: "旧履歴の修復、SSE完了順序、説明文とツールへの推論共有、サイズ制限、途中失敗での実行抑止を検証。MOCK_TOOL_ROUNDTRIP=1で実Codexの双方向8ターン・16リクエストも検証する。"

@@ -26,10 +26,12 @@ def fake_auth():
 
 
 def complete_turn(server, thread, model):
+    tool_mode = os.environ.get("MOCK_TOOL_ROUNDTRIP") == "1"
     result = server.request("turn/start", {"threadId": thread, "model": model,
-                            "input": [{"type": "text", "text": "Reply OK only. Do not use tools."}]})
+                            "input": [{"type": "text", "text": "Call route_probe, then reply OK." if tool_mode else "Reply OK only. Do not use tools."}]})
     turn_id = result["turn"]["id"]
     deadline = time.monotonic() + 30
+    commands = 0
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -38,8 +40,14 @@ def complete_turn(server, thread, model):
         if message is None:
             raise RuntimeError("app-server exited")
         turn = message.get("params", {}).get("turn", {})
+        if message.get("method") == "item/tool/call":
+            assert message["params"]["tool"] == "route_probe"
+            server.send({"id": message["id"], "result": {"success": True, "contentItems": [{"type": "inputText", "text": "ROUTE_OK"}]}})
+            commands += 1
         if message.get("method") == "turn/completed" and turn.get("id") == turn_id:
             assert turn["status"] == "completed", turn.get("error")
+            if tool_mode:
+                assert commands == 1, commands
             return
 
 
@@ -54,7 +62,7 @@ def run():
         home.joinpath("auth.json").chmod(0o600)
         environment = {**os.environ, "CODEX_HOME": directory}
         upstream = subprocess.Popen(["node", str(ROOT / "test/mock-unified.mjs")], env=environment,
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     text=True, bufsize=1)
         server = None
         os.environ["CODEX_HOME"] = directory
@@ -66,14 +74,18 @@ def run():
                 + '\n[model_providers.codex-bridge]\nname="mock"\nwire_api="responses"\nrequires_openai_auth=true\nbase_url=' + json.dumps(base) + '\n'
             )
             server = LocalServer(os.environ.get("CODEX_BIN", "codex"))
-            server.request("initialize", {"clientInfo": {"name": "unified-e2e", "version": "1"}})
+            server.request("initialize", {"clientInfo": {"name": "unified-e2e", "version": "1"}, "capabilities": {"experimentalApi": True}})
             server.send({"method": "initialized"})
             saved = []
             for provider, models in [
                 ("openai", ["gpt-6.1-sol", "opencode/deepseek-v4.1-flash", "gpt-6.1-sol"]),
                 ("codex-bridge", ["opencode/deepseek-v4.1-flash", "gpt-6.1-sol", "opencode/deepseek-v4.1-flash"]),
             ]:
-                thread = server.request("thread/start", {"cwd": directory, "model": models[0], "modelProvider": provider})["thread"]["id"]
+                params = {"cwd": directory, "model": models[0], "modelProvider": provider,
+                          "sandbox": "read-only", "approvalPolicy": "never"}
+                if os.environ.get("MOCK_TOOL_ROUNDTRIP") == "1":
+                    params["dynamicTools"] = [{"type": "function", "name": "route_probe", "description": "Return ROUTE_OK", "inputSchema": {"type": "object", "properties": {}}}]
+                thread = server.request("thread/start", params)["thread"]["id"]
                 for model in models:
                     complete_turn(server, thread, model)
                 history = server.request("thread/read", {"threadId": thread, "includeTurns": True})["thread"]
@@ -83,7 +95,7 @@ def run():
                 print(provider + ": same thread, 3 completed turns")
             server.close()
             server = LocalServer(os.environ.get("CODEX_BIN", "codex"))
-            server.request("initialize", {"clientInfo": {"name": "unified-e2e-resume", "version": "1"}})
+            server.request("initialize", {"clientInfo": {"name": "unified-e2e-resume", "version": "1"}, "capabilities": {"experimentalApi": True}})
             server.send({"method": "initialized"})
             for thread, provider in saved:
                 resumed = server.request("thread/resume", {"threadId": thread, "excludeTurns": True})
@@ -97,15 +109,17 @@ def run():
             upstream.stdin.write("summary\n")
             upstream.stdin.flush()
             calls = json.loads(upstream.stdout.readline())["calls"]
-            assert len(calls) == 8
-            assert [call["provider"] for call in calls] == ["openai", "opencode", "openai", "opencode", "openai", "opencode", "opencode", "openai"]
+            repetitions = 2 if os.environ.get("MOCK_TOOL_ROUNDTRIP") == "1" else 1
+            assert len(calls) == 8 * repetitions
+            expected = ["openai", "opencode", "openai", "opencode", "openai", "opencode", "opencode", "openai"]
+            assert [call["provider"] for call in calls] == [provider for provider in expected for _repeat in range(repetitions)]
             for call in calls:
                 assert not call["previousResponse"]
                 assert call["hasNativeAuth"] == (call["provider"] == "openai")
                 assert all(provider == call["provider"] for provider in call["reasoningProviders"])
             for start in [0, 3]:
-                assert calls[start]["inputItems"] < calls[start + 1]["inputItems"] < calls[start + 2]["inputItems"]
-            print("8 mock turns passed; auth isolation, history and persisted resume verified")
+                assert calls[start * repetitions]["inputItems"] < calls[(start + 1) * repetitions]["inputItems"] < calls[(start + 2) * repetitions]["inputItems"]
+            print(f"8 mock turns, {len(calls)} requests passed; auth isolation, history and persisted resume verified")
         finally:
             if server:
                 server.close()

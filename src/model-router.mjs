@@ -31,7 +31,7 @@ export function catalogRoutes(catalog) {
   return routes;
 }
 
-export function routedBody(body, route) {
+export function routedBody(body, route, maxBytes) {
   const result = { ...body, model: route.model };
   if (Array.isArray(body.input)) {
     result.input = body.input.filter((item) => {
@@ -40,7 +40,7 @@ export function routedBody(body, route) {
       return route.provider === "opencode" ? bridgeReasoning : !bridgeReasoning;
     });
   }
-  return route.provider === "opencode" ? openCodeBody(result) : result;
+  return route.provider === "opencode" ? openCodeBody(result, maxBytes) : result;
 }
 
 function fail(response, status, code, message) {
@@ -169,8 +169,17 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         }
       }
       const suffix = path.endsWith("/compact") ? "/responses/compact" : "/responses";
+      let routed;
+      try {
+        routed = JSON.stringify(routedBody(body, route, maxBytes));
+        if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
+      } catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+        fail(response, 413, "request_too_large", "変換後の入力が大きすぎます");
+        return;
+      }
       const upstream = await fetcher(destination.replace(/\/$/, "") + suffix, {
-        method: "POST", headers, body: JSON.stringify(routedBody(body, route)),
+        method: "POST", headers, body: routed,
         signal: abort.signal, redirect: "manual",
       });
       if (upstream.status >= 300 && upstream.status < 400) {
@@ -188,7 +197,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       response.writeHead(upstream.status, responseHeaders);
       const customNames = new Set((body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
-      if (route.provider === "opencode" && customNames.size > 0 && upstream.ok) {
+      if (route.provider === "opencode" && upstream.ok) {
         await pipeline(Readable.fromWeb(upstream.body), toolResponseStream(customNames, responseHeaders["content-type"], maxBytes),
           response, { signal: abort.signal });
       } else {
