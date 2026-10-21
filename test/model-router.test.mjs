@@ -3,7 +3,7 @@ import http from "node:http";
 import { once } from "node:events";
 import test from "node:test";
 import * as zlib from "node:zlib";
-import { catalogRoutes, createRouter, routedBody } from "../src/model-router.mjs";
+import { catalogRoutes, createRouter, estimateInputTokens, routedBody } from "../src/model-router.mjs";
 
 const catalog = { models: [
   { slug: "gpt-test", router_provider: "openai" },
@@ -306,8 +306,39 @@ test("records per-stage timings and cache outcomes without logging credentials o
     assert.equal(metric.status, 200);
     assert.equal(metric.outcome, "complete");
     assert.ok(metric.received_bytes > 0 && metric.forwarded_bytes > 0 && metric.response_bytes > 0);
+    assert.ok(metric.tools_count >= 0 && metric.tools_bytes >= 0 && metric.instructions_bytes >= 0);
+    assert.ok(metric.estimated_input_tokens > 0 && metric.forwarded_tools_bytes >= 0);
     assert.doesNotMatch(JSON.stringify(metric), /secret-|private text|fake-native-token|authorization/);
   }
+});
+
+test("rejects an OpenCode request over the input budget before contacting upstream", async (context) => {
+  const metrics = [];
+  const { calls, send } = await fixture(context, { opencodeSoftLimitTokens: 0, opencodeHardLimitTokens: 1,
+    onMetric: (metric) => metrics.push(metric) });
+  const response = await send({ model: "deepseek-test", input: "hello" });
+  assert.equal(response.status, 413);
+  assert.match(await response.text(), /input_budget_exceeded|上限/);
+  assert.equal(calls.length, 0);
+  assert.equal(metrics[0].stage, "budget_rejected");
+  assert.equal(metrics[0].status, 413);
+});
+
+test("records a soft budget warning while allowing the request", async (context) => {
+  const metrics = [];
+  const { calls, send } = await fixture(context, { opencodeSoftLimitTokens: 1, opencodeHardLimitTokens: 0,
+    onMetric: (metric) => metrics.push(metric) });
+  const response = await send({ model: "deepseek-test", input: "hello" });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(calls.length, 1);
+  assert.equal(metrics[0].budget_warning, true);
+});
+
+test("estimates token density for ASCII and non-ASCII input", () => {
+  assert.ok(estimateInputTokens("a".repeat(400)) <= 120);
+  assert.ok(estimateInputTokens("あ".repeat(100)) >= 100);
+  assert.ok(estimateInputTokens("あ".repeat(100)) > estimateInputTokens("a".repeat(100)));
 });
 
 test("records received bytes for rejected and empty input", async (context) => {

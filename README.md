@@ -282,6 +282,12 @@ stream_idle_timeout_ms = 300000   # 思考中の無音で切断されないよ�
 制御文字を除去します。`~/.codex/model-catalog.json` は0600で原子的に書き込み、
 シンボリックリンク先へは書き込みません。
 
+OpenCode経路では、ツール定義・instructions・会話履歴を合わせた推定入力トークンを
+リクエスト単位で記録します。`OPENCODE_SOFT_LIMIT_TOKENS`（既定900,000）を超えると
+`budget_warning` を記録し、`OPENCODE_HARD_LIMIT_TOKENS`（既定1,000,000）を超えると
+上流へ送らず413と対処方法を返します。推定値はASCII/非ASCIIを考慮した保守的な値で、
+必要に応じて環境変数で調整できます。
+
 `src/models.json` がモデルの定義元です。
 
 ```bash
