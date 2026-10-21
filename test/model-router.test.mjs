@@ -168,3 +168,85 @@ test("times out an unresponsive upstream", async (context) => {
   const response = await send({ model: "gpt-test" });
   assert.equal(response.status, 504);
 });
+
+for (const path of ["/images/generations", "/images/edits", "/alpha/search"]) {
+  test(`native tool ${path} bypasses model routing and preserves the request`, async (context) => {
+    const { calls, base } = await fixture(context);
+    const body = { model: "not-in-catalog", input: "opaque tool input", previous_response_id: "tool-reference", prompt: "stars", images: [{ image_url: "data:image/png;base64,AA==" }], settings: { future: true } };
+    const response = await fetch(base + path, { method: "POST", headers: {
+      authorization: "Bearer fake-native-token", "content-type": "application/json",
+      "chatgpt-account-id": "test-account", "x-codex-image-turn-id": "test-turn", "x-secret": "discard",
+    }, body: JSON.stringify(body) });
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].provider, "openai");
+    assert.equal(calls[0].path, "/v1" + path);
+    assert.deepEqual(calls[0].body, body);
+    assert.equal(calls[0].headers.authorization, "Bearer fake-native-token");
+    assert.equal(calls[0].headers["chatgpt-account-id"], "test-account");
+    assert.equal(calls[0].headers["x-codex-image-turn-id"], "test-turn");
+    assert.equal(calls[0].headers["x-secret"], undefined);
+  });
+}
+
+test("native tools reject missing auth, unsupported methods and unknown routes", async (context) => {
+  const { calls, base } = await fixture(context);
+  for (const path of ["/images/generations", "/images/edits", "/alpha/search"]) {
+    assert.equal((await fetch(base + path, { method: "POST", body: "{}" })).status, 401);
+    assert.equal((await fetch(base + path)).status, 404);
+  }
+  for (const path of ["/images/generations/extra", "/alpha/search/extra", "/arbitrary", "/images/generations?redirect=example"]) {
+    assert.equal((await fetch(base + path, { method: "POST", headers: { authorization: "Bearer fake" }, body: "{}" })).status, 404);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("native tools preserve image response bytes, status and request diagnostics", async (context) => {
+  const bytes = JSON.stringify({ data: [{ b64_json: "AA==" }], output_format: "png" });
+  const { base } = await fixture(context, { fetcher: async () => new Response(bytes, { status: 429, headers: {
+    "content-type": "application/json", "retry-after": "12", "x-request-id": "outer", "x-codex-imagegen-request-id": "inner", "set-cookie": "must-not-forward",
+  } }) });
+  const response = await fetch(base + "/images/generations", { method: "POST", headers: { authorization: "Bearer fake" }, body: "{}" });
+  assert.equal(response.status, 429);
+  assert.equal(await response.text(), bytes);
+  assert.equal(response.headers.get("retry-after"), "12");
+  assert.equal(response.headers.get("x-codex-imagegen-request-id"), "inner");
+  assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("native tools block redirects, invalid JSON and compression expansion", async (context) => {
+  let calls = 0;
+  const { base } = await fixture(context, { maxBytes: 100, timeoutMs: 100, fetcher: async (_url, options) => {
+    calls++;
+    assert.equal(options.redirect, "manual");
+    return new Response("redirect", { status: 307, headers: { location: "https://example.com" } });
+  } });
+  const send = (body, extra = {}) => fetch(base + "/alpha/search", { method: "POST", headers: { authorization: "Bearer fake", ...extra }, body });
+  assert.equal((await send("{}")).status, 502);
+  assert.equal((await send("not json")).status, 400);
+  assert.equal((await send(zlib.gzipSync(JSON.stringify({ prompt: "x".repeat(200) })), { "content-encoding": "gzip" })).status, 413);
+  assert.equal(calls, 1);
+});
+
+test("native tools time out without completing an unresponsive upstream", async (context) => {
+  const { base } = await fixture(context, { timeoutMs: 25, fetcher: (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  }) });
+  const response = await fetch(base + "/images/generations", { method: "POST", headers: { authorization: "Bearer fake" }, body: "{}" });
+  assert.equal(response.status, 504);
+});
+
+test("native tool destinations remain official for ChatGPT and API authentication", async (context) => {
+  const destinations = [];
+  const server = createRouter({ catalog, fetcher: async (url) => {
+    destinations.push(url);
+    return new Response("{}", { headers: { "content-type": "application/json" } });
+  } });
+  const base = await listen(server);
+  context.after(() => close(server));
+  for (const token of ["fake-chatgpt-token", "sk-fake-api-key"]) {
+    await (await fetch(base + "/images/edits", { method: "POST", headers: { authorization: "Bearer " + token }, body: "{}" })).text();
+  }
+  assert.deepEqual(destinations, ["https://chatgpt.com/backend-api/codex/images/edits", "https://api.openai.com/v1/images/edits"]);
+});

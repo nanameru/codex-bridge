@@ -41,6 +41,11 @@ python3 scripts/unified_config.py on
   全履歴を送るCodex 0.163で、同じ会話のGPT→DeepSeek→GPT・逆順を検証しています。
 - OpenCodeのremote compactionは未対応です。カタログの掲載は各アカウントの利用権限を
   保証しません。実応答の検証対象はGPT-6.1 SolとDeepSeek V4.1 Flashです。
+- 内蔵の画像生成・編集とWeb検索は、`/v1/images/generations`、`/v1/images/edits`、
+  `/v1/alpha/search`のPOSTだけを公式OpenAI接続へ中継します。これらは選択中の会話モデルや
+  カタログに依存せず、専用JSON本文を変換しません。OpenCodeへは送信しません。
+  未対応経路・HTTPメソッド・query付きの専用経路は拒否します。利用権限はOpenAI側の契約に従います。
+  画像の生成内容・認証値はログに記録せず、画像生成の診断request IDは応答に保持します。
 - routerの実行ファイルは`CODEX_HOME/router-runtime/<revision>/`へ配置されるため、
   Gitのブランチ切替で稼働ファイルが消えません。
 

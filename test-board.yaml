@@ -82,3 +82,15 @@ cases:
     test_file: test/tool-adapter.test.mjs
     issues: [5]
     notes: "旧履歴の修復、SSE完了順序、説明文とツールへの推論共有、サイズ制限、途中失敗での実行抑止を検証。MOCK_TOOL_ROUNDTRIP=1で実Codexの双方向8ターン・16リクエストも検証する。"
+
+  - id: TC-008
+    title: "内蔵ツール: 画像生成・編集とWeb検索を公式接続へ限定中継する"
+    feature: "内蔵ツールの通信"
+    scenario: "モデルカタログ変換をせず認証・本文・応答を保持し未知経路と外部転送を拒否する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [7]
+    notes: "画像生成・編集・alpha/search、公式宛先、認証、本文保持、未知経路/GET/query拒否、redirect拒否、圧縮上限、timeoutと応答診断IDを検証。"
