@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-014
+    title: "/modelの先頭: DeepSeek V4.1 FlashとGPT-6.1を固定する"
+    feature: "モデル一覧の並び順"
+    scenario: "統合カタログ生成時に先頭2件を固定し、他の相対順序を維持する"
+    status: done
+    priority: medium
+    type: regression
+    source: [scripts/unified_config.py, src/make-catalog.mjs]
+    test_file: test/test_unified_config.py
+    issues: [13]
+    notes: "両方priority=1、以降は連番。片方欠損時の回帰と、実app-serverのmodel/listで先頭2件を確認。"
   - id: TC-001
     title: "モデル切替: on offで接続定義と元設定を保持する"
     feature: "モデル切替"

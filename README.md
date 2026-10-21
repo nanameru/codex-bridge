@@ -6,6 +6,8 @@
 `OpenCode · …` のモデルは既存のOpenCodeブリッジへ転送します。
 これにより、チャットに保存されたproviderが`openai`でも`codex-bridge`でも、
 接続を読み直した後は、同じ会話ID・履歴のまま対応モデルを切り替えられます。
+`/model` の一覧では `OpenCode · DeepSeek V4.1 Flash` と `GPT-6.1-Sol` を先頭2件に固定します。
+それ以外のモデルの相対順序は維持します。
 
 ```text
 Codex ── 共通router（127.0.0.1:8790） ┬─ GPT → OpenAI（既存のCodexログイン）

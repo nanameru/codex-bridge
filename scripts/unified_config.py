@@ -12,6 +12,23 @@ from switch_config import atomic_write
 ROOT_KEYS = ("openai_base_url", "model_catalog_json")
 BRIDGE_KEYS = ("base_url", "requires_openai_auth", "wire_api")
 BRIDGE_TABLE = ("model_providers", "codex-bridge")
+PINNED_MODELS = ("opencode/deepseek-v4.1-flash", "gpt-6.1-sol")
+
+
+def prioritize(models):
+    order = {slug: index for index, slug in enumerate(PINNED_MODELS)}
+    indexed = list(enumerate(models))
+    indexed.sort(key=lambda item: (0, order[item[1]["slug"]]) if item[1]["slug"] in order
+                 else (1, item[0]))
+    next_priority = 2 if any(model["slug"] in order for model in models) else 1
+    result = []
+    for _index, model in indexed:
+        if model["slug"] in order:
+            result.append({**model, "priority": 1})
+        else:
+            result.append({**model, "priority": next_priority})
+            next_priority += 1
+    return result
 
 
 def statements(source):
@@ -85,6 +102,7 @@ def prepare(root, source_root):
         models.append({**model, "slug": "opencode/" + model["slug"],
                        "display_name": "OpenCode · " + model["display_name"],
                        "router_provider": "opencode", "router_model": model["slug"]})
+    models = prioritize(models)
     if len(models) == len(native) or len({model["slug"] for model in models}) != len(models):
         raise ValueError("統合カタログにモデルがないか、名前が重複しています")
     path = root / "unified-model-catalog.json"
