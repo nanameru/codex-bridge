@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { reasoningOptions, upstreamSession } from "./upstream-options.mjs";
 
 const PORT = Number(process.env.PORT ?? 8788);
 const UPSTREAM_BASE = (process.env.UPSTREAM_BASE ?? "https://opencode.ai/inference/go/openai/v1").replace(/\/+$/, "");
@@ -618,6 +619,7 @@ const server = http.createServer(async (req, res) => {
       stream_options: body.stream ? { include_usage: true } : undefined,
       frequency_penalty: 0.3,
       presence_penalty: 0.1,
+      ...reasoningOptions(model, body.reasoning?.effort),
     };
     if (!chatBody.tools) delete chatBody.tools;
     if (body.max_output_tokens) chatBody.max_tokens = body.max_output_tokens;
@@ -634,7 +636,7 @@ const server = http.createServer(async (req, res) => {
           authorization: `Bearer ${getToken().token}`,
           "content-type": "application/json",
           "user-agent": "codex-bridge/1.0",
-          "x-opencode-session": SESSION_ID,
+          "x-opencode-session": upstreamSession(body, SESSION_ID),
         },
         body: JSON.stringify(bodyObj),
       });

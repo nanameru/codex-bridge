@@ -93,3 +93,46 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [5]
     notes: "チャット別・認証別キャッシュ、同時切替、native会話の非変更、失敗時停止、Content-Type欠落のSSE、接続中の更新拒否を検証。live-compaction-smoke.pyで既存の暗号化圧縮履歴→OpenAI要約→DeepSeekの正常応答も確認。"
+  - id: TC-009
+    title: "応答待ち時間改善: 要約再利用と同時実行を分離する"
+    feature: "応答待ち時間改善"
+    scenario: "要約再利用と同時実行を分離する"
+    status: done
+    priority: medium
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [9]
+    notes: "指示/ID変更での再利用、同時要約1回、中断分離、認証/会話分離、失敗後再試行、完了SSE後の接続終了待ち省略を検証。"
+  - id: TC-010
+    title: "推論設定とセッション: 模擬上流への実送信を確認する"
+    feature: "応答待ち時間改善"
+    scenario: "DeepSeek V4の実パラメータと会話単位sessionを送信し、未知モデルには送らない"
+    status: done
+    priority: high
+    type: integration
+    source: [src/codex-bridge.mjs, src/upstream-options.mjs, scripts/patch_legacy_bridge.py]
+    test_file: test/bridge-transport.test.mjs
+    issues: [9]
+    notes: "標準ソースとLEGACY_BRIDGE_SOURCE指定の本番一時コピーで成功。パッチの冪等性/拒否はtest/test_patch_legacy_bridge.pyでも検証。"
+  - id: TC-011
+    title: "待ち時間計測: 本文や認証を記録せずストリームを先行配送する"
+    feature: "応答待ち時間改善"
+    scenario: "区間時間とキャッシュ状態を記録しても完了まで本文を保留しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [9]
+    notes: "キャッシュmiss/hit、時間/byte数、本文/認証/会話IDの非記録、最初のテキストの先行配送を検証。"
+  - id: TC-012
+    title: "入力整理: 連続する完全一致の指示だけを削減する"
+    feature: "応答待ち時間改善"
+    scenario: "ツール履歴・会話をまたぐ指示・元入力を変更しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-adapter.mjs]
+    test_file: test/context-input.test.mjs
+    issues: [9]
