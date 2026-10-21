@@ -38,6 +38,10 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 - ChatGPTの認証はCodexからOpenAIへだけ中継します。OpenCode側へは認証・アカウントの
   ヘッダーを渡さず、認証ファイルのコピーや新しいAPIキーの発行は行いません。
 - リクエスト本文やtokenをrouterのログへ保存しません。SSEは逐次転送します。
+- 統合routerはOpenCodeの既知の一時エラー `Endpoint is unavailable.` だけ、出力開始前に
+  同じモデル・会話・認証で1回再試行します（通常500ms待機）。`Retry-After`が2秒を超える場合や
+  一般の利用枠429・認証エラー・通信切断・出力開始後は再送しません。供給側の障害を必ず直すものでは
+  ありません。再試行でも失敗した場合は元のエラーを返します。モデル/課金先は自動変更しません。
 - provider固有のreasoningは転送先に合わせて取り扱い、freeformツールの履歴・応答を変換します。
   OpenCodeのストリームではreasoning完了をassistant項目の完了より先に渡します。
   旧ストリームでreasoningが後置された履歴も送信時に並べ直し、説明文とツール呼び出しの

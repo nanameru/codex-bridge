@@ -23,6 +23,11 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     let text = "";
     for await (const chunk of request) text += chunk;
     calls.push({ body: JSON.parse(text), headers: request.headers });
+    if (calls.at(-1).body.model === "test-quota") {
+      response.writeHead(429, { "content-type": "application/json", "retry-after": "60" });
+      response.end(JSON.stringify({ error: { type: "rate_limit_exceeded" } }));
+      return;
+    }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OK" }, finish_reason: "stop" }] }));
   });
@@ -79,4 +84,10 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.equal(sessions[2], sessions[3]);
   assert.notEqual(sessions[0], sessions[2]);
   assert.ok(sessions.every((session) => /^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(session)));
+  const limited = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "test-quota", input: "Hello", stream: false }) });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "60");
+  assert.equal(calls.length, 5);
 });

@@ -697,7 +697,8 @@ const server = http.createServer(async (req, res) => {
     if (!upstream.ok) {
       const t = await upstream.text();
       log("upstream", upstream.status, t.slice(0, 200));
-      res.writeHead(upstream.status, { "content-type": "application/json" });
+      res.writeHead(upstream.status, { "content-type": "application/json",
+        ...(upstream.headers.has("retry-after") ? { "retry-after": upstream.headers.get("retry-after") } : {}) });
       res.end(t);
       return;
     }

@@ -5,7 +5,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from patch_legacy_bridge import IMPORT, REPLACEMENTS, patched_source, prepare, main
+from patch_legacy_bridge import IMPORT, REPLACEMENTS, ERROR_HEADERS, patched_source, prepare, main
 
 
 class LegacyPatchTests(unittest.TestCase):
@@ -29,19 +29,22 @@ class LegacyPatchTests(unittest.TestCase):
 
     def test_patches_only_known_fragments_and_is_idempotent(self):
         source = "\n".join(old * count for old, _new, count in REPLACEMENTS)
-        source += "\nPRESERVE_REASONING_AND_TIMEOUTS"
+        source += "\n" + ERROR_HEADERS[0] + "\nPRESERVE_REASONING_AND_TIMEOUTS"
         result = patched_source(source)
         self.assertIn(IMPORT, result)
         self.assertIn("PRESERVE_REASONING_AND_TIMEOUTS", result)
         self.assertEqual(patched_source(result), result)
         self.assertEqual(result.count("upstreamSession(body, SESSION_ID)"), 3)
+        self.assertIn(ERROR_HEADERS[1], result)
+        previous = result.replace(ERROR_HEADERS[1], ERROR_HEADERS[0])
+        self.assertEqual(patched_source(previous), result)
 
     def test_refuses_source_drift_and_partial_patches(self):
         with self.assertRaises(ValueError):
             patched_source("unrecognized source")
         with self.assertRaises(ValueError):
             patched_source(IMPORT)
-        original = "\n".join(old * count for old, _new, count in REPLACEMENTS)
+        original = "\n".join(old * count for old, _new, count in REPLACEMENTS) + "\n" + ERROR_HEADERS[0]
         complete = patched_source(original)
         for old, new, _count in REPLACEMENTS[1:]:
             with self.subTest(fragment=old):

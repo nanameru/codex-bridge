@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-013
+    title: "接続先の一時障害: 同じリクエストを一度だけ再試行する"
+    feature: "一時障害からの回復"
+    scenario: "既知の利用不可のみ再試行し、一般429・認証・出力開始後・中断時は再送しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/codex-bridge.mjs, scripts/patch_legacy_bridge.py]
+    test_file: test/upstream-retry.test.mjs
+    issues: [9]
+    notes: "Retry-Afterの待機上限、失敗継続、秘密/会話/モデル不変、bridgeのヘッダー保持も検証する。"
   - id: TC-001
     title: "モデル切替: on offで接続定義と元設定を保持する"
     feature: "モデル切替"

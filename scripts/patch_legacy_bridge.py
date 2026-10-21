@@ -21,9 +21,17 @@ REPLACEMENTS = [
     ('doFetch("/responses", { ...body, model }, authInfo.token, clientAbort.signal)',
      'doFetch("/responses", { ...body, model }, authInfo.token, clientAbort.signal, upstreamSession(body, SESSION_ID))', 1),
 ]
+ERROR_HEADERS = ('res.writeHead(attempt.upstream.status, { "content-type": "application/json" });',
+                 'res.writeHead(attempt.upstream.status, { "content-type": "application/json",\n'
+                 '            ...(attempt.upstream.headers.has("retry-after") ? { "retry-after": attempt.upstream.headers.get("retry-after") } : {}) });')
 
 
 def patched_source(source):
+    old_headers, new_headers = ERROR_HEADERS
+    if source.count(old_headers) == 1 and new_headers not in source:
+        source = source.replace(old_headers, new_headers)
+    elif source.count(new_headers) != 1:
+        raise ValueError("エラーヘッダーの形式が想定と異なります。何も更新していません")
     if IMPORT in source:
         if all(source.count(new) == count for _old, new, count in REPLACEMENTS):
             return source
