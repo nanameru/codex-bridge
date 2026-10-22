@@ -131,6 +131,31 @@ python3 test/codex-router-e2e.py   # Codex実行ファイル＋模擬接続先�
 RUN_LIVE_ROUTER=1 python3 test/live-router-smoke.py  # 実モデルを3回呼ぶ任意の確認
 ```
 
+### GPTとDeepSeekの速度を共通条件で比較する
+
+本番設定やシステムプロンプトを変更せず、既存スクリプトの比較モードで確認できます。
+以下は**実APIを合計4回呼び、GPT/OpenCodeそれぞれの利用枠を消費**します。
+
+```bash
+RUN_LIVE_ROUTER=1 LIVE_ROUTER_COMPARE=1 python3 test/live-router-smoke.py
+```
+
+同じCodexプロセス・作業場所・共通AGENTS・標準ツール・read-only・推論強度lowで、
+DeepSeekとGPTを交互に2回ずつ呼びます。各回は履歴なしの新規ephemeralスレッドで、
+入力も同じ「こんにちは！」です。共通AGENTSは既存の内容をそのまま使い、
+`baseInstructions`の上書きや独自指示の追加はしません。MCP/プラグイン等の利用者設定は
+比較用の一時環境には追加せず、本番の設定も変更しません。
+
+出力は最初の回答テキストまでの時間、ターン完了時間、ツール実行数、報告されたtoken usageです。
+初期化とthread/startの時間は含みません。usage未報告はnull/欠損で、キャッシュ0とは扱いません。
+ツールが実行された場合やエラー時は比較を停止し、自動再試行や別モデルへの代替は行いません。
+`LIVE_ROUTER_GPT_FIRST=1`を付けると順序を逆にできます（別実行も4回分消費します）。
+
+モデル固有の既定指示・トークナイザ・推論強度の意味・提供設備は同一化していません。
+初回がキャッシュなし、反復がキャッシュありとも保証できません。実際の`cachedInputTokens`を
+見て区別してください。キャッシュは提供先をまたいで共有されず、速度改善や同速化を保証する機能ではありません。
+一時作業場所はCODEX_HOMEとは別にし、共通AGENTSが作業場所の指示としても読まれる比較上の混入を避けます。
+
 以下は従来の単一providerブリッジの説明です。統合モードでは上記routerが前段に入ります。
 
 **Codex（Responses API）から OpenCode Go の全モデルを使えるようにする翻訳プロキシ。**
