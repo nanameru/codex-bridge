@@ -22,17 +22,92 @@ REPLACEMENTS = [
      'doFetch("/responses", { ...body, model }, authInfo.token, clientAbort.signal, upstreamSession(body, SESSION_ID))', 1),
 ]
 
+MISSING_REASONING = 'const MISSING_REASONING = "[previous reasoning content unavailable]";'
+REASONING_REPLACEMENTS = [
+    ('const REASONING_PREFIX = "cxb1:";',
+     'const REASONING_PREFIX = "cxb1:";\n' + MISSING_REASONING, 1),
+    ('''  const pendingToolCalls = [];
+  let pendingReasoning = "";
+  // assistant メッセージには直前の reasoning item を reasoning_content として添える
+  const pushAssistant = (m) => {
+    if (pendingReasoning) {
+      m.reasoning_content = pendingReasoning;
+      pendingReasoning = "";
+    }
+    msgs.push(m);
+  };
+  const flushTools = () => {
+    if (pendingToolCalls.length) {
+      pushAssistant({ role: "assistant", content: null, tool_calls: pendingToolCalls.splice(0) });
+    }
+  };''',
+     '''  const thinkingEnabled = reasoningOptions(body.model ?? DEFAULT_MODEL, body.reasoning?.effort).thinking?.type === "enabled";
+  const pendingToolCalls = [];
+  let pendingAssistant = null;
+  let pendingReasoning = "";
+  const flushAssistant = () => {
+    if (!pendingAssistant && pendingToolCalls.length === 0) {
+      pendingReasoning = "";
+      return;
+    }
+    const message = pendingAssistant ?? { role: "assistant", content: pendingToolCalls.length ? null : "" };
+    if (pendingToolCalls.length) message.tool_calls = pendingToolCalls.splice(0);
+    if (pendingReasoning) message.reasoning_content = pendingReasoning;
+    else if (thinkingEnabled) message.reasoning_content = MISSING_REASONING;
+    pendingReasoning = "";
+    pendingAssistant = null;
+    msgs.push(message);
+  };
+  const pushAssistant = (message) => {
+    if (!pendingAssistant) {
+      pendingAssistant = message;
+      return;
+    }
+    if (typeof pendingAssistant.content === "string" && typeof message.content === "string") {
+      pendingAssistant.content = [pendingAssistant.content, message.content].filter(Boolean).join("\\n");
+      return;
+    }
+    flushAssistant();
+    pendingAssistant = message;
+  };
+  const flushTools = () => {
+    if (pendingAssistant || pendingToolCalls.length) flushAssistant();
+    else pendingReasoning = "";
+  };''', 1),
+    ('''      case "message":
+      case undefined: {
+        flushTools();
+        const role = item.role === "developer" ? "system" : item.role ?? "user";''',
+     '''      case "message":
+      case undefined: {
+        const role = item.role === "developer" ? "system" : item.role ?? "user";
+        if (role !== "assistant") flushTools();''', 1),
+]
+
+
+def patched_reasoning(source):
+    markers = [MISSING_REASONING, "let pendingAssistant = null;", 'if (role !== "assistant") flushTools();']
+    if all(marker in source for marker in markers):
+        return source
+    if any(marker in source for marker in markers):
+        raise ValueError("reasoning_content修正が部分的に適用されています。何も更新していません")
+    for old, new, count in REASONING_REPLACEMENTS:
+        if source.count(old) != count:
+            raise ValueError("本番ブリッジのreasoning_content変換が想定と異なります。何も更新していません")
+        source = source.replace(old, new)
+    return source
+
 
 def patched_source(source):
     if IMPORT in source:
         if all(source.count(new) == count for _old, new, count in REPLACEMENTS):
-            return source
+            return patched_reasoning(source)
         raise ValueError("部分的な変更または未対応の版です。何も更新していません")
     for old, new, count in REPLACEMENTS:
         if source.count(old) != count:
             raise ValueError("本番ブリッジの形式が想定と異なります。何も更新していません")
         source = source.replace(old, new)
-    return source
+    return patched_reasoning(source)
 
 
 def prepare(target):

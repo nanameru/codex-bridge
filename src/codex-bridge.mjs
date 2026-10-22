@@ -196,6 +196,31 @@ function dump(body) {
 
 // ------------------------------------------------------------ 変換
 
+const REASONING_PREFIX = "cxb1:";
+const MISSING_REASONING = "[previous reasoning content unavailable]";
+
+function encodeReasoning(text) {
+  return REASONING_PREFIX + Buffer.from(text, "utf8").toString("base64url");
+}
+
+function decodeReasoning(encrypted) {
+  if (typeof encrypted !== "string" || !encrypted.startsWith(REASONING_PREFIX)) return "";
+  try {
+    return Buffer.from(encrypted.slice(REASONING_PREFIX.length), "base64url").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function reasoningTextOf(item) {
+  const fromEncrypted = decodeReasoning(item.encrypted_content);
+  if (fromEncrypted) return fromEncrypted;
+  const parts = [];
+  for (const summary of item.summary ?? []) if (summary?.text) parts.push(summary.text);
+  if (parts.length === 0) for (const content of item.content ?? []) if (content?.text) parts.push(content.text);
+  return parts.join("\n");
+}
+
 /** Responses API の input → chat/completions の messages */
 function toChatMessages(body) {
   const sys = [];
@@ -209,19 +234,51 @@ function toChatMessages(body) {
     return msgs;
   }
 
+  const thinkingEnabled = reasoningOptions(body.model ?? DEFAULT_MODEL, body.reasoning?.effort).thinking?.type === "enabled";
   const pendingToolCalls = [];
-  const flushTools = () => {
-    if (pendingToolCalls.length) {
-      msgs.push({ role: "assistant", content: null, tool_calls: pendingToolCalls.splice(0) });
+  let pendingAssistant = null;
+  let pendingReasoning = "";
+  const flushAssistant = () => {
+    if (!pendingAssistant && pendingToolCalls.length === 0) {
+      pendingReasoning = "";
+      return;
     }
+    const message = pendingAssistant ?? { role: "assistant", content: pendingToolCalls.length ? null : "" };
+    if (pendingToolCalls.length) message.tool_calls = pendingToolCalls.splice(0);
+    if (pendingReasoning) message.reasoning_content = pendingReasoning;
+    else if (thinkingEnabled) message.reasoning_content = MISSING_REASONING;
+    pendingReasoning = "";
+    pendingAssistant = null;
+    msgs.push(message);
+  };
+  const pushAssistant = (message) => {
+    if (!pendingAssistant) {
+      pendingAssistant = message;
+      return;
+    }
+    if (typeof pendingAssistant.content === "string" && typeof message.content === "string") {
+      pendingAssistant.content = [pendingAssistant.content, message.content].filter(Boolean).join("\n");
+      return;
+    }
+    flushAssistant();
+    pendingAssistant = message;
+  };
+  const flushTools = () => {
+    if (pendingAssistant || pendingToolCalls.length) flushAssistant();
+    else pendingReasoning = "";
   };
 
   for (const item of input ?? []) {
     switch (item.type) {
+      case "reasoning": {
+        const text = reasoningTextOf(item);
+        if (text) pendingReasoning = pendingReasoning ? `${pendingReasoning}\n${text}` : text;
+        break;
+      }
       case "message":
       case undefined: {
-        flushTools();
         const role = item.role === "developer" ? "system" : item.role ?? "user";
+        if (role !== "assistant") flushTools();
         if (Array.isArray(item.content)) {
           const parts = [];
           for (const c of item.content) {
@@ -236,16 +293,22 @@ function toChatMessages(body) {
           if (hasImage) {
             // 画像があるときはマルチモーダル形式で送る
             const txt = parts.filter((x) => x.type === "text").map((x) => x.text).join("\n");
-            msgs.push({
+            const message = {
               role,
               content: [...(txt ? [{ type: "text", text: txt }] : []),
                         ...parts.filter((x) => x.type === "image_url")],
-            });
+            };
+            if (role === "assistant") pushAssistant(message);
+            else msgs.push(message);
           } else {
-            msgs.push({ role, content: parts.map((x) => x.text).filter(Boolean).join("\n") });
+            const message = { role, content: parts.map((x) => x.text).filter(Boolean).join("\n") };
+            if (role === "assistant") pushAssistant(message);
+            else msgs.push(message);
           }
         } else {
-          msgs.push({ role, content: String(item.content ?? "") });
+          const message = { role, content: String(item.content ?? "") };
+          if (role === "assistant") pushAssistant(message);
+          else msgs.push(message);
         }
         break;
       }
@@ -300,6 +363,14 @@ function toResponsesPayload(chat, model) {
   const msg = choice?.message ?? {};
   const output = [];
 
+  if (msg.reasoning_content) {
+    output.push({
+      type: "reasoning",
+      id: `rs_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
+      summary: [],
+      encrypted_content: encodeReasoning(msg.reasoning_content),
+    });
+  }
   if (msg.content) {
     output.push({
       type: "message",
@@ -372,17 +443,33 @@ async function pipeStream(upstreamRes, res, model, threadId) {
     response: { id: respId, object: "response", created_at: createdAt, status: "in_progress", model, output: [] },
   });
 
+  let nextIdx = 0;
   let textIdx = 0;
   let textStarted = false;
   let fullText = "";
+  let reasoningIdx = -1;
+  let reasoningId = null;
+  let fullReasoning = "";
   let lastUsage = null;
   const toolCalls = new Map(); // index -> {id,name,args}
   const decoder = new TextDecoder();
   let buf = "";
 
+  const startReasoning = () => {
+    if (reasoningIdx >= 0) return;
+    reasoningIdx = nextIdx++;
+    reasoningId = `rs_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    sse(res, "response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: reasoningIdx,
+      item: { type: "reasoning", id: reasoningId, summary: [] },
+    });
+  };
+
   const startText = () => {
     if (textStarted) return;
     textStarted = true;
+    textIdx = nextIdx++;
     sse(res, "response.output_item.added", {
       type: "response.output_item.added",
       output_index: textIdx,
@@ -420,6 +507,11 @@ async function pipeStream(upstreamRes, res, model, threadId) {
       if (chunk.usage) lastUsage = chunk.usage;
       const delta = chunk.choices?.[0]?.delta;
       if (!delta) continue;
+
+      if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+        startReasoning();
+        fullReasoning += delta.reasoning_content;
+      }
 
       if (typeof delta.content === "string" && delta.content.length > 0) {
         startText();
@@ -480,7 +572,7 @@ async function pipeStream(upstreamRes, res, model, threadId) {
   }
 
   // ツール呼び出しを閉じる
-  let idx = textIdx + 1;
+  let idx = nextIdx;
   for (const [i, tc] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
     const itemId = `fc_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const item = {
@@ -491,6 +583,21 @@ async function pipeStream(upstreamRes, res, model, threadId) {
     sse(res, "response.output_item.done", { type: "response.output_item.done", output_index: idx, item });
     output.push(item);
     idx++;
+  }
+
+  if (reasoningIdx >= 0) {
+    const item = {
+      type: "reasoning",
+      id: reasoningId,
+      summary: [],
+      encrypted_content: encodeReasoning(fullReasoning),
+    };
+    sse(res, "response.output_item.done", {
+      type: "response.output_item.done",
+      output_index: reasoningIdx,
+      item,
+    });
+    output.unshift(item);
   }
 
   if (lastUsage) recordUsage(threadId, model, lastUsage.prompt_tokens ?? 0, lastUsage.completion_tokens ?? 0);

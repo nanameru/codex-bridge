@@ -49,7 +49,9 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
   旧版が保存した不整合なIDは通常送信・圧縮・引き継ぎ要約の送信時に補正するため、履歴ファイルの編集は不要です。
   OpenCodeのストリームではreasoning完了をassistant項目の完了より先に渡します。
   旧ストリームでreasoningが後置された履歴も送信時に並べ直し、説明文とツール呼び出しの
-  両方へ既存の推論データを引き継ぎます。保存済み会話は変更せず、推論内容の捏造は行いません。
+  両方へ既存の推論データを引き継ぎます。本文とツール呼び出しは1つのassistantメッセージへ統合し、
+  DeepSeek thinkingモードで推論データが欠けたGPT履歴にはプロトコル互換マーカーを補います。
+  実reasoningがある場合はそれを優先し、保存済み会話は変更しません。
   画像、組込みツール、コンテキスト長などは各モデル・providerの対応範囲に従います。
 - OpenAIの暗号化された圧縮履歴からOpenCodeへ切り替えるときは、その会話の圧縮部分だけを
   GPT-6.1 Solで通常の引き継ぎ要約に戻してから渡します。最初の切替には追加のOpenAI呼び出しと
@@ -467,7 +469,7 @@ repoの旧ブリッジで丸ごと置き換えないでください。専用ス�
 
 ```bash
 python3 scripts/patch_legacy_bridge.py ~/home-runner/bridge/codex-bridge.mjs
-LEGACY_BRIDGE_SOURCE=~/home-runner/bridge/codex-bridge.mjs node --test test/bridge-transport.test.mjs
+LEGACY_BRIDGE_SOURCE=~/home-runner/bridge/codex-bridge.mjs node --test test/bridge-transport.test.mjs test/bridge-reasoning.test.mjs
 ```
 
 前者は確認のみ、後者は一時コピーを更新して模擬上流で検証し、本番ファイルには触れません。

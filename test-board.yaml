@@ -16,6 +16,17 @@ cases:
     test_file: test/tool-adapter.test.mjs
     issues: [23]
     notes: "型とIDの双方向変換、call_idと元入力の保持、冪等性、通常function保持。HTTPはtest/model-router.test.mjs、要約はtest/compaction-handoff.test.mjsで検証。修正前4件失敗を確認。"
+  - id: TC-020
+    title: "DeepSeek thinkingモード: GPT履歴切替後のreasoning_content欠落を防ぐ"
+    feature: "DeepSeek thinkingモード"
+    scenario: "assistant本文とtool_callsを統合し、thinking有効時だけ欠落reasoningへ互換マーカーを補い、実reasoningを暗号化往復する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/codex-bridge.mjs, scripts/patch_legacy_bridge.py]
+    test_file: test/bridge-reasoning.test.mjs
+    issues: [27]
+    notes: "GPT履歴にreasoningがない混在履歴、本文+tool_callsの統合、thinking無効時の非付与、通常/SSEのcxb1往復を検証。本番home-runner版はpatch scriptの一時コピーで同じ4件を確認。"
   - id: TC-014
     title: "/modelの先頭: DeepSeek V4.1 FlashとGPT-6.1を固定する"
     feature: "モデル一覧の並び順"
