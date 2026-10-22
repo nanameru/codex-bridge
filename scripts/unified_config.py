@@ -278,8 +278,10 @@ def main():
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if arguments.mode == "transports":
         update_transports(root)
+        return
     elif arguments.mode == "normal-on":
         activate_normal(root, arguments.port)
+        return
     elif arguments.mode == "prepare":
         print(prepare(root, Path(__file__).resolve().parents[1]))
         return

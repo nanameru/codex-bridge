@@ -106,6 +106,14 @@ class UnifiedConfigTests(unittest.TestCase):
             {"slug": "opencode/deepseek-v4.1-flash", "router_provider": "opencode", "router_transport": "responses"}]}))
         return {"direct_header": "x-codex-bridge-direct", "direct_models": ["opencode/deepseek-v4.1-flash"]}
 
+    def test_new_cli_modes_never_fall_through_to_legacy_on_off(self):
+        for mode, function in [("normal-on", "activate_normal"), ("transports", "update_transports")]:
+            with mock.patch.object(sys, "argv", ["unified_config.py", mode]), mock.patch.object(
+                    unified_config, function) as selected, mock.patch.object(unified_config, "configure") as legacy:
+                unified_config.main()
+            selected.assert_called_once()
+            legacy.assert_not_called()
+
     def test_transport_migration_keeps_all_native_model_metadata_unchanged(self):
         path = self.root / "unified-model-catalog.json"
         native = {"slug": "gpt-native", "router_provider": "openai", "custom": {"preserve": True}, "context_window": 500000}
