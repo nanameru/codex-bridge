@@ -11,8 +11,8 @@ python3 scripts/direct_codex.py configure
 ~/.codex/bin/codex-opencode
 ```
 
-`opencode-go-direct`という独立したprovider/profileを追加します。既定モデル、既存チャット、
-profileは`~/.codex/opencode-go-direct.config.toml`に保存します。
+`opencode-go-direct`という独立したprovider/profileを追加し、
+`~/.codex/opencode-go-direct.config.toml`に保存します。既定モデル、既存チャット、
 実行中のrouterは変更しません。APIキーは`OPENCODE_API_KEY`、または
 `~/.local/share/opencode/auth.json`の`opencode-go`に保存したAPIキーを利用し、
 子プロセスの環境変数へ渡します。ログインDB/OAuthは読みません。キーをチャットやGitへ記録しないでください。
