@@ -1,5 +1,53 @@
 # codex-bridge
 
+## 公式Responsesへ直接接続する（対応モデル向け）
+
+OpenCode Goの公式案内でResponsesに対応するDeepSeek V4、GPT、Grok、Muse Sparkは、
+独自のchat/completions変換を使わずCodexから接続できます。
+根拠: https://opencode.ai/v2/docs/console/harnesses/codex/
+
+```bash
+python3 scripts/direct_codex.py configure
+~/.codex/bin/codex-opencode
+```
+
+`opencode-go-direct`という独立したprovider/profileを追加し、
+`~/.codex/opencode-go-direct.config.toml`に保存します。既定モデル、既存チャット、
+実行中のrouterは変更しません。APIキーは`OPENCODE_API_KEY`、または
+`~/.local/share/opencode/auth.json`の`opencode-go`に保存したAPIキーを利用し、
+子プロセスの環境変数へ渡します。ログインDB/OAuthは読みません。キーをチャットやGitへ記録しないでください。
+
+このprofileの経路は`Codex → OpenCode公式Responses API`です。通常の履歴圧縮は
+Codex標準のlocal compactionが選択モデルへ依頼します。独自routerのGPT要約・ツール変換・
+推定トークン上限チェックを通りません。OpenCode側の利用上限はそのまま適用されます。
+直接接続でのremote `/responses/compact`は検証時404だったため利用しません。
+
+既存のOpenAI暗号化履歴やBridge固有の推論履歴の自動移行は保証しません。
+新しいチャットから使い、移行のために履歴を削除したりGPTへ自動フォールバックしたりはしません。
+未対応モデルは従来のBridge経路に残ります。
+
+### 通常の`codex`コマンドと統合モデル一覧で使う
+
+既定モデルが`opencode/deepseek-v4.1-flash`など公式Responses対応のOpenCodeモデルの場合は、
+次の順に通常起動へ有効化できます。実行中の接続は強制停止しません。
+
+```bash
+python3 scripts/unified_config.py transports
+python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
+python3 scripts/unified_config.py normal-on
+codex
+```
+
+新しい統合チャットはcustom providerの標準local compactionを使います。
+`/model`の統合一覧は維持し、公式対応モデルは直接転送、未対応モデルは従来変換を使います。
+その統合チャットでGPTへ切り替えた場合もlocal compactionで選択したGPTが要約します。
+保存済みのOpenAI providerスレッドは書換えません。
+
+新しいprovider設定が付ける`x-codex-bridge-direct: 1`がない既存接続は旧転送のまま保護します。
+実行中のTUIには設定変更が遡及しないため、同じタブで一度終了して`codex`を起動してください。
+旧履歴を含む`codex resume`の自動移行や、暗号化履歴を含む同一スレッドの提供元切替は保証しません。
+`transports`は既存カタログのOpenCode転送形式だけを更新し、GPTのモデル設定や順序を変えません。
+
 ## 同じチャットで GPT ↔ OpenCode を切り替える（統合モード）
 
 モデル名で送信先を選ぶ共通routerを使用できます。GPTはOpenAIへ、
@@ -286,9 +334,23 @@ stream_idle_timeout_ms = 300000   # 思考中の無音で切断されないよ�
 
 OpenCode経路では、ツール定義・instructions・会話履歴を合わせた推定入力トークンを
 リクエスト単位で記録します。`OPENCODE_SOFT_LIMIT_TOKENS`（既定900,000）を超えると
-`budget_warning` を記録し、`OPENCODE_HARD_LIMIT_TOKENS`（既定1,000,000）を超えると
-上流へ送らず413と対処方法を返します。推定値はASCII/非ASCIIを考慮した保守的な値で、
-必要に応じて環境変数で調整できます。
+古い完了履歴を既存のOpenAI接続で自動要約し、再計測します。ツール定義・指示・最新の
+2ユーザーターン（2ターンしかない場合は最新1ターン）と進行中のツール実行は保持し、
+元の保存履歴は編集しません。同じ履歴の要約は会話・認証ごとに再利用します。
+ユーザーターン境界だけでは収まらない長い作業では、完了したツール交換の境界まで要約対象を
+広げます。この場合も直近2件のユーザー依頼を原文で保持し、並列ツールの途中や未完了の
+呼び出しは分断しません。固定入力だけで上限を超える場合は停止します。
+予算回復の追加要約は1要求につき最大1回で、既存の暗号化圧縮履歴を展開した要求には重ねません。
+暗号化圧縮履歴がある場合は、必要に応じて最初の要約範囲を古い完了ターンまで広げます。
+必要な場合だけOpenAIへの要約要求が発生します。
+この要約は既存のOpenAI認証と`gpt-6.1-sol`（既定）を利用するため、DeepSeek選択中でも
+OpenAI側の利用枠を消費します。履歴要約キャッシュのhitは、OpenCode側の入力キャッシュhitを意味しません。
+`OPENCODE_AUTO_BUDGET_HANDOFF=0` で自動要約を無効にできます。
+ツール定義や最新入力だけで大きすぎる場合など、要約後も
+`OPENCODE_HARD_LIMIT_TOKENS`（既定1,000,000）を超えると、OpenCodeへ送らず413を返します。
+要約が失敗した場合も履歴を捨てず停止します。再計測後もsoft limit超過なら`budget_warning`を記録します。
+推定値はASCII/非ASCIIを考慮した保守的な値で、必要に応じて環境変数で調整できます。
+soft limitがhard limitを超える設定ではhard limitを回復開始点とし、`budget_limit_clamped`を記録します。
 
 `src/models.json` がモデルの定義元です。
 

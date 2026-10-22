@@ -14,6 +14,9 @@ ROOT_KEYS = ("openai_base_url", "model_catalog_json")
 BRIDGE_KEYS = ("base_url", "requires_openai_auth", "wire_api")
 BRIDGE_TABLE = ("model_providers", "codex-bridge")
 PINNED_MODELS = ("opencode/deepseek-v4.1-flash", "gpt-6.1-sol")
+DIRECT_RESPONSES_MODELS = frozenset(("deepseek-v4.1-flash", "deepseek-v4-pro", "gpt-6-luna",
+                                   "gpt-5.6-luna", "grok-4.7", "muse-spark-1.2-contributor",
+                                   "muse-spark-1.3-contributor"))
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])")
 UNSAFE_TEXT = re.compile(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 MODEL_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -137,7 +140,8 @@ def prepare(root, source_root):
         name = clean_text(model.get("display_name"), 120, slug)
         safe = {**model, "slug": "opencode/" + slug,
                 "display_name": "OpenCode · " + name,
-                "router_provider": "opencode", "router_model": slug}
+                "router_provider": "opencode", "router_model": slug,
+                "router_transport": "responses" if slug in DIRECT_RESPONSES_MODELS else "chat"}
         if "description" in safe:
             safe["description"] = clean_text(safe.get("description"), 500, "")
         models.append(safe)
@@ -212,13 +216,73 @@ def configure(root, mode, port):
     print("既存アプリや実行中の処理は再起動しません。開いているチャットは完了後に開き直してください。")
 
 
+def update_transports(root):
+    path = root / "unified-model-catalog.json"
+    source = path.read_text()
+    catalog = json.loads(source)
+    for model in catalog["models"]:
+        if model.get("router_provider") == "opencode":
+            model["router_transport"] = "responses" if model.get("router_model") in DIRECT_RESPONSES_MODELS else "chat"
+    candidate = json.dumps(catalog, ensure_ascii=False)
+    if json.loads(source) == catalog:
+        return
+    if path.is_symlink() or path.read_text() != source:
+        raise ValueError("カタログが変更されたかリンクです。再確認してください")
+    import tempfile
+    descriptor, backup_path = tempfile.mkstemp(prefix="unified-model-catalog.json.bak.transports.", dir=root)
+    with os.fdopen(descriptor, "w") as backup:
+        backup.write(source)
+    atomic_write(path, candidate)
+    print(f"カタログのバックアップ: {backup_path}")
+
+
+def activate_normal(root, port):
+    path = root / "config.toml"
+    source = path.read_text()
+    parsed = tomllib.loads(source)
+    catalog = json.loads((root / "unified-model-catalog.json").read_text())
+    model = next((model for model in catalog["models"] if model["slug"] == parsed.get("model")), None)
+    if not model or model.get("router_provider") != "opencode" or model.get("router_transport") != "responses":
+        raise ValueError("通常起動の既定モデルが公式Responses対応のOpenCodeモデルではありません。変更しません")
+    if parsed.get("model_provider") not in (None, "openai", "codex-bridge"):
+        raise ValueError("独自の既定providerは変更しません")
+    provider = parsed.get("model_providers", {}).get("codex-bridge", {})
+    if (provider.get("base_url") != f"http://127.0.0.1:{port}/v1" or provider.get("name") in (None, "OpenAI")
+            or provider.get("requires_openai_auth") is not True or provider.get("wire_api") != "responses"
+            or provider.get("http_headers", {}).get("x-codex-bridge-direct") not in (None, "1")):
+        raise ValueError("標準local compactionを使う統合providerの設定を確認してください")
+    with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
+        health = json.load(response)
+    if health.get("direct_header") != "x-codex-bridge-direct" or model["slug"] not in health.get("direct_models", []):
+        raise ValueError("先に公式直接転送対応routerを起動してください")
+    candidate = edit_table(source, (), {"model_provider": "codex-bridge"})
+    candidate = edit_table(candidate, ("model_providers", "codex-bridge", "http_headers"), {"x-codex-bridge-direct": "1"})
+    if tomllib.loads(candidate) == parsed:
+        return
+    if path.is_symlink() or path.read_text() != source:
+        raise ValueError("設定が変更されたかリンクです。再確認してください")
+    import tempfile
+    descriptor, backup_path = tempfile.mkstemp(prefix="config.toml.bak.normal-direct.", dir=root)
+    with os.fdopen(descriptor, "w") as backup:
+        backup.write(source)
+    atomic_write(path, candidate, path.stat().st_mode & 0o777)
+    print(f"バックアップ: {backup_path}")
+    print("通常のcodex起動で公式接続を有効にしました。既存スレッドは変更していません。実行中のTUIは同じタブで再起動してください。")
+
+
 def main():
     parser = argparse.ArgumentParser(description="同じチャットで双方向にモデルを切り替える設定")
-    parser.add_argument("mode", choices=["prepare", "on", "off"])
+    parser.add_argument("mode", choices=["prepare", "on", "off", "transports", "normal-on"])
     parser.add_argument("--port", type=int, default=8790)
     arguments = parser.parse_args()
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
-    if arguments.mode == "prepare":
+    if arguments.mode == "transports":
+        update_transports(root)
+        return
+    elif arguments.mode == "normal-on":
+        activate_normal(root, arguments.port)
+        return
+    elif arguments.mode == "prepare":
         print(prepare(root, Path(__file__).resolve().parents[1]))
         return
     import fcntl

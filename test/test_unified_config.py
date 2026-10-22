@@ -98,6 +98,66 @@ class UnifiedConfigTests(unittest.TestCase):
         self.assertEqual(after["instructions"], before["instructions"])
         self.assertEqual(after["model_providers"]["codex-bridge"]["base_url"], "new")
 
+    def normal_setup(self):
+        self.path.write_text('model="opencode/deepseek-v4.1-flash"\n[model_providers.codex-bridge]\n'
+                             'name="Codex Bridge"\nbase_url="http://127.0.0.1:8790/v1"\n'
+                             'requires_openai_auth=true\nwire_api="responses"\n')
+        (self.root / "unified-model-catalog.json").write_text(json.dumps({"models": [
+            {"slug": "opencode/deepseek-v4.1-flash", "router_provider": "opencode", "router_transport": "responses"}]}))
+        return {"direct_header": "x-codex-bridge-direct", "direct_models": ["opencode/deepseek-v4.1-flash"]}
+
+    def test_new_cli_modes_never_fall_through_to_legacy_on_off(self):
+        for mode, function in [("normal-on", "activate_normal"), ("transports", "update_transports")]:
+            with mock.patch.object(sys, "argv", ["unified_config.py", mode]), mock.patch.object(
+                    unified_config, function) as selected, mock.patch.object(unified_config, "configure") as legacy:
+                unified_config.main()
+            selected.assert_called_once()
+            legacy.assert_not_called()
+
+    def test_transport_migration_keeps_all_native_model_metadata_unchanged(self):
+        path = self.root / "unified-model-catalog.json"
+        native = {"slug": "gpt-native", "router_provider": "openai", "custom": {"preserve": True}, "context_window": 500000}
+        legacy = {"slug": "opencode/hy4-preview", "router_model": "hy4-preview", "router_provider": "opencode"}
+        direct = {"slug": "opencode/deepseek-v4.1-flash", "router_model": "deepseek-v4.1-flash", "router_provider": "opencode"}
+        path.write_text(json.dumps({"models": [native, legacy, direct], "version": 7}))
+        unified_config.update_transports(self.root)
+        result = json.loads(path.read_text())
+        self.assertEqual(result["version"], 7)
+        self.assertEqual(result["models"][0], native)
+        self.assertEqual(result["models"][1], {**legacy, "router_transport": "chat"})
+        self.assertEqual(result["models"][2], {**direct, "router_transport": "responses"})
+        unified_config.update_transports(self.root)
+        self.assertEqual(len(list(self.root.glob("unified-model-catalog.json.bak.transports.*"))), 1)
+
+    def test_normal_codex_uses_custom_provider_for_standard_local_compaction(self):
+        health = self.normal_setup()
+        source = self.path.read_text()
+        with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO(json.dumps(health))):
+            unified_config.activate_normal(self.root, 8790)
+        config = tomllib.loads(self.path.read_text())
+        self.assertEqual(config["model_provider"], "codex-bridge")
+        self.assertEqual(config["model"], "opencode/deepseek-v4.1-flash")
+        self.assertEqual(config["model_providers"]["codex-bridge"]["http_headers"], {"x-codex-bridge-direct": "1"})
+        backups = list(self.root.glob("config.toml.bak.normal-direct.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), source)
+        with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO(json.dumps(health))):
+            unified_config.activate_normal(self.root, 8790)
+        self.assertEqual(len(list(self.root.glob("config.toml.bak.normal-direct.*"))), 1)
+
+    def test_normal_activation_refuses_old_router_native_default_and_custom_provider(self):
+        for kind in ["old-router", "native-model", "custom-provider"]:
+            self.normal_setup()
+            if kind == "native-model":
+                self.path.write_text(self.path.read_text().replace('model="opencode/deepseek-v4.1-flash"', 'model="gpt-6.1-sol"'))
+            if kind == "custom-provider":
+                self.path.write_text('model_provider="custom"\n' + self.path.read_text())
+            before = self.path.read_bytes()
+            with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO('{}')):
+                with self.assertRaises(ValueError):
+                    unified_config.activate_normal(self.root, 8790)
+            self.assertEqual(self.path.read_bytes(), before)
+
     def test_prepares_namespaced_catalog_without_overwriting_sources(self):
         native = {"models": [{"slug": "gpt-test", "display_name": "GPT"}]}
         opencode = {"models": [{"slug": "gpt-test", "display_name": "Go GPT"}]}
@@ -136,6 +196,21 @@ class UnifiedConfigTests(unittest.TestCase):
         self.assertEqual([model["slug"] for model in result],
                          ["opencode/deepseek-v4.1-flash", "gpt-other"])
         self.assertEqual([model["priority"] for model in result], [1, 2])
+
+    def test_only_officially_supported_models_use_direct_responses(self):
+        slugs = ["deepseek-v4.1-flash", "deepseek-v4-pro", "grok-4.7", "gpt-6-luna", "hy4-preview"]
+        (self.root / "models_cache.json").write_text(json.dumps({"models": [{"slug": "gpt-native"}]}))
+        (self.root / "model-catalog.json").write_text(json.dumps({"models": [
+            {"slug": slug, "router_transport": "responses"} for slug in slugs]}))
+        source = self.root / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src/models.json").write_text(json.dumps({"models": [{"id": slug} for slug in slugs]}))
+        models = json.loads(unified_config.prepare(self.root, source).read_text())["models"]
+        routes = {model["slug"]: model.get("router_transport") for model in models}
+        self.assertIsNone(routes["gpt-native"])
+        for slug in slugs[:-1]:
+            self.assertEqual(routes["opencode/" + slug], "responses")
+        self.assertEqual(routes["opencode/hy4-preview"], "chat")
 
     def test_prepare_sanitizes_display_text_and_rejects_bad_ids(self):
         native = {"models": [{"slug": "gpt-test", "display_name": "GPT\u001b[31mX"}]}

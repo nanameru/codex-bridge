@@ -13,7 +13,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
   const lastUser = body.input?.findLastIndex((item) => item.role === "user") ?? -1;
   const current = body.input?.slice(lastUser + 1) ?? [];
   const hasToolOutput = current.some((item) => item.type === "function_call_output");
-  if (toolMode && provider === "opencode" && hasToolOutput) {
+  if (toolMode && process.env.MOCK_DIRECT_RESPONSES !== "1" && provider === "opencode" && hasToolOutput) {
     let reasoning = false;
     for (const item of current) {
       if (item.type === "reasoning") reasoning = item.encrypted_content?.startsWith("cxb1:");
@@ -25,10 +25,10 @@ const mock = (provider) => http.createServer(async (request, response) => {
       else if (item.role === "assistant") reasoning = false;
     }
   }
-  calls.push({ provider, model: body.model, inputItems: body.input?.length ?? 0,
+  calls.push({ provider, path: request.url, model: body.model, inputItems: body.input?.length ?? 0,
     inputTypes: body.input?.map((item) => item.type), previousResponse: Boolean(body.previous_response_id),
     reasoningProviders: body.input?.filter((item) => item.type === "reasoning").map((item) => item.encrypted_content?.startsWith("cxb1:") ? "opencode" : "openai"),
-    hasNativeAuth: Boolean(request.headers.authorization) });
+    hasNativeAuth: Boolean(request.headers.authorization) && request.headers.authorization !== "Bearer mock-opencode-key" });
   const identifier = "resp_mock_" + calls.length;
   const reasoning = { id: "rs_" + calls.length, type: "reasoning", summary: [],
     encrypted_content: provider === "openai" ? "fake-native-encrypted" : "cxb1:ZmFrZQ" };
@@ -76,7 +76,9 @@ async function bind(server) {
 
 const native = mock("openai");
 const bridge = mock("opencode");
-const router = createRouter({ catalog, nativeBase: await bind(native), bridgeBase: await bind(bridge), allowTestOrigins: true });
+const bridgeBase = await bind(bridge);
+const router = createRouter({ catalog, nativeBase: await bind(native), bridgeBase, openCodeBase: bridgeBase,
+  openCodeKey: () => "mock-opencode-key", allowTestOrigins: true });
 const url = await bind(router);
 process.stdout.write(JSON.stringify({ url }) + "\n");
 process.stdin.on("data", () => process.stdout.write(JSON.stringify({ calls }) + "\n"));

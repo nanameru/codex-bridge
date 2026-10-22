@@ -3,12 +3,16 @@ import http from "node:http";
 import { once } from "node:events";
 import test from "node:test";
 import * as zlib from "node:zlib";
-import { catalogRoutes, createRouter, estimateInputTokens, routedBody } from "../src/model-router.mjs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { catalogRoutes, createRouter, estimateInputTokens, readOpenCodeKey, routedBody } from "../src/model-router.mjs";
 
 const catalog = { models: [
   { slug: "gpt-test", router_provider: "openai" },
   { slug: "opencode/deepseek-test", router_provider: "opencode", router_model: "deepseek-test" },
   { slug: "opencode/gpt-test", router_provider: "opencode", router_model: "gpt-test" },
+  { slug: "opencode/direct-test", router_provider: "opencode", router_model: "direct-test", router_transport: "responses" },
 ] };
 
 async function listen(server) {
@@ -36,15 +40,99 @@ async function fixture(context, options = {}) {
   const bridge = upstream("opencode");
   const nativeBase = await listen(native);
   const bridgeBase = await listen(bridge);
-  const router = createRouter({ catalog, nativeBase, bridgeBase, allowTestOrigins: true, ...options });
+  const router = createRouter({ catalog, nativeBase, bridgeBase, openCodeBase: bridgeBase,
+    openCodeKey: () => "fake-opencode-key", allowTestOrigins: true, ...options });
   const base = await listen(router);
   context.after(async () => { await close(router); await close(native); await close(bridge); });
   const send = (body, headers = {}) => fetch(base + "/responses", {
-    method: "POST", headers: { authorization: "Bearer fake-native-token", "content-type": "application/json", ...headers },
+    method: "POST", headers: { authorization: "Bearer fake-native-token", "content-type": "application/json",
+      "x-codex-bridge-direct": "1", ...headers },
     body: JSON.stringify(body),
   });
   return { calls, base, send };
 }
+
+test("direct authentication uses API keys only and never extracts login credentials", (context) => {
+  const home = mkdtempSync(join(tmpdir(), "direct-auth-"));
+  context.after(() => rmSync(home, { recursive: true, force: true }));
+  const directory = join(home, ".local/share/opencode");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "opencode.db"), "DO NOT READ LOGIN CREDENTIALS");
+  writeFileSync(join(directory, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "test-api" } }));
+  const options = { home, environment: {} };
+  assert.equal(readOpenCodeKey(options), "test-api");
+  assert.equal(readOpenCodeKey({ ...options, environment: { OPENCODE_API_KEY: "test-override" } }), "test-override");
+  writeFileSync(join(directory, "auth.json"), "{}");
+  assert.equal(readOpenCodeKey(options), null);
+});
+
+test("official Responses bypasses conversion, GPT summaries and heuristic budget rejection", async (context) => {
+  const { calls, send, base } = await fixture(context, { opencodeSoftLimitTokens: 1, opencodeHardLimitTokens: 1 });
+  const body = { model: "opencode/direct-test", prompt_cache_key: "thread-direct", instructions: "constraints",
+    reasoning: { effort: "high" }, previous_response_id: "resp_previous", stream: true,
+    tools: [{ type: "custom", name: "exec", format: { type: "text" } }], input: [
+      { type: "compaction", encrypted_content: "provider-owned-history" },
+      { type: "reasoning", encrypted_content: "native-reasoning", summary: [] },
+      { type: "custom_tool_call", call_id: "call_tool", name: "exec", input: "read file" },
+      { type: "custom_tool_call_output", call_id: "call_tool", output: "x".repeat(10000) },
+      { role: "user", content: "continue" },
+    ] };
+  const response = await send(body, { "chatgpt-account-id": "private-account", session_id: "session-direct" });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].provider, "opencode");
+  assert.deepEqual(calls[0].body, { ...body, model: "direct-test" });
+  assert.equal(calls[0].headers.authorization, "Bearer fake-opencode-key");
+  assert.equal(calls[0].headers["chatgpt-account-id"], undefined);
+  assert.equal(calls[0].headers.session_id, "session-direct");
+  assert.equal(calls[0].headers["x-opencode-session"], "session-direct");
+  const compact = await fetch(base + "/responses/compact", { method: "POST",
+    headers: { authorization: "Bearer native-token", "content-type": "application/json", "x-codex-bridge-direct": "1" }, body: JSON.stringify(body) });
+  assert.equal(compact.status, 200, await compact.text());
+  assert.equal(calls[1].path, "/v1/responses/compact");
+  assert.deepEqual(calls[1].body, { ...body, model: "direct-test" });
+});
+
+test("direct Responses fails closed without OpenCode credentials and never falls back to GPT", async (context) => {
+  const { calls, send } = await fixture(context, { openCodeKey: () => null });
+  const response = await send({ model: "direct-test", input: [{ type: "compaction", encrypted_content: "opaque" }] });
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /opencode_auth_required/);
+  assert.equal(calls.length, 0);
+});
+
+test("existing sessions without the direct marker keep their legacy transport", async (context) => {
+  const { calls, send } = await fixture(context);
+  const response = await send({ model: "direct-test", tools: [{ type: "custom", name: "exec" }] }, { "x-codex-bridge-direct": "" });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].headers.authorization, undefined);
+  assert.equal(calls[0].body.tools[0].type, "function");
+});
+
+test("direct Responses preserves native custom events and upstream failures without fallback", async (context) => {
+  const event = 'data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"ctc_native","call_id":"native","name":"exec","input":"read file"}}\n\n';
+  for (const status of [200, 400, 429, 302]) {
+    let count = 0;
+    const { send } = await fixture(context, { fetcher: async (_url, options) => {
+      count++;
+      assert.equal(options.headers.authorization, "Bearer fake-opencode-key");
+      assert.equal(options.redirect, "manual");
+      return new Response(status === 200 ? event : "upstream-error", { status,
+        headers: { "content-type": "text/event-stream", "retry-after": "5", location: "https://example.org/" } });
+    } });
+    const response = await send({ model: "direct-test", tools: [{ type: "custom", name: "exec" }] });
+    assert.equal(response.status, status === 302 ? 502 : status);
+    const text = await response.text();
+    if (status === 200) assert.equal(text, event);
+    if (status === 400 || status === 429) {
+      assert.equal(text, "upstream-error");
+      assert.equal(response.headers.get("retry-after"), "5");
+    }
+    assert.equal(count, 1);
+  }
+  assert.throws(() => createRouter({ catalog, openCodeBase: "https://example.org/v1" }), /公式origin/);
+});
 
 test("routes both switching directions without changing thread metadata or messages", async (context) => {
   const { calls, send } = await fixture(context);
@@ -361,6 +449,187 @@ test("estimates token density for ASCII and non-ASCII input", () => {
   assert.ok(estimateInputTokens("a".repeat(400)) <= 120);
   assert.ok(estimateInputTokens("あ".repeat(100)) >= 100);
   assert.ok(estimateInputTokens("あ".repeat(100)) > estimateInputTokens("a".repeat(100)));
+});
+
+test("recovers an over-budget history once, preserving schemas, current work and auth isolation", async (context) => {
+  const forwarded = [];
+  const metrics = [];
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 1000,
+    opencodeHardLimitTokens: 1400, onMetric: (metric) => metrics.push(metric), fetcher: async (url, options) => {
+      const body = JSON.parse(options.body);
+      forwarded.push({ url, body, headers: options.headers });
+      return Response.json({ status: "completed", output: [{ type: "message", content: [
+        { type: "output_text", text: body.instructions?.startsWith("Produce only") ? "Old decisions and work preserved." : "OK" },
+      ] }] });
+    } });
+  const tools = [{ type: "function", name: "edit", parameters: { type: "object", properties: { text: { type: "string" } } } }];
+  const input = [
+    { role: "developer", content: "Keep project constraints" },
+    { role: "user", content: "old " + "x".repeat(10000) },
+    { role: "assistant", content: "old result" },
+    { role: "user", content: "recent request" },
+    { type: "function_call", id: "fc_1", call_id: "call_1", name: "edit", arguments: "{}" },
+    { type: "function_call_output", call_id: "call_1", output: "OK" },
+    { role: "user", content: "latest request" },
+  ];
+  const original = structuredClone(input);
+  for (let turn = 0; turn < 2; turn++) {
+    const response = await send({ model: "deepseek-test", input, tools, prompt_cache_key: "chat-budget" });
+    assert.equal(response.status, 200);
+    await response.text();
+  }
+  const summaries = forwarded.filter((call) => call.body.model === "gpt-test");
+  const downstream = forwarded.filter((call) => call.body.model === "deepseek-test");
+  assert.equal(summaries.length, 1, "same completed prefix should reuse its summary");
+  assert.equal(summaries[0].headers.authorization, "Bearer fake-native-token");
+  assert.deepEqual(summaries[0].body.tools, []);
+  assert.equal(summaries[0].body.input.some((item) => item.content === "latest request"), false);
+  assert.equal(downstream.length, 2);
+  for (const call of downstream) {
+    assert.deepEqual(call.body.tools, tools);
+    assert.deepEqual(call.body.input.slice(-4), input.slice(-4));
+    assert.deepEqual(call.body.input[0], input[0]);
+    assert.equal(call.headers.authorization, undefined);
+    assert.ok(estimateInputTokens(JSON.stringify(call.body)) <= 1400);
+  }
+  assert.deepEqual(input, original);
+  assert.equal(metrics[0].budget_recovered, true);
+  assert.equal(metrics[1].budget_summary_cache, "hit");
+  assert.doesNotMatch(JSON.stringify(metrics), /fake-native-token|latest request|Old decisions|Keep project/);
+});
+
+test("does not summarize in-budget or native requests, or when recovery is disabled or cannot help", async (context) => {
+  const input = [{ role: "user", content: "x".repeat(10000) }, { role: "assistant", content: "old" }, { role: "user", content: "latest" }];
+  for (const scenario of ["within", "native", "disabled", "tools", "latest", "pending", "model", "auth"]) {
+    const options = { summaryModel: "gpt-test", opencodeSoftLimitTokens: 1000, opencodeHardLimitTokens: 1400 };
+    if (scenario === "disabled") options.autoBudgetHandoff = false;
+    if (scenario === "model") options.summaryModel = "missing";
+    const { calls, send } = await fixture(context, options);
+    const body = { model: scenario === "native" ? "gpt-test" : "deepseek-test", input: structuredClone(input) };
+    if (scenario === "within") body.input = [{ role: "user", content: "hello" }];
+    if (scenario === "tools") body.tools = [{ type: "function", name: "tool", description: "x".repeat(10000) }];
+    if (scenario === "latest") body.input.at(-1).content = "x".repeat(10000);
+    if (scenario === "pending") body.input.splice(2, 0, { type: "function_call", call_id: "pending", name: "tool", arguments: "{}" });
+    const response = await send(body, scenario === "auth" ? { authorization: "" } : {});
+    assert.equal(response.status, ["within", "native"].includes(scenario) ? 200 : scenario === "auth" ? 401 : 413, scenario);
+    await response.text();
+    assert.equal(calls.length, ["within", "native"].includes(scenario) ? 1 : 0, scenario);
+  }
+});
+
+test("summarizes at the soft threshold before reaching the hard limit", async (context) => {
+  const metrics = [];
+  let summaries = 0;
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 500,
+    opencodeHardLimitTokens: 2000, onMetric: (metric) => metrics.push(metric), fetcher: async (_url, options) => {
+      if (JSON.parse(options.body).model === "gpt-test") summaries++;
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "summary" }] }] });
+    } });
+  const response = await send({ model: "deepseek-test", input: [
+    { role: "user", content: "x".repeat(4000) }, { role: "user", content: "latest" },
+  ] });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(summaries, 1);
+  assert.ok(metrics[0].budget_initial_tokens > 500 && metrics[0].budget_initial_tokens < 2000);
+  assert.ok(metrics[0].estimated_input_tokens < 500);
+});
+
+test("a failed or insufficient budget summary never forwards oversized context or retries endlessly", async (context) => {
+  for (const kind of ["http-error", "incomplete", "still-large"]) {
+    let calls = 0;
+    const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 1000,
+      opencodeHardLimitTokens: 1400, fetcher: async () => {
+        calls++;
+        if (kind === "http-error") return new Response("failed", { status: 503 });
+        return Response.json({ status: kind === "incomplete" ? "incomplete" : "completed", output: [
+          { type: "message", content: [{ type: "output_text", text: "x".repeat(10000) }] },
+        ] });
+      } });
+    const input = [{ role: "user", content: "x".repeat(10000) }, { role: "user", content: "latest" }];
+    const response = await send({ model: "deepseek-test", input });
+    assert.equal(response.status, kind === "still-large" ? 413 : 502, kind);
+    await response.text();
+    assert.equal(calls, 1);
+    assert.equal(input[0].content.length, 10000);
+  }
+});
+
+test("extends the original compaction handoff to older completed turns instead of summarizing twice", async (context) => {
+  let summaries = 0;
+  const metrics = [];
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 500,
+    opencodeHardLimitTokens: 1000, onMetric: (metric) => metrics.push(metric), fetcher: async (_url, options) => {
+      if (JSON.parse(options.body).model === "gpt-test") summaries++;
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "first summary" }] }] });
+    } });
+  const response = await send({ model: "deepseek-test", input: [
+    { type: "compaction", encrypted_content: "opaque" }, { role: "user", content: "x".repeat(10000) },
+    { role: "user", content: "recent" }, { role: "user", content: "latest" },
+  ] });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(summaries, 1);
+  assert.equal(metrics[0].budget_summary_cache, undefined);
+  assert.equal(metrics[0].budget_compaction_extended, true);
+  assert.equal(metrics[0].budget_recovered, true);
+});
+
+test("recovers completed tool history within one turn, including after native compaction", async (context) => {
+  for (const compacted of [false, true]) {
+    const forwarded = [];
+    const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 600,
+      opencodeHardLimitTokens: 1000, fetcher: async (_url, options) => {
+        forwarded.push(JSON.parse(options.body));
+        return Response.json({ status: "completed", output: [{ type: "message", content: [
+          { type: "output_text", text: "Completed investigation, continue testing." },
+        ] }] });
+      } });
+    const input = [
+      ...(compacted ? [{ type: "compaction", encrypted_content: "opaque" }] : []),
+      { role: "developer", content: "Do not deploy" },
+      { role: "user", content: "Investigate and fix the failure" },
+      { type: "function_call", call_id: "first", name: "read", arguments: "{}" },
+      { role: "user", content: "Keep my local changes" },
+      { type: "function_call_output", call_id: "first", output: "x".repeat(10000) },
+      { type: "custom_tool_call", call_id: "second", name: "edit", input: "patch" },
+      { type: "custom_tool_call_output", call_id: "second", output: "done" },
+      { type: "function_call", call_id: "pending", name: "test", arguments: "{}" },
+    ];
+    const original = structuredClone(input);
+    const tools = [{ type: "function", name: "read", parameters: { type: "object" } }];
+    for (let request = 0; request < 2; request++) {
+      const response = await send({ model: "deepseek-test", input, tools, prompt_cache_key: "long-turn" });
+      assert.equal(response.status, 200, await response.text());
+    }
+    assert.equal(forwarded.filter((body) => body.model === "gpt-test").length, 1);
+    for (const body of forwarded.filter((body) => body.model === "deepseek-test")) {
+      assert.deepEqual(body.tools, tools);
+      assert.deepEqual(body.input.filter((item) => item.role === "developer"), input.filter((item) => item.role === "developer"));
+      for (const user of input.filter((item) => item.role === "user")) assert.ok(body.input.some((item) => item.content === user.content));
+      const retained = routedBody({ input: input.slice(-3) }, { provider: "opencode", model: "deepseek-test" }, 100000).input;
+      assert.deepEqual(body.input.slice(-3), JSON.parse(JSON.stringify(retained)));
+      assert.ok(!body.input.some((item) => item.call_id === "first" || item.type === "compaction"));
+      assert.ok(estimateInputTokens(body) < 1000);
+    }
+    assert.deepEqual(input, original);
+  }
+});
+
+test("records reversed soft/hard limits while still recovering at the hard threshold", async (context) => {
+  const metrics = [];
+  let summaries = 0;
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 5000,
+    opencodeHardLimitTokens: 1000, onMetric: (metric) => metrics.push(metric), fetcher: async (_url, options) => {
+      if (JSON.parse(options.body).model === "gpt-test") summaries++;
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "summary" }] }] });
+    } });
+  const response = await send({ model: "deepseek-test", input: [{ role: "user", content: "x".repeat(10000) }, { role: "user", content: "latest" }] });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(summaries, 1);
+  assert.equal(metrics[0].budget_limit_clamped, true);
+  assert.equal(metrics[0].budget_recovered, true);
 });
 
 test("records received bytes for rejected and empty input", async (context) => {
