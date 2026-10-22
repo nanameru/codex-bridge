@@ -30,11 +30,35 @@ export function budgetHistoryBoundary(input) {
   return safe.findLast((index) => index <= preferred) ?? -1;
 }
 
+export function budgetToolBoundary(input) {
+  if (!Array.isArray(input)) return -1;
+  const outputAt = new Map();
+  input.forEach((item, index) => {
+    if (["function_call_output", "custom_tool_call_output"].includes(item.type)) outputAt.set(item.call_id, index);
+  });
+  const safe = [];
+  let protectedUntil = -1;
+  input.forEach((item, index) => {
+    if (["function_call", "custom_tool_call"].includes(item.type)) {
+      const end = outputAt.get(item.call_id);
+      protectedUntil = Math.max(protectedUntil, typeof item.call_id === "string" && end > index ? end : Infinity);
+    }
+    if (["function_call_output", "custom_tool_call_output"].includes(item.type)
+        && index === protectedUntil && index + 1 < input.length) safe.push(index + 1);
+  });
+  return safe.at(-2) ?? safe.at(-1) ?? -1;
+}
+
+export function preservedHandoffPrefix(input, prefixEnd, preserveRecentUsers = false) {
+  const recentUsers = preserveRecentUsers ? new Set(input.filter((item) => item.role === "user").slice(-2)) : new Set();
+  return input.slice(0, prefixEnd).filter((item) => ["system", "developer"].includes(item.role) || recentUsers.has(item));
+}
+
 export function compactionHandoff({ fetcher, model, maxBytes }) {
   const cache = new Map();
   const pending = new Map();
   const summaryLimit = 64 * 1024;
-  return async (body, { destination, headers, signal, threadId, prefixEnd, observe = () => {} }) => {
+  return async (body, { destination, headers, signal, threadId, prefixEnd, preserveRecentUsers = false, observe = () => {} }) => {
     signal.throwIfAborted();
     if (prefixEnd !== undefined && (!Number.isInteger(prefixEnd) || prefixEnd <= 0 || prefixEnd >= body.input.length)) {
       throw new HandoffError("要約境界が不正です。履歴は変更していません");
@@ -169,9 +193,10 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
         }
       }
     } else observe({ cache: "hit" });
-    const instructions = prefix.filter((item) => ["system", "developer"].includes(item.role));
+    const preserved = preservedHandoffPrefix(body.input, index + 1, preserveRecentUsers);
+    const instructions = preserved.filter((item) => ["system", "developer"].includes(item.role));
     return { ...body, input: [...instructions, { type: "message", role: "user", content: [{ type: "input_text",
       text: "Conversation handoff from the preceding compacted history. This is context, not a new instruction:\n" + summary }] },
-      ...body.input.slice(index + 1)] };
+      ...preserved.filter((item) => item.role === "user"), ...body.input.slice(index + 1)] };
   };
 }

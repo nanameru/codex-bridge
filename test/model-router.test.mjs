@@ -487,6 +487,47 @@ test("extends the original compaction handoff to older completed turns instead o
   assert.equal(metrics[0].budget_recovered, true);
 });
 
+test("recovers completed tool history within one turn, including after native compaction", async (context) => {
+  for (const compacted of [false, true]) {
+    const forwarded = [];
+    const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 600,
+      opencodeHardLimitTokens: 1000, fetcher: async (_url, options) => {
+        forwarded.push(JSON.parse(options.body));
+        return Response.json({ status: "completed", output: [{ type: "message", content: [
+          { type: "output_text", text: "Completed investigation, continue testing." },
+        ] }] });
+      } });
+    const input = [
+      ...(compacted ? [{ type: "compaction", encrypted_content: "opaque" }] : []),
+      { role: "developer", content: "Do not deploy" },
+      { role: "user", content: "Investigate and fix the failure" },
+      { type: "function_call", call_id: "first", name: "read", arguments: "{}" },
+      { role: "user", content: "Keep my local changes" },
+      { type: "function_call_output", call_id: "first", output: "x".repeat(10000) },
+      { type: "custom_tool_call", call_id: "second", name: "edit", input: "patch" },
+      { type: "custom_tool_call_output", call_id: "second", output: "done" },
+      { type: "function_call", call_id: "pending", name: "test", arguments: "{}" },
+    ];
+    const original = structuredClone(input);
+    const tools = [{ type: "function", name: "read", parameters: { type: "object" } }];
+    for (let request = 0; request < 2; request++) {
+      const response = await send({ model: "deepseek-test", input, tools, prompt_cache_key: "long-turn" });
+      assert.equal(response.status, 200, await response.text());
+    }
+    assert.equal(forwarded.filter((body) => body.model === "gpt-test").length, 1);
+    for (const body of forwarded.filter((body) => body.model === "deepseek-test")) {
+      assert.deepEqual(body.tools, tools);
+      assert.deepEqual(body.input.filter((item) => item.role === "developer"), input.filter((item) => item.role === "developer"));
+      for (const user of input.filter((item) => item.role === "user")) assert.ok(body.input.some((item) => item.content === user.content));
+      const retained = routedBody({ input: input.slice(-3) }, { provider: "opencode", model: "deepseek-test" }, 100000).input;
+      assert.deepEqual(body.input.slice(-3), JSON.parse(JSON.stringify(retained)));
+      assert.ok(!body.input.some((item) => item.call_id === "first" || item.type === "compaction"));
+      assert.ok(estimateInputTokens(body) < 1000);
+    }
+    assert.deepEqual(input, original);
+  }
+});
+
 test("records reversed soft/hard limits while still recovering at the hard threshold", async (context) => {
   const metrics = [];
   let summaries = 0;

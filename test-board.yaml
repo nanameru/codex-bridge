@@ -15,7 +15,7 @@ cases:
     source: [src/model-router.mjs, src/compaction-handoff.mjs]
     test_file: test/model-router.test.mjs
     issues: [25]
-    notes: "413→要約→200、同一prefixキャッシュ、認証分離、予算内無呼出、巨大固定入力/未完了ツール/要約失敗の停止を検証。境界と指示保持はtest/compaction-handoff.test.mjs。"
+    notes: "413→要約→200、同一prefixキャッシュ、認証分離、予算内無呼出、巨大固定入力/未完了ツール/要約失敗の停止を検証。単一ターン・既存compaction・途中の追加指示の原文保持・並列ツール境界も検証。境界と指示保持はtest/compaction-handoff.test.mjs。"
   - id: TC-018
     title: "モデル切替と圧縮: ツール項目のIDを型に合わせる"
     feature: "双方向モデル切替"

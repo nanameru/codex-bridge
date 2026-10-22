@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
-import { budgetHistoryBoundary, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
+import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
 // These JSON endpoints belong to OpenAI, irrespective of the selected chat model.
@@ -65,6 +65,24 @@ export function estimateInputTokens(value) {
     else nonAscii += 1;
   }
   return Math.ceil(ascii / 4 + nonAscii / 2);
+}
+
+function budgetHandoffPlan(body, route, maxBytes, threshold) {
+  const measure = (prefixEnd, preserveRecentUsers) => {
+    const input = [...preservedHandoffPrefix(body.input, prefixEnd, preserveRecentUsers), ...body.input.slice(prefixEnd)];
+    return { prefixEnd, preserveRecentUsers, minimum: estimateInputTokens(routedBody({ ...body, input }, route, maxBytes)) };
+  };
+  if (!Array.isArray(body.input)) return { prefixEnd: -1 };
+  const compacted = body.input.findLastIndex((item) => item.type === "compaction");
+  const boundary = budgetHistoryBoundary(body.input);
+  const preferred = boundary > compacted && boundary > 0 ? measure(boundary, false) : { prefixEnd: -1, minimum: Infinity };
+  if (preferred.minimum <= threshold) return preferred;
+  const toolBoundary = budgetToolBoundary(body.input);
+  if (toolBoundary > compacted && toolBoundary > 0) {
+    const fallback = measure(toolBoundary, true);
+    if (fallback.minimum < preferred.minimum) return fallback;
+  }
+  return preferred;
 }
 
 function envLimit(name, fallback) {
@@ -224,14 +242,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.stage = "handoff";
         const summaryStart = performance.now();
         try {
-          const boundary = budgetHistoryBoundary(body.input);
           const threshold = opencodeSoftLimitTokens > 0
             ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
+          const plan = budgetHandoffPlan(body, route, maxBytes, threshold);
           const extend = autoBudgetHandoff && opencodeHardLimitTokens > 0
-            && boundary > body.input.findLastIndex((item) => item.type === "compaction") + 1
+            && plan.prefixEnd > body.input.findLastIndex((item) => item.type === "compaction") + 1
             && estimateInputTokens(JSON.stringify(routedBody(body, route, maxBytes))) > threshold;
           if (extend) metric.budget_compaction_extended = true;
-          body = await expandCompaction(body, { ...handoffOptions, ...(extend ? { prefixEnd: boundary } : {}),
+          if (extend && plan.preserveRecentUsers) metric.budget_intra_turn = true;
+          body = await expandCompaction(body, { ...handoffOptions, ...(extend ? plan : {}),
             observe: ({ cache }) => { metric.summary_cache = cache; } });
           compactionExpanded = true;
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
@@ -251,16 +270,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         }
         if (route.provider === "opencode" && autoBudgetHandoff && opencodeHardLimitTokens > 0 && initialTokens > threshold && !compactionExpanded) {
           metric.budget_initial_tokens = initialTokens;
-          const prefixEnd = budgetHistoryBoundary(body.input);
+          const plan = budgetHandoffPlan(body, route, maxBytes, threshold);
+          const { prefixEnd, minimum } = plan;
           if (prefixEnd > 0 && prefixEnd < body.input.length) {
-            const preserved = [...body.input.slice(0, prefixEnd).filter((item) => ["system", "developer"].includes(item.role)),
-              ...body.input.slice(prefixEnd)];
-            const minimum = estimateInputTokens(JSON.stringify(routedBody({ ...body, input: preserved }, route, maxBytes)));
             if (minimum < opencodeHardLimitTokens && routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization) {
               metric.stage = "budget_handoff";
+              if (plan.preserveRecentUsers) metric.budget_intra_turn = true;
               const summaryStart = performance.now();
               try {
-                body = await expandCompaction(body, { ...handoffOptions, prefixEnd,
+                body = await expandCompaction(body, { ...handoffOptions, ...plan,
                   observe: ({ cache }) => { metric.budget_summary_cache = cache; } });
               } finally { metric.budget_summary_ms = Math.round(performance.now() - summaryStart); }
               routedObject = routedBody(body, route, maxBytes);

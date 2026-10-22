@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { budgetHistoryBoundary, compactionHandoff } from "../src/compaction-handoff.mjs";
+import { budgetHistoryBoundary, budgetToolBoundary, compactionHandoff } from "../src/compaction-handoff.mjs";
+
+test("intra-turn boundaries keep parallel and unresolved tool exchanges intact", () => {
+  const call = (call_id) => ({ type: "function_call", call_id, name: "read", arguments: "{}" });
+  const output = (call_id) => ({ type: "function_call_output", call_id, output: "done" });
+  const user = { role: "user", content: "continue" };
+  assert.equal(budgetToolBoundary([user, call("a"), call("b"), output("a"), user, output("b"), call("pending")]), 6);
+  assert.equal(budgetToolBoundary([user, call("pending"), call("a"), output("a"), user]), -1);
+  assert.equal(budgetToolBoundary([user, call("a"), output("a"), call("b"), output("b"), call("pending")]), 3);
+  assert.equal(budgetToolBoundary([user, call("a"), output("a")]), -1);
+  assert.equal(budgetToolBoundary([user, call(undefined), output(undefined), user]), -1);
+  assert.equal(budgetToolBoundary(undefined), -1);
+});
 
 test("budget boundary keeps recent turns and never splits a tool execution across user steering", () => {
   const user = (content) => ({ role: "user", content });
