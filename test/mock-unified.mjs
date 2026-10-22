@@ -6,13 +6,14 @@ import { createRouter } from "../src/model-router.mjs";
 const catalog = JSON.parse(readFileSync(process.env.CODEX_HOME + "/unified-model-catalog.json", "utf8"));
 const calls = [];
 const toolMode = process.env.MOCK_TOOL_ROUNDTRIP === "1";
+const codeMode = process.env.MOCK_CODE_MODE === "1";
 const mock = (provider) => http.createServer(async (request, response) => {
   let text = "";
   for await (const chunk of request) text += chunk;
   const body = JSON.parse(text);
   const lastUser = body.input?.findLastIndex((item) => item.role === "user") ?? -1;
   const current = body.input?.slice(lastUser + 1) ?? [];
-  const hasToolOutput = current.some((item) => item.type === "function_call_output");
+  const hasToolOutput = current.some((item) => ["function_call_output", "custom_tool_call_output"].includes(item.type));
   if (toolMode && process.env.MOCK_DIRECT_RESPONSES !== "1" && provider === "opencode" && hasToolOutput) {
     let reasoning = false;
     for (const item of current) {
@@ -28,7 +29,11 @@ const mock = (provider) => http.createServer(async (request, response) => {
   calls.push({ provider, path: request.url, model: body.model, inputItems: body.input?.length ?? 0,
     inputTypes: body.input?.map((item) => item.type), previousResponse: Boolean(body.previous_response_id),
     reasoningProviders: body.input?.filter((item) => item.type === "reasoning").map((item) => item.encrypted_content?.startsWith("cxb1:") ? "opencode" : "openai"),
-    hasNativeAuth: Boolean(request.headers.authorization) && request.headers.authorization !== "Bearer mock-opencode-key" });
+    hasNativeAuth: Boolean(request.headers.authorization) && request.headers.authorization !== "Bearer mock-opencode-key",
+    toolsCount: body.tools?.length ?? 0, toolsBytes: Buffer.byteLength(JSON.stringify(body.tools ?? [])),
+    toolTypes: body.tools?.map((tool) => tool.type) ?? [],
+    requestBytes: Buffer.byteLength(text),
+    codeModeOutput: hasToolOutput && JSON.stringify(current).includes("CODE_MODE_OK") });
   const identifier = "resp_mock_" + calls.length;
   const reasoning = { id: "rs_" + calls.length, type: "reasoning", summary: [],
     encrypted_content: provider === "openai" ? "fake-native-encrypted" : "cxb1:ZmFrZQ" };
@@ -42,6 +47,16 @@ const mock = (provider) => http.createServer(async (request, response) => {
   const emit = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...data })}\n\n`);
   emit("response.created", { response: { ...result, output: [], status: "in_progress" } });
   emit("response.output_item.added", { output_index: 0, item: reasoning });
+  if (codeMode && !hasToolOutput) {
+    const call = { id: "ctc_" + calls.length, type: "custom_tool_call", call_id: "call_" + calls.length,
+      name: "exec", input: 'text(await tools.exec_command({cmd: "printf CODE_MODE_OK"}));', status: "completed" };
+    emit("response.output_item.done", { output_index: 0, item: reasoning });
+    emit("response.output_item.added", { output_index: 1, item: call });
+    emit("response.output_item.done", { output_index: 1, item: call });
+    emit("response.completed", { response: { ...result, output: [reasoning, call] } });
+    response.end();
+    return;
+  }
   if (toolMode && !hasToolOutput) {
     const call = { id: "fc_" + calls.length, type: "function_call", call_id: "call_" + calls.length,
       name: "route_probe", arguments: "{}", status: "completed" };

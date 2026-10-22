@@ -107,12 +107,48 @@ class UnifiedConfigTests(unittest.TestCase):
         return {"direct_header": "x-codex-bridge-direct", "direct_models": ["opencode/deepseek-v4.1-flash"]}
 
     def test_new_cli_modes_never_fall_through_to_legacy_on_off(self):
-        for mode, function in [("normal-on", "activate_normal"), ("transports", "update_transports")]:
+        for mode, function in [("normal-on", "activate_normal"), ("transports", "update_transports"),
+                               ("flash-code-mode", "activate_flash_code_mode")]:
             with mock.patch.object(sys, "argv", ["unified_config.py", mode]), mock.patch.object(
                     unified_config, function) as selected, mock.patch.object(unified_config, "configure") as legacy:
                 unified_config.main()
             selected.assert_called_once()
             legacy.assert_not_called()
+
+    def test_flash_code_mode_changes_only_tool_metadata_and_is_idempotent(self):
+        self.normal_setup()
+        path = self.root / "unified-model-catalog.json"
+        catalog = json.loads(path.read_text())
+        catalog["models"][0]["base_instructions"] = "preserve"
+        catalog["models"].extend([{"slug": "gpt-6.1-sol", "custom": "preserve"},
+                                  {"slug": "opencode/deepseek-v4-pro", "tool_mode": None}])
+        path.write_text(json.dumps(catalog))
+        self.path.write_text('model_provider="codex-bridge"\nmodel_catalog_json=' + json.dumps(str(path))
+                             + '\n[model_providers.codex-bridge.http_headers]\nx-codex-bridge-direct="1"\n')
+        config_before = self.path.read_bytes()
+        unified_config.activate_flash_code_mode(self.root)
+        result = json.loads(path.read_text())
+        self.assertEqual(result["models"][1:], catalog["models"][1:])
+        self.assertEqual(result["models"][0], {**catalog["models"][0], "tool_mode": "code_mode_only",
+                                              "supports_search_tool": True, "shell_type": "unified_exec"})
+        self.assertEqual(self.path.read_bytes(), config_before)
+        backups = list(self.root.glob("unified-model-catalog.json.bak.flash-code-mode.*"))
+        self.assertEqual(json.loads(backups[0].read_text()), catalog)
+        unified_config.activate_flash_code_mode(self.root)
+        self.assertEqual(len(list(self.root.glob("unified-model-catalog.json.bak.flash-code-mode.*"))), 1)
+        path.unlink()
+        path.symlink_to(backups[0])
+        with self.assertRaisesRegex(ValueError, "リンク"):
+            unified_config.activate_flash_code_mode(self.root)
+        self.assertEqual(json.loads(backups[0].read_text()), catalog)
+
+    def test_flash_code_mode_refuses_non_direct_settings(self):
+        self.normal_setup()
+        path = self.root / "unified-model-catalog.json"
+        before = path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "直接接続"):
+            unified_config.activate_flash_code_mode(self.root)
+        self.assertEqual(path.read_bytes(), before)
 
     def test_transport_migration_keeps_all_native_model_metadata_unchanged(self):
         path = self.root / "unified-model-catalog.json"
