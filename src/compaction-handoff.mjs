@@ -3,13 +3,42 @@ import { normalizeToolCallId } from "./tool-adapter.mjs";
 
 export class HandoffError extends Error {}
 
+// Keep the two most recent user turns (or the latest when there are only two).
+// A user may steer while a tool is running, so a user message alone is not
+// proof of a safe boundary: all earlier tool calls must have finished first.
+export function budgetHistoryBoundary(input) {
+  if (!Array.isArray(input)) return -1;
+  const outputAt = new Map();
+  input.forEach((item, index) => {
+    if (["function_call_output", "custom_tool_call_output"].includes(item.type)) outputAt.set(item.call_id, index);
+  });
+  const users = [];
+  const safe = [];
+  let protectedUntil = -1;
+  input.forEach((item, index) => {
+    if (item.role === "user") {
+      if (users.length && index > protectedUntil) safe.push(index);
+      users.push(index);
+    }
+    if (["function_call", "custom_tool_call"].includes(item.type)) {
+      const end = outputAt.get(item.call_id);
+      protectedUntil = Math.max(protectedUntil, typeof item.call_id === "string" && end > index ? end : Infinity);
+    }
+  });
+  const preferred = users[users.length >= 3 ? users.length - 2 : users.length - 1];
+  return safe.findLast((index) => index <= preferred) ?? -1;
+}
+
 export function compactionHandoff({ fetcher, model, maxBytes }) {
   const cache = new Map();
   const pending = new Map();
   const summaryLimit = 64 * 1024;
-  return async (body, { destination, headers, signal, threadId, observe = () => {} }) => {
+  return async (body, { destination, headers, signal, threadId, prefixEnd, observe = () => {} }) => {
     signal.throwIfAborted();
-    const index = body.input.findLastIndex((item) => item.type === "compaction");
+    if (prefixEnd !== undefined && (!Number.isInteger(prefixEnd) || prefixEnd <= 0 || prefixEnd >= body.input.length)) {
+      throw new HandoffError("要約境界が不正です。履歴は変更していません");
+    }
+    const index = prefixEnd === undefined ? body.input.findLastIndex((item) => item.type === "compaction") : prefixEnd - 1;
     if (index < 0) return body;
     const prefix = body.input.slice(0, index + 1);
     if (prefix.some((item) => item.type === "compaction" && typeof item.encrypted_content !== "string")) {

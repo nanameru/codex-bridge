@@ -1,6 +1,43 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactionHandoff } from "../src/compaction-handoff.mjs";
+import { budgetHistoryBoundary, compactionHandoff } from "../src/compaction-handoff.mjs";
+
+test("budget boundary keeps recent turns and never splits a tool execution across user steering", () => {
+  const user = (content) => ({ role: "user", content });
+  const call = { type: "custom_tool_call", call_id: "pending", name: "edit", input: "patch" };
+  const output = { type: "custom_tool_call_output", call_id: "pending", output: "ok" };
+  assert.equal(budgetHistoryBoundary([user("old"), { role: "assistant", content: "done" }, user("recent"), user("latest")]), 2);
+  assert.equal(budgetHistoryBoundary([user("old"), call, user("steering"), output, user("latest")]), -1);
+  assert.equal(budgetHistoryBoundary([user("old"), user("recent"), call, user("steering"), output, user("latest")]), 1);
+  assert.equal(budgetHistoryBoundary([user("only")]), -1);
+  assert.equal(budgetHistoryBoundary([user("old"), call, user("latest")]), -1);
+  assert.equal(budgetHistoryBoundary([user("old"), { ...call, call_id: undefined }, user("latest")]), -1);
+  assert.equal(budgetHistoryBoundary(undefined), -1);
+});
+
+test("explicit history handoff preserves directives and unresolved current tools without needing a compaction item", async () => {
+  const input = [
+    { role: "developer", content: "constraints" }, { role: "user", content: "old request" },
+    { role: "assistant", content: "old answer" }, { role: "user", content: "current request" },
+    { type: "function_call", call_id: "in-progress", name: "noop", arguments: "{}" },
+  ];
+  let calls = 0;
+  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 10000, fetcher: async (_url, init) => {
+    calls++;
+    const sent = JSON.parse(init.body);
+    assert.equal(sent.input.some((item) => item.role === "developer"), false);
+    assert.equal(sent.input.some((item) => item.call_id === "in-progress"), false);
+    return completed();
+  } });
+  const result = await expand({ input }, { ...options(), prefixEnd: 3 });
+  assert.deepEqual(result.input[0], input[0]);
+  assert.deepEqual(result.input.slice(-2), input.slice(-2));
+  assert.equal(input[1].content, "old request");
+  for (const prefixEnd of [0, -1, input.length, 1.5]) {
+    await assert.rejects(expand({ input }, { ...options(), prefixEnd }), /境界/);
+  }
+  assert.equal(calls, 1);
+});
 
 const body = { input: [
   { role: "developer", content: "constraints" },

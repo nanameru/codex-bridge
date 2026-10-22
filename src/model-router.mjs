@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
-import { compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
+import { budgetHistoryBoundary, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
 // These JSON endpoints belong to OpenAI, irrespective of the selected chat model.
@@ -77,6 +77,7 @@ function envLimit(name, fallback) {
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
   nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
   summaryModel = "gpt-6.1-sol", onMetric = () => {},
+  autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
   const routes = catalogRoutes(catalog);
@@ -208,20 +209,21 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           }
         }
       }
+      const summaryHeaders = { "content-type": "application/json", accept: "text/event-stream, application/json" };
+      for (const name of ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "user-agent"]) {
+        if (typeof request.headers[name] === "string") summaryHeaders[name] = request.headers[name];
+      }
+      const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
+        threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id };
       if (route.provider === "opencode" && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
         if (routes.get(summaryModel)?.provider !== "openai") {
           fail(response, 422, "summary_model_required", "圧縮履歴の引き継ぎに使うOpenAIモデルがカタログにありません");
           return;
         }
-        const summaryHeaders = { "content-type": "application/json", accept: "text/event-stream, application/json" };
-        for (const name of ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "user-agent"]) {
-          if (typeof request.headers[name] === "string") summaryHeaders[name] = request.headers[name];
-        }
         metric.stage = "handoff";
         const summaryStart = performance.now();
         try {
-          body = await expandCompaction(body, { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
-            threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id,
+          body = await expandCompaction(body, { ...handoffOptions,
             observe: ({ cache }) => { metric.summary_cache = cache; } });
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
       }
@@ -232,6 +234,31 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         routedObject = nativeTool ? body : routedBody(body, route, maxBytes);
         routed = JSON.stringify(routedObject);
         if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
+        const initialTokens = route.provider === "opencode" ? estimateInputTokens(routed) : 0;
+        const threshold = opencodeSoftLimitTokens > 0
+          ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
+        if (route.provider === "opencode" && autoBudgetHandoff && opencodeHardLimitTokens > 0 && initialTokens > threshold) {
+          metric.budget_initial_tokens = initialTokens;
+          const prefixEnd = budgetHistoryBoundary(body.input);
+          if (prefixEnd > 0) {
+            const preserved = [...body.input.slice(0, prefixEnd).filter((item) => ["system", "developer"].includes(item.role)),
+              ...body.input.slice(prefixEnd)];
+            const minimum = estimateInputTokens(JSON.stringify(routedBody({ ...body, input: preserved }, route, maxBytes)));
+            if (minimum < opencodeHardLimitTokens && routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization) {
+              metric.stage = "budget_handoff";
+              const summaryStart = performance.now();
+              try {
+                body = await expandCompaction(body, { ...handoffOptions, prefixEnd,
+                  observe: ({ cache }) => { metric.budget_summary_cache = cache; } });
+              } finally { metric.budget_summary_ms = Math.round(performance.now() - summaryStart); }
+              routedObject = routedBody(body, route, maxBytes);
+              routed = JSON.stringify(routedObject);
+              if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
+              metric.budget_recovered = estimateInputTokens(routed) <= opencodeHardLimitTokens;
+            } else metric.budget_recovery_skipped = minimum >= opencodeHardLimitTokens ? "protected_input_too_large"
+              : !summaryHeaders.authorization ? "summary_auth_missing" : "summary_model_missing";
+          } else metric.budget_recovery_skipped = "no_completed_history";
+        }
       } catch (error) {
         if (!(error instanceof RangeError)) throw error;
         fail(response, 413, "request_too_large", "変換後の入力が大きすぎます");
@@ -250,7 +277,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.stage = "budget_rejected";
         fail(response, 413, "input_budget_exceeded",
           `OpenCodeの入力が推定${metric.estimated_input_tokens}トークンで上限${opencodeHardLimitTokens}を超えます。`
-          + `不要なMCPサーバーを無効化するか、/compact後に新しいチャットで再試行してください`
+          + `最新の依頼・進行中のツール・指示・ツール定義を保持したままでは上限内に収まりません。`
+          + `不要なMCPを無効化するか、/compactを実行して再試行してください`
           + `（tools=${metric.tools_count}, tools_bytes=${metric.tools_bytes}）。`);
         return;
       }

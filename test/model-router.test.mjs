@@ -363,6 +363,110 @@ test("estimates token density for ASCII and non-ASCII input", () => {
   assert.ok(estimateInputTokens("あ".repeat(100)) > estimateInputTokens("a".repeat(100)));
 });
 
+test("recovers an over-budget history once, preserving schemas, current work and auth isolation", async (context) => {
+  const forwarded = [];
+  const metrics = [];
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 1000,
+    opencodeHardLimitTokens: 1400, onMetric: (metric) => metrics.push(metric), fetcher: async (url, options) => {
+      const body = JSON.parse(options.body);
+      forwarded.push({ url, body, headers: options.headers });
+      return Response.json({ status: "completed", output: [{ type: "message", content: [
+        { type: "output_text", text: body.instructions?.startsWith("Produce only") ? "Old decisions and work preserved." : "OK" },
+      ] }] });
+    } });
+  const tools = [{ type: "function", name: "edit", parameters: { type: "object", properties: { text: { type: "string" } } } }];
+  const input = [
+    { role: "developer", content: "Keep project constraints" },
+    { role: "user", content: "old " + "x".repeat(10000) },
+    { role: "assistant", content: "old result" },
+    { role: "user", content: "recent request" },
+    { type: "function_call", id: "fc_1", call_id: "call_1", name: "edit", arguments: "{}" },
+    { type: "function_call_output", call_id: "call_1", output: "OK" },
+    { role: "user", content: "latest request" },
+  ];
+  const original = structuredClone(input);
+  for (let turn = 0; turn < 2; turn++) {
+    const response = await send({ model: "deepseek-test", input, tools, prompt_cache_key: "chat-budget" });
+    assert.equal(response.status, 200);
+    await response.text();
+  }
+  const summaries = forwarded.filter((call) => call.body.model === "gpt-test");
+  const downstream = forwarded.filter((call) => call.body.model === "deepseek-test");
+  assert.equal(summaries.length, 1, "same completed prefix should reuse its summary");
+  assert.equal(summaries[0].headers.authorization, "Bearer fake-native-token");
+  assert.deepEqual(summaries[0].body.tools, []);
+  assert.equal(summaries[0].body.input.some((item) => item.content === "latest request"), false);
+  assert.equal(downstream.length, 2);
+  for (const call of downstream) {
+    assert.deepEqual(call.body.tools, tools);
+    assert.deepEqual(call.body.input.slice(-4), input.slice(-4));
+    assert.deepEqual(call.body.input[0], input[0]);
+    assert.equal(call.headers.authorization, undefined);
+    assert.ok(estimateInputTokens(JSON.stringify(call.body)) <= 1400);
+  }
+  assert.deepEqual(input, original);
+  assert.equal(metrics[0].budget_recovered, true);
+  assert.equal(metrics[1].budget_summary_cache, "hit");
+  assert.doesNotMatch(JSON.stringify(metrics), /fake-native-token|latest request|Old decisions|Keep project/);
+});
+
+test("does not summarize in-budget or native requests, or when recovery is disabled or cannot help", async (context) => {
+  const input = [{ role: "user", content: "x".repeat(10000) }, { role: "assistant", content: "old" }, { role: "user", content: "latest" }];
+  for (const scenario of ["within", "native", "disabled", "tools", "latest", "pending", "model", "auth"]) {
+    const options = { summaryModel: "gpt-test", opencodeSoftLimitTokens: 1000, opencodeHardLimitTokens: 1400 };
+    if (scenario === "disabled") options.autoBudgetHandoff = false;
+    if (scenario === "model") options.summaryModel = "missing";
+    const { calls, send } = await fixture(context, options);
+    const body = { model: scenario === "native" ? "gpt-test" : "deepseek-test", input: structuredClone(input) };
+    if (scenario === "within") body.input = [{ role: "user", content: "hello" }];
+    if (scenario === "tools") body.tools = [{ type: "function", name: "tool", description: "x".repeat(10000) }];
+    if (scenario === "latest") body.input.at(-1).content = "x".repeat(10000);
+    if (scenario === "pending") body.input.splice(2, 0, { type: "function_call", call_id: "pending", name: "tool", arguments: "{}" });
+    const response = await send(body, scenario === "auth" ? { authorization: "" } : {});
+    assert.equal(response.status, ["within", "native"].includes(scenario) ? 200 : scenario === "auth" ? 401 : 413, scenario);
+    await response.text();
+    assert.equal(calls.length, ["within", "native"].includes(scenario) ? 1 : 0, scenario);
+  }
+});
+
+test("summarizes at the soft threshold before reaching the hard limit", async (context) => {
+  const metrics = [];
+  let summaries = 0;
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 500,
+    opencodeHardLimitTokens: 2000, onMetric: (metric) => metrics.push(metric), fetcher: async (_url, options) => {
+      if (JSON.parse(options.body).model === "gpt-test") summaries++;
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "summary" }] }] });
+    } });
+  const response = await send({ model: "deepseek-test", input: [
+    { role: "user", content: "x".repeat(4000) }, { role: "user", content: "latest" },
+  ] });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(summaries, 1);
+  assert.ok(metrics[0].budget_initial_tokens > 500 && metrics[0].budget_initial_tokens < 2000);
+  assert.ok(metrics[0].estimated_input_tokens < 500);
+});
+
+test("a failed or insufficient budget summary never forwards oversized context or retries endlessly", async (context) => {
+  for (const kind of ["http-error", "incomplete", "still-large"]) {
+    let calls = 0;
+    const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 1000,
+      opencodeHardLimitTokens: 1400, fetcher: async () => {
+        calls++;
+        if (kind === "http-error") return new Response("failed", { status: 503 });
+        return Response.json({ status: kind === "incomplete" ? "incomplete" : "completed", output: [
+          { type: "message", content: [{ type: "output_text", text: "x".repeat(10000) }] },
+        ] });
+      } });
+    const input = [{ role: "user", content: "x".repeat(10000) }, { role: "user", content: "latest" }];
+    const response = await send({ model: "deepseek-test", input });
+    assert.equal(response.status, kind === "still-large" ? 413 : 502, kind);
+    await response.text();
+    assert.equal(calls, 1);
+    assert.equal(input[0].content.length, 10000);
+  }
+});
+
 test("records received bytes for rejected and empty input", async (context) => {
   const metrics = [];
   const { send, base } = await fixture(context, { maxBytes: 200, onMetric: (metric) => metrics.push(metric) });

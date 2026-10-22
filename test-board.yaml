@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-019
+    title: "入力予算: 古い完了履歴の自動要約で413を回復する"
+    feature: "入力予算管理"
+    scenario: "ツール定義と最新ターンを保持し、上限に近い履歴を一度だけ要約して再計測する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/compaction-handoff.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [25]
+    notes: "413→要約→200、同一prefixキャッシュ、認証分離、予算内無呼出、巨大固定入力/未完了ツール/要約失敗の停止を検証。境界と指示保持はtest/compaction-handoff.test.mjs。"
   - id: TC-018
     title: "モデル切替と圧縮: ツール項目のIDを型に合わせる"
     feature: "双方向モデル切替"
