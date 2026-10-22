@@ -125,7 +125,7 @@ OpenCode Go の大半のモデル: chat/completions のみ
 | Effort | `low` / `medium` / `high` を temperature と指示文に反映 |
 | 使用量 | スレッド別のトークン数・概算金額をローカルで記録 |
 | 認証 | OpenCode のログイン（OAuth）を流用。APIキー不要 |
-| 暴走ガード | 1分あたりの上限を超えたら 429 を返して停止 |
+| 暴走ガード | スレッド単位で1分あたりの上限を超えたら 429（`Retry-After` 付き） |
 | 自動フォールバック | モデルが `/chat/completions` 非対応なら `/responses` に自動切替 |
 
 ---
@@ -254,9 +254,14 @@ Codex
 | `PORT` | `8788` | 待ち受けポート |
 | `UPSTREAM_BASE` | `https://opencode.ai/inference/go/openai/v1` | 転送先 |
 | `DEFAULT_MODEL` | `deepseek-v4.1-flash` | モデル未指定時 |
-| `MAX_REQ_PER_MIN` | `40` | 暴走ガードの上限 |
+| `MAX_REQ_PER_MIN` | `40` | 暴走ガードの上限（スレッド単位） |
+| `MAX_REQ_PER_MIN_GLOBAL` | `0` | 全スレッド合計の上限。`0` で無効 |
 | `LOG_LEVEL` | `info` | `debug` で全リクエスト表示 |
 | `DISABLE_DUMP` | （なし） | `1` でリクエスト保存を無効化 |
+
+暴走ガードはスレッド単位で数え、拒否した要求は数えません。上限を超えた 429 には
+`Retry-After`（秒）が付きます。`MAX_REQ_PER_MIN_GLOBAL` を設定した場合だけ、
+全スレッド合計の安全上限も働きます。
 
 ### Codex 側の設定
 

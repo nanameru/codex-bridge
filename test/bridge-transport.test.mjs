@@ -16,20 +16,15 @@ async function listen(server) {
   return server.address().port;
 }
 
-test("actual bridge sends model controls and stable conversation sessions to mock upstream", { timeout: 15000 }, async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "bridge-transport-"));
-  const calls = [];
-  const mock = http.createServer(async (request, response) => {
-    let text = "";
-    for await (const chunk of request) text += chunk;
-    calls.push({ body: JSON.parse(text), headers: request.headers });
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OK" }, finish_reason: "stop" }] }));
-  });
-  const mockPort = await listen(mock);
+async function reservePort() {
   const reservation = http.createServer();
   const port = await listen(reservation);
   await new Promise((done) => reservation.close(done));
+  return port;
+}
+
+async function bootBridge(context, { directory, env = {} }) {
+  const port = await reservePort();
   let script = join(root, "src/codex-bridge.mjs");
   if (process.env.LEGACY_BRIDGE_SOURCE) {
     script = join(directory, "codex-bridge.mjs");
@@ -39,17 +34,14 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     assert.equal(patched.status, 0, patched.stderr);
   }
   const child = spawn(process.execPath, [script], { env: { ...process.env, HOME: directory, PORT: String(port),
-    OPENCODE_API_KEY: "dummy-test-token", UPSTREAM_BASE: `http://127.0.0.1:${mockPort}/v1`,
-    DISABLE_DUMP: "1", PRUNE_EXISTING_DUMPS: "0", USAGE_HOST: "", LOG_LEVEL: "info" }, stdio: ["ignore", "pipe", "pipe"] });
+    OPENCODE_API_KEY: "dummy-test-token", DISABLE_DUMP: "1", PRUNE_EXISTING_DUMPS: "0", USAGE_HOST: "", LOG_LEVEL: "info", ...env },
+  stdio: ["ignore", "pipe", "pipe"] });
   context.after(async () => {
     if (child.exitCode === null && child.signalCode === null) {
       const exited = once(child, "exit");
       child.kill("SIGTERM");
       await exited;
     }
-    mock.closeAllConnections();
-    await new Promise((done) => mock.close(done));
-    await rm(directory, { recursive: true, force: true });
   });
   let logs = "";
   await new Promise((done, reject) => {
@@ -62,11 +54,41 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     child.once("error", (error) => { clearTimeout(timer); reject(error); });
     child.once("exit", () => { clearTimeout(timer); reject(new Error("bridge startup failed: " + logs)); });
   });
+  return { child, port, get logs() { return logs; } };
+}
+
+async function startMock(context, { directory }) {
+  const calls = [];
+  const mock = http.createServer(async (request, response) => {
+    let text = "";
+    for await (const chunk of request) text += chunk;
+    calls.push({ body: JSON.parse(text), headers: request.headers });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OK" }, finish_reason: "stop" }] }));
+  });
+  const mockPort = await listen(mock);
+  context.after(async () => {
+    mock.closeAllConnections();
+    await new Promise((done) => mock.close(done));
+    await rm(directory, { recursive: true, force: true });
+  });
+  return { calls, mockPort };
+}
+
+function postResponse(port, body) {
+  return fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
+    headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(5000),
+    body: JSON.stringify(body) });
+}
+
+test("actual bridge sends model controls and stable conversation sessions to mock upstream", { timeout: 15000 }, async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "bridge-transport-"));
+  const { calls, mockPort } = await startMock(context, { directory });
+  const { port } = await bootBridge(context, { directory,
+    env: { UPSTREAM_BASE: `http://127.0.0.1:${mockPort}/v1` } });
   for (const [model, effort, thread] of [["deepseek-v4.1-flash", "low", "chat-A"],
     ["deepseek-v4-pro", "high", "chat-A"], ["deepseek-v4.1-flash", "none", "chat-B"], ["hy4-preview", "low", "chat-B"]]) {
-    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
-      headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(5000),
-      body: JSON.stringify({ model, reasoning: { effort }, prompt_cache_key: thread, input: "Hello", stream: false }) });
+    const response = await postResponse(port, { model, reasoning: { effort }, prompt_cache_key: thread, input: "Hello", stream: false });
     assert.equal(response.status, 200, await response.text());
   }
   assert.equal(calls[0].body.reasoning_effort, "low");
@@ -79,4 +101,23 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.equal(sessions[2], sessions[3]);
   assert.notEqual(sessions[0], sessions[2]);
   assert.ok(sessions.every((session) => /^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(session)));
+});
+
+test("runaway guard counts per thread and returns retry-after", { timeout: 15000 }, async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "bridge-guard-"));
+  const { calls, mockPort } = await startMock(context, { directory });
+  const { port } = await bootBridge(context, { directory,
+    env: { UPSTREAM_BASE: `http://127.0.0.1:${mockPort}/v1`, MAX_REQ_PER_MIN: "2" } });
+  const request = (thread) => postResponse(port, { model: "deepseek-v4.1-flash", prompt_cache_key: thread, input: "Hello", stream: false });
+
+  assert.equal((await request("chat-A")).status, 200);
+  assert.equal((await request("chat-A")).status, 200);
+  const denied = await request("chat-A");
+  assert.equal(denied.status, 429);
+  assert.equal(denied.headers.get("retry-after"), "60");
+  assert.equal((await denied.json()).error.type, "rate_limit_exceeded");
+
+  // 別スレッドは巻き添えにならない
+  assert.equal((await request("chat-B")).status, 200);
+  assert.equal(calls.length, 3);
 });

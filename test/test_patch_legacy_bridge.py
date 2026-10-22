@@ -6,6 +6,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from patch_legacy_bridge import IMPORT, REPLACEMENTS, patched_source, prepare, main
+from patch_legacy_bridge import GUARD_IMPORT
 
 
 class LegacyPatchTests(unittest.TestCase):
@@ -22,31 +23,56 @@ class LegacyPatchTests(unittest.TestCase):
                 main()
                 main()
             self.assertEqual(module.read_bytes(), (repository / "src/upstream-options.mjs").read_bytes())
+            guard_module = target.with_name("request-guard.mjs")
+            self.assertEqual(guard_module.read_bytes(), (repository / "src/request-guard.mjs").read_bytes())
             self.assertEqual(target.read_text(), "export {};\n")
             backups = list(Path(directory).glob("upstream-options.mjs.bak.latency.*"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_bytes(), previous)
+            self.assertEqual(list(Path(directory).glob("request-guard.mjs.bak.latency.*")), [])
 
     def test_patches_only_known_fragments_and_is_idempotent(self):
-        source = "\n".join(old * count for old, _new, count in REPLACEMENTS)
+        source = 'import http from "node:http";\n'
+        source += "\n".join(old * count for old, _new, count in REPLACEMENTS)
         source += "\nPRESERVE_REASONING_AND_TIMEOUTS"
         result = patched_source(source)
         self.assertIn(IMPORT, result)
+        self.assertIn(GUARD_IMPORT, result)
+        self.assertEqual(result.count(IMPORT), 1)
         self.assertIn("PRESERVE_REASONING_AND_TIMEOUTS", result)
         self.assertEqual(patched_source(result), result)
         self.assertEqual(result.count("upstreamSession(body, SESSION_ID)"), 3)
+        self.assertIn("requestGuard.check(threadId)", result)
+        self.assertNotIn("guardTripped", result)
 
-    def test_refuses_source_drift_and_partial_patches(self):
+    def test_adds_guard_to_already_patched_bridge_without_duplicating_imports(self):
+        fragments = "\n".join(old * count for old, _new, count in REPLACEMENTS)
+        already_patched = 'import http from "node:http";\n' + IMPORT + "\n" + fragments
+        result = patched_source(already_patched)
+        self.assertEqual(result.count(IMPORT), 1)
+        self.assertEqual(result.count(GUARD_IMPORT), 1)
+        self.assertEqual(patched_source(result), result)
+
+    def test_refuses_source_drift_and_partial_rewrites(self):
         with self.assertRaises(ValueError):
             patched_source("unrecognized source")
         with self.assertRaises(ValueError):
             patched_source(IMPORT)
-        original = "\n".join(old * count for old, _new, count in REPLACEMENTS)
+        original = 'import http from "node:http";\n'
+        original += "\n".join(old * count for old, _new, count in REPLACEMENTS)
         complete = patched_source(original)
-        for old, new, _count in REPLACEMENTS[1:]:
-            with self.subTest(fragment=old):
-                with self.assertRaises(ValueError):
-                    patched_source(complete.replace(new, old, 1))
+        chat_call = 'doFetch("/chat/completions", chatBody, authInfo.token, clientAbort.signal)'
+        chat_call_new = next(new for old, new, _count in REPLACEMENTS if old == chat_call)
+        with self.assertRaises(ValueError):
+            patched_source(complete.replace(chat_call_new, chat_call, 1))
+
+    def test_reapplies_single_missing_fragment(self):
+        original = 'import http from "node:http";\n'
+        original += "\n".join(old * count for old, _new, count in REPLACEMENTS)
+        complete = patched_source(original)
+        reverted = complete.replace("presence_penalty: 0.1,\n        ...reasoningOptions(model, body.reasoning?.effort),",
+                                    "presence_penalty: 0.1,", 1)
+        self.assertEqual(patched_source(reverted), complete)
 
     def test_refuses_symlinks_and_existing_different_modules_without_writes(self):
         with tempfile.TemporaryDirectory() as directory:

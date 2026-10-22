@@ -40,7 +40,7 @@ Codex  ──/v1/responses──▶  codex-bridge  ──/chat/completions──
 - Per-thread token and cost tracking (`http://127.0.0.1:8788/usage`)
 - Reuses your OpenCode login (OAuth) — **no API key required**
 - Automatic fallback to `/responses` for models that reject `chat/completions`
-- Runaway guard (429 after N requests per minute)
+- Per-thread runaway guard (429 with `Retry-After` after N requests per minute)
 
 ## Quick start
 
