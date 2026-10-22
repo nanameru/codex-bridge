@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
-import { normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
+import { normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
@@ -389,6 +389,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const customNames = new Set((nativeTool ? [] : body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
       if (route.provider === "opencode" && !directResponses && upstream.ok) {
         await pipeline(Readable.fromWeb(upstream.body), meter, toolResponseStream(customNames, responseHeaders["content-type"], maxBytes),
+          response, { signal: abort.signal });
+      } else if (route.provider === "opencode" && directResponses && upstream.ok) {
+        await pipeline(Readable.fromWeb(upstream.body), meter, normalizeResponseStream(responseHeaders["content-type"], maxBytes),
           response, { signal: abort.signal });
       } else {
         await pipeline(Readable.fromWeb(upstream.body), meter, response, { signal: abort.signal });

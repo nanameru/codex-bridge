@@ -110,8 +110,9 @@ test("existing sessions without the direct marker keep their legacy transport", 
   assert.equal(calls[0].body.tools[0].type, "function");
 });
 
-test("direct Responses preserves native custom events and upstream failures without fallback", async (context) => {
-  const event = 'data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"ctc_native","call_id":"native","name":"exec","input":"read file"}}\n\n';
+test("direct Responses preserves native custom events, normalizes phases, and never falls back", async (context) => {
+  const event = 'data: {"type":"response.output_item.added","item":{"type":"message","id":"msg_1","role":"assistant","content":[]}}\n\n'
+    + 'data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"ctc_native","call_id":"native","name":"exec","input":"read file"}}\n\n';
   for (const status of [200, 400, 429, 302]) {
     let count = 0;
     const { send } = await fixture(context, { fetcher: async (_url, options) => {
@@ -124,7 +125,12 @@ test("direct Responses preserves native custom events and upstream failures with
     const response = await send({ model: "direct-test", tools: [{ type: "custom", name: "exec" }] });
     assert.equal(response.status, status === 302 ? 502 : status);
     const text = await response.text();
-    if (status === 200) assert.equal(text, event);
+    if (status === 200) {
+      assert.match(text, /"type":"message"/);
+      assert.match(text, /"phase":"final_answer"/);
+      assert.match(text, /"type":"custom_tool_call"/);
+      assert.doesNotMatch(text, /"type":"function_call"/);
+    }
     if (status === 400 || status === 429) {
       assert.equal(text, "upstream-error");
       assert.equal(response.headers.get("retry-after"), "5");

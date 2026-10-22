@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-023
+    title: "OpenCode直結回答: phaseをfinal_answerへ正規化する"
+    feature: "応答表示の互換性"
+    scenario: "phaseを持たないOpenCode assistant messageをfinal_answerへ補完し、既存phaseとツール項目を変更しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-adapter.mjs, src/model-router.mjs]
+    test_file: test/tool-adapter.test.mjs
+    issues: [37]
+    notes: "GPTとOpenCodeのapp-serverイベント差を実測し、direct SSE・通常JSON・chatブリッジのphase補完を検証。既存commentaryとfunction_callは保持。実APIではephemeral DeepSeek応答がfinal_answerになり、item/startedとitem/completedが各1回であることを確認。"
   - id: TC-022
     title: "Flashコードモード: 標準execで実行しプロンプトを変更しない"
     feature: "ツール定義の軽量化"
