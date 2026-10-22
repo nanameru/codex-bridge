@@ -137,6 +137,21 @@ class UnifiedConfigTests(unittest.TestCase):
                          ["opencode/deepseek-v4.1-flash", "gpt-other"])
         self.assertEqual([model["priority"] for model in result], [1, 2])
 
+    def test_only_officially_supported_models_use_direct_responses(self):
+        slugs = ["deepseek-v4.1-flash", "deepseek-v4-pro", "grok-4.7", "gpt-6-luna", "hy4-preview"]
+        (self.root / "models_cache.json").write_text(json.dumps({"models": [{"slug": "gpt-native"}]}))
+        (self.root / "model-catalog.json").write_text(json.dumps({"models": [
+            {"slug": slug, "router_transport": "responses"} for slug in slugs]}))
+        source = self.root / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src/models.json").write_text(json.dumps({"models": [{"id": slug} for slug in slugs]}))
+        models = json.loads(unified_config.prepare(self.root, source).read_text())["models"]
+        routes = {model["slug"]: model.get("router_transport") for model in models}
+        self.assertIsNone(routes["gpt-native"])
+        for slug in slugs[:-1]:
+            self.assertEqual(routes["opencode/" + slug], "responses")
+        self.assertEqual(routes["opencode/hy4-preview"], "chat")
+
     def test_prepare_sanitizes_display_text_and_rejects_bad_ids(self):
         native = {"models": [{"slug": "gpt-test", "display_name": "GPT\u001b[31mX"}]}
         opencode = {"models": [{"slug": "opencode-test", "display_name": "Go\u202eX"}]}

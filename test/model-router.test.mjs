@@ -3,12 +3,16 @@ import http from "node:http";
 import { once } from "node:events";
 import test from "node:test";
 import * as zlib from "node:zlib";
-import { catalogRoutes, createRouter, estimateInputTokens, routedBody } from "../src/model-router.mjs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { catalogRoutes, createRouter, estimateInputTokens, readOpenCodeKey, routedBody } from "../src/model-router.mjs";
 
 const catalog = { models: [
   { slug: "gpt-test", router_provider: "openai" },
   { slug: "opencode/deepseek-test", router_provider: "opencode", router_model: "deepseek-test" },
   { slug: "opencode/gpt-test", router_provider: "opencode", router_model: "gpt-test" },
+  { slug: "opencode/direct-test", router_provider: "opencode", router_model: "direct-test", router_transport: "responses" },
 ] };
 
 async function listen(server) {
@@ -36,7 +40,8 @@ async function fixture(context, options = {}) {
   const bridge = upstream("opencode");
   const nativeBase = await listen(native);
   const bridgeBase = await listen(bridge);
-  const router = createRouter({ catalog, nativeBase, bridgeBase, allowTestOrigins: true, ...options });
+  const router = createRouter({ catalog, nativeBase, bridgeBase, openCodeBase: bridgeBase,
+    openCodeKey: () => "fake-opencode-key", allowTestOrigins: true, ...options });
   const base = await listen(router);
   context.after(async () => { await close(router); await close(native); await close(bridge); });
   const send = (body, headers = {}) => fetch(base + "/responses", {
@@ -45,6 +50,79 @@ async function fixture(context, options = {}) {
   });
   return { calls, base, send };
 }
+
+test("direct authentication uses API keys only and never extracts login credentials", (context) => {
+  const home = mkdtempSync(join(tmpdir(), "direct-auth-"));
+  context.after(() => rmSync(home, { recursive: true, force: true }));
+  const directory = join(home, ".local/share/opencode");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "opencode.db"), "DO NOT READ LOGIN CREDENTIALS");
+  writeFileSync(join(directory, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "test-api" } }));
+  const options = { home, environment: {} };
+  assert.equal(readOpenCodeKey(options), "test-api");
+  assert.equal(readOpenCodeKey({ ...options, environment: { OPENCODE_API_KEY: "test-override" } }), "test-override");
+  writeFileSync(join(directory, "auth.json"), "{}");
+  assert.equal(readOpenCodeKey(options), null);
+});
+
+test("official Responses bypasses conversion, GPT summaries and heuristic budget rejection", async (context) => {
+  const { calls, send, base } = await fixture(context, { opencodeSoftLimitTokens: 1, opencodeHardLimitTokens: 1 });
+  const body = { model: "opencode/direct-test", prompt_cache_key: "thread-direct", instructions: "constraints",
+    reasoning: { effort: "high" }, previous_response_id: "resp_previous", stream: true,
+    tools: [{ type: "custom", name: "exec", format: { type: "text" } }], input: [
+      { type: "compaction", encrypted_content: "provider-owned-history" },
+      { type: "reasoning", encrypted_content: "native-reasoning", summary: [] },
+      { type: "custom_tool_call", call_id: "call_tool", name: "exec", input: "read file" },
+      { type: "custom_tool_call_output", call_id: "call_tool", output: "x".repeat(10000) },
+      { role: "user", content: "continue" },
+    ] };
+  const response = await send(body, { "chatgpt-account-id": "private-account", session_id: "session-direct" });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].provider, "opencode");
+  assert.deepEqual(calls[0].body, { ...body, model: "direct-test" });
+  assert.equal(calls[0].headers.authorization, "Bearer fake-opencode-key");
+  assert.equal(calls[0].headers["chatgpt-account-id"], undefined);
+  assert.equal(calls[0].headers.session_id, "session-direct");
+  assert.equal(calls[0].headers["x-opencode-session"], "session-direct");
+  const compact = await fetch(base + "/responses/compact", { method: "POST",
+    headers: { authorization: "Bearer native-token", "content-type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal(compact.status, 200, await compact.text());
+  assert.equal(calls[1].path, "/v1/responses/compact");
+  assert.deepEqual(calls[1].body, { ...body, model: "direct-test" });
+});
+
+test("direct Responses fails closed without OpenCode credentials and never falls back to GPT", async (context) => {
+  const { calls, send } = await fixture(context, { openCodeKey: () => null });
+  const response = await send({ model: "direct-test", input: [{ type: "compaction", encrypted_content: "opaque" }] });
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /opencode_auth_required/);
+  assert.equal(calls.length, 0);
+});
+
+test("direct Responses preserves native custom events and upstream failures without fallback", async (context) => {
+  const event = 'data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"ctc_native","call_id":"native","name":"exec","input":"read file"}}\n\n';
+  for (const status of [200, 400, 429, 302]) {
+    let count = 0;
+    const { send } = await fixture(context, { fetcher: async (_url, options) => {
+      count++;
+      assert.equal(options.headers.authorization, "Bearer fake-opencode-key");
+      assert.equal(options.redirect, "manual");
+      return new Response(status === 200 ? event : "upstream-error", { status,
+        headers: { "content-type": "text/event-stream", "retry-after": "5", location: "https://example.org/" } });
+    } });
+    const response = await send({ model: "direct-test", tools: [{ type: "custom", name: "exec" }] });
+    assert.equal(response.status, status === 302 ? 502 : status);
+    const text = await response.text();
+    if (status === 200) assert.equal(text, event);
+    if (status === 400 || status === 429) {
+      assert.equal(text, "upstream-error");
+      assert.equal(response.headers.get("retry-after"), "5");
+    }
+    assert.equal(count, 1);
+  }
+  assert.throws(() => createRouter({ catalog, openCodeBase: "https://example.org/v1" }), /公式origin/);
+});
 
 test("routes both switching directions without changing thread metadata or messages", async (context) => {
   const { calls, send } = await fixture(context);

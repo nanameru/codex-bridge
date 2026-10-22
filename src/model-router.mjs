@@ -25,11 +25,15 @@ export function catalogRoutes(catalog) {
       throw new Error("モデルの転送先が不正です");
     }
     if (routes.has(model.slug)) throw new Error("モデル名が重複しています");
-    routes.set(model.slug, { provider: model.router_provider, model: model.router_model ?? model.slug });
+    if (model.router_transport !== undefined && !["responses", "chat"].includes(model.router_transport)) {
+      throw new Error("モデルのAPI形式が不正です");
+    }
+    routes.set(model.slug, { provider: model.router_provider, model: model.router_model ?? model.slug,
+      ...(model.router_transport ? { transport: model.router_transport } : {}) });
   }
   for (const model of catalog.models) {
     if (model.router_provider === "opencode" && model.router_model && !routes.has(model.router_model)) {
-      routes.set(model.router_model, { provider: "opencode", model: model.router_model });
+      routes.set(model.router_model, { ...routes.get(model.slug), model: model.router_model });
     }
   }
   return routes;
@@ -37,6 +41,7 @@ export function catalogRoutes(catalog) {
 
 export function routedBody(body, route, maxBytes) {
   const result = { ...body, model: route.model };
+  if (route.provider === "opencode" && route.transport === "responses") return result;
   if (Array.isArray(body.input)) {
     result.input = body.input.filter((item) => {
       if (item.type !== "reasoning") return true;
@@ -74,7 +79,16 @@ function envLimit(name, fallback) {
   return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
+export function readOpenCodeKey({ environment = process.env, home = homedir() } = {}) {
+  if (environment.OPENCODE_API_KEY) return environment.OPENCODE_API_KEY;
+  try {
+    const auth = JSON.parse(readFileSync(join(home, ".local/share/opencode/auth.json"), "utf8"))["opencode-go"];
+    return auth?.type === "api" && typeof auth.key === "string" && auth.key.length > 0 ? auth.key : null;
+  } catch { return null; }
+}
+
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
+  openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
   nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
   summaryModel = "gpt-6.1-sol", onMetric = () => {},
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
@@ -82,6 +96,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   const routes = catalogRoutes(catalog);
   const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes });
   const bridge = new URL(bridgeBase);
+  const direct = new URL(openCodeBase);
+  if ((direct.origin !== "https://opencode.ai" && !(allowTestOrigins && direct.protocol === "http:"
+      && ["127.0.0.1", "[::1]"].includes(direct.hostname))) || direct.username || direct.password || direct.search || direct.hash) {
+    throw new Error("OpenCode認証の転送先は公式originに限定されます");
+  }
   if (bridge.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(bridge.hostname)
       || bridge.username || bridge.password || bridge.search || bridge.hash) {
     throw new Error("OpenCodeブリッジはloopback HTTPで指定してください");
@@ -177,21 +196,23 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       metric.provider = route.provider;
+      const directResponses = route.provider === "opencode" && route.transport === "responses";
+      if (directResponses) metric.transport = "responses";
       metric.model = nativeTool ? undefined : body.model;
       metric.input_items = Array.isArray(body.input) ? body.input.length : undefined;
       metric.tools_count = Array.isArray(body.tools) ? body.tools.length : 0;
       metric.tools_bytes = Array.isArray(body.tools) ? Buffer.byteLength(JSON.stringify(body.tools)) : 0;
       metric.instructions_bytes = typeof body.instructions === "string" ? Buffer.byteLength(body.instructions) : 0;
       metric.input_bytes = Array.isArray(body.input) ? Buffer.byteLength(JSON.stringify(body.input)) : 0;
-      if (route.provider === "opencode" && path.endsWith("/compact")) {
+      if (route.provider === "opencode" && !directResponses && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
         return;
       }
-      if (!nativeTool && body.previous_response_id) {
+      if (!nativeTool && !directResponses && body.previous_response_id) {
         fail(response, 422, "history_required", "提供元をまたぐため、previous_response_idではなく全履歴を送信してください");
         return;
       }
-      if (route.provider === "opencode" && Array.isArray(body.input)
+      if (route.provider === "opencode" && !directResponses && Array.isArray(body.input)
           && body.input.some((item) => item.type === "item_reference")) {
         fail(response, 422, "history_required", "参照IDだけでは履歴を引き継げません。展開した履歴が必要です");
         return;
@@ -200,6 +221,21 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const nativeDestination = nativeBase ?? (/^Bearer sk-/i.test(request.headers.authorization)
         ? "https://api.openai.com/v1" : "https://chatgpt.com/backend-api/codex");
       let destination = bridge.href.replace(/\/$/, "");
+      if (directResponses) {
+        const key = openCodeKey();
+        if (!key) {
+          fail(response, 503, "opencode_auth_required", "OpenCode GoのAPIキーを設定してください。GPTへの自動切替は行いません");
+          return;
+        }
+        destination = direct.href.replace(/\/$/, "");
+        headers.authorization = "Bearer " + key;
+        headers["user-agent"] = request.headers["user-agent"] ?? "codex-bridge/official-responses";
+        const session = request.headers.session_id ?? body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id;
+        if (typeof session === "string" && session.length > 0 && session.length <= 200) {
+          headers["x-opencode-session"] = session;
+          headers.session_id = session;
+        }
+      }
       if (route.provider === "openai") {
         destination = nativeDestination;
         for (const [name, value] of Object.entries(request.headers)) {
@@ -208,7 +244,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           }
         }
       }
-      if (route.provider === "opencode" && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
+      if (route.provider === "opencode" && !directResponses && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
         if (routes.get(summaryModel)?.provider !== "openai") {
           fail(response, 422, "summary_model_required", "圧縮履歴の引き継ぎに使うOpenAIモデルがカタログにありません");
           return;
@@ -241,11 +277,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.forwarded_tools_bytes = Array.isArray(routedObject.tools)
         ? Buffer.byteLength(JSON.stringify(routedObject.tools)) : 0;
       metric.estimated_input_tokens = estimateInputTokens(routed);
-      if (route.provider === "opencode" && opencodeSoftLimitTokens > 0
+      if (route.provider === "opencode" && !directResponses && opencodeSoftLimitTokens > 0
           && metric.estimated_input_tokens > opencodeSoftLimitTokens) {
         metric.budget_warning = true;
       }
-      if (route.provider === "opencode" && opencodeHardLimitTokens > 0
+      if (route.provider === "opencode" && !directResponses && opencodeHardLimitTokens > 0
           && metric.estimated_input_tokens > opencodeHardLimitTokens) {
         metric.stage = "budget_rejected";
         fail(response, 413, "input_budget_exceeded",
@@ -286,7 +322,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         callback(null, chunk);
       } });
       const customNames = new Set((nativeTool ? [] : body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
-      if (route.provider === "opencode" && upstream.ok) {
+      if (route.provider === "opencode" && !directResponses && upstream.ok) {
         await pipeline(Readable.fromWeb(upstream.body), meter, toolResponseStream(customNames, responseHeaders["content-type"], maxBytes),
           response, { signal: abort.signal });
       } else {

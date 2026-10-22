@@ -1,5 +1,36 @@
 # codex-bridge
 
+## 公式Responsesへ直接接続する（対応モデル向け）
+
+OpenCode Goの公式案内でResponsesに対応するDeepSeek V4、GPT、Grok、Muse Sparkは、
+独自のchat/completions変換を使わずCodexから接続できます。
+根拠: https://opencode.ai/v2/docs/console/harnesses/codex/
+
+```bash
+python3 scripts/direct_codex.py configure
+~/.codex/bin/codex-opencode
+```
+
+`opencode-go-direct`という独立したprovider/profileを追加します。既定モデル、既存チャット、
+profileは`~/.codex/opencode-go-direct.config.toml`に保存します。
+実行中のrouterは変更しません。APIキーは`OPENCODE_API_KEY`、または
+`~/.local/share/opencode/auth.json`の`opencode-go`に保存したAPIキーを利用し、
+子プロセスの環境変数へ渡します。ログインDB/OAuthは読みません。キーをチャットやGitへ記録しないでください。
+
+このprofileの経路は`Codex → OpenCode公式Responses API`です。通常の履歴圧縮は
+Codex標準のlocal compactionが選択モデルへ依頼します。独自routerのGPT要約・ツール変換・
+推定トークン上限チェックを通りません。OpenCode側の利用上限はそのまま適用されます。
+直接接続でのremote `/responses/compact`は検証時404だったため利用しません。
+
+既存のOpenAI暗号化履歴やBridge固有の推論履歴の自動移行は保証しません。
+新しいチャットから使い、移行のために履歴を削除したりGPTへ自動フォールバックしたりはしません。
+未対応モデルは従来のBridge経路に残ります。
+
+統合routerにもモデル別の`router_transport: "responses"`転送を追加していますが、
+既存OpenAI provider内でのremote compactionと同一チャット切替は別の検証が必要です。
+`unified_config.py prepare`はカタログを更新するため、稼働中の旧routerへ無条件に適用しないでください。
+この直接経路を既存チャットに一括反映することはしません。
+
 ## 同じチャットで GPT ↔ OpenCode を切り替える（統合モード）
 
 モデル名で送信先を選ぶ共通routerを使用できます。GPTはOpenAIへ、

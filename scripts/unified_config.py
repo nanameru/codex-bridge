@@ -14,6 +14,9 @@ ROOT_KEYS = ("openai_base_url", "model_catalog_json")
 BRIDGE_KEYS = ("base_url", "requires_openai_auth", "wire_api")
 BRIDGE_TABLE = ("model_providers", "codex-bridge")
 PINNED_MODELS = ("opencode/deepseek-v4.1-flash", "gpt-6.1-sol")
+DIRECT_RESPONSES_MODELS = frozenset(("deepseek-v4.1-flash", "deepseek-v4-pro", "gpt-6-luna",
+                                   "gpt-5.6-luna", "grok-4.7", "muse-spark-1.2-contributor",
+                                   "muse-spark-1.3-contributor"))
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])")
 UNSAFE_TEXT = re.compile(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 MODEL_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -137,7 +140,8 @@ def prepare(root, source_root):
         name = clean_text(model.get("display_name"), 120, slug)
         safe = {**model, "slug": "opencode/" + slug,
                 "display_name": "OpenCode · " + name,
-                "router_provider": "opencode", "router_model": slug}
+                "router_provider": "opencode", "router_model": slug,
+                "router_transport": "responses" if slug in DIRECT_RESPONSES_MODELS else "chat"}
         if "description" in safe:
             safe["description"] = clean_text(safe.get("description"), 500, "")
         models.append(safe)
