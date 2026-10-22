@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-021
+    title: "速度比較: GPTとDeepSeekの利用者設定と履歴条件を揃える"
+    feature: "同条件の速度計測"
+    scenario: "新規スレッド・共通入力・推論強度lowを維持し、初回と反復、usageとツール数を分けて記録する"
+    status: done
+    priority: medium
+    type: regression
+    source: [test/live-router-smoke.py]
+    test_file: test/test_live_comparison.py
+    issues: [33]
+    notes: "模擬app-serverで条件一致・指示非上書き・4回上限・順序反転・失敗時停止・本文非出力・設定分離を検証。実課金比較は未実行で速度差やキャッシュヒットは未検証。モデル固有の既定指示は維持。"
   - id: TC-020
     title: "公式接続: APIキーとCodex標準圧縮だけでOpenCodeへ接続する"
     feature: "公式Responses直接接続"
