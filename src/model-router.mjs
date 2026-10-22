@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
-import { openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
+import { normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
 import { compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
@@ -42,7 +42,7 @@ export function routedBody(body, route, maxBytes) {
       if (item.type !== "reasoning") return true;
       const bridgeReasoning = typeof item.encrypted_content === "string" && item.encrypted_content.startsWith("cxb1:");
       return route.provider === "opencode" ? bridgeReasoning : !bridgeReasoning;
-    });
+    }).map(normalizeToolCallId);
   }
   return route.provider === "opencode" ? openCodeBody(result, maxBytes) : result;
 }

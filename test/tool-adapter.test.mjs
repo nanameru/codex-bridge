@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Readable } from "node:stream";
-import { nativeToolPayload, openCodeBody, toolResponseStream } from "../src/tool-adapter.mjs";
+import { nativeToolPayload, normalizeToolCallId, openCodeBody, toolResponseStream } from "../src/tool-adapter.mjs";
+
+test("normalizes only mismatched tool item prefixes idempotently and preserves execution IDs", () => {
+  for (const [type, id, expected] of [
+    ["custom_tool_call", "fc_legacy", "ctc_legacy"],
+    ["function_call", "ctc_native", "fc_native"],
+    ["custom_tool_call", "ctc_native", "ctc_native"],
+    ["function_call", "fc_native", "fc_native"],
+    ["custom_tool_call_output", "fc_untouched", "fc_untouched"],
+    ["message", "fc_untouched", "fc_untouched"],
+    ["custom_tool_call", undefined, undefined],
+  ]) {
+    const original = { type, id, call_id: "call_stable" };
+    const fixed = normalizeToolCallId(original);
+    assert.deepEqual(fixed, { ...original, id: expected });
+    assert.deepEqual(normalizeToolCallId(fixed), fixed);
+    assert.equal(original.id, id);
+  }
+});
 
 test("preserves freeform tool history and schemas through the chat bridge", () => {
   const body = {
@@ -16,6 +34,7 @@ test("preserves freeform tool history and schemas through the chat bridge", () =
   assert.equal(JSON.parse(converted.input[0].arguments).input, body.input[0].input);
   assert.equal(converted.input[1].type, "function_call_output");
   assert.equal(converted.input[1].call_id, "call_1");
+  assert.equal(converted.input[0].id, "fc_1");
   assert.deepEqual(converted.tool_choice, { type: "function", function: { name: "apply_patch" } });
   assert.equal(body.tools[0].type, "custom");
 });
@@ -26,6 +45,8 @@ test("restores freeform outputs while leaving regular functions unchanged", () =
   const result = nativeToolPayload({ output }, new Set(["apply_patch"]));
   assert.equal(result.output[0].type, "custom_tool_call");
   assert.equal(result.output[0].input, "patch");
+  assert.equal(result.output[0].id, "ctc_1");
+  assert.equal(result.output[0].call_id, "call_1");
   assert.equal(result.output[0].arguments, undefined);
   assert.deepEqual(result.output[1], output[1]);
   assert.throws(() => nativeToolPayload({ item: { ...output[0], arguments: "{}" } }, new Set(["apply_patch"])));
@@ -50,6 +71,10 @@ test("adapts split UTF-8 SSE items and final response without buffering the whol
   assert.match(text, /日本語/);
   assert.doesNotMatch(text, /function_call_arguments/);
   assert.doesNotMatch(text, /"type":"function_call"/);
+  const payloads = text.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => JSON.parse(line.slice(5)));
+  assert.deepEqual(payloads.filter((value) => value.item).map((value) => value.item.id), ["ctc_1", "ctc_1"]);
+  assert.equal(payloads.at(-1).response.output[0].id, "ctc_1");
+  assert.equal(item.id, "fc_1");
 });
 
 test("adapts non-streaming JSON responses", async () => {
@@ -58,6 +83,7 @@ test("adapts non-streaming JSON responses", async () => {
   let text = "";
   for await (const chunk of stream) text += chunk;
   assert.equal(JSON.parse(text).output[0].input, "patch");
+  assert.equal(JSON.parse(text).output[0].id, "ctc_1");
 });
 
 test("repairs trailing bridge reasoning for each assistant message and tool group without crossing turns", () => {

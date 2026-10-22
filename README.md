@@ -45,6 +45,8 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
   ヘッダーを渡さず、認証ファイルのコピーや新しいAPIキーの発行は行いません。
 - リクエスト本文やtokenをrouterのログへ保存しません。SSEは逐次転送します。
 - provider固有のreasoningは転送先に合わせて取り扱い、freeformツールの履歴・応答を変換します。
+  ツール項目IDも型に合わせて `fc_` / `ctc_` を変換し、実行を結び付ける `call_id` は保持します。
+  旧版が保存した不整合なIDは通常送信・圧縮・引き継ぎ要約の送信時に補正するため、履歴ファイルの編集は不要です。
   OpenCodeのストリームではreasoning完了をassistant項目の完了より先に渡します。
   旧ストリームでreasoningが後置された履歴も送信時に並べ直し、説明文とツール呼び出しの
   両方へ既存の推論データを引き継ぎます。保存済み会話は変更せず、推論内容の捏造は行いません。

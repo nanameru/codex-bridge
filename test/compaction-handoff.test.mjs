@@ -14,6 +14,20 @@ const completed = () => Response.json({ status: "completed", output: [
   { type: "message", content: [{ type: "output_text", text: "handoff" }] },
 ] });
 
+test("repairs legacy custom tool IDs in native handoff summaries without editing history", async () => {
+  const legacy = { type: "custom_tool_call", id: "fc_legacy", call_id: "call_legacy", name: "apply_patch", input: "patch" };
+  const output = { type: "custom_tool_call_output", call_id: "call_legacy", output: "ok" };
+  const input = [legacy, output, ...body.input];
+  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 10000,
+    fetcher: async (_url, init) => {
+      const sent = JSON.parse(init.body).input;
+      assert.deepEqual(sent.slice(0, 2), [{ ...legacy, id: "ctc_legacy" }, output]);
+      return completed();
+    } });
+  await expand({ input }, options());
+  assert.equal(legacy.id, "fc_legacy");
+});
+
 test("releases a completed SSE handoff without waiting for the connection to close", { timeout: 2000 }, async () => {
   let cancelled = false;
   const expand = compactionHandoff({ model: "gpt-test", maxBytes: 10000,

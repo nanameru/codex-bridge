@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-018
+    title: "モデル切替と圧縮: ツール項目のIDを型に合わせる"
+    feature: "双方向モデル切替"
+    scenario: "freeformツールのJSON/SSE往復と既存fc_付きcustom履歴の通常送信・remote compact・要約を検証する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-adapter.mjs, src/model-router.mjs, src/compaction-handoff.mjs]
+    test_file: test/tool-adapter.test.mjs
+    issues: [23]
+    notes: "型とIDの双方向変換、call_idと元入力の保持、冪等性、通常function保持。HTTPはtest/model-router.test.mjs、要約はtest/compaction-handoff.test.mjsで検証。修正前4件失敗を確認。"
   - id: TC-014
     title: "/modelの先頭: DeepSeek V4.1 FlashとGPT-6.1を固定する"
     feature: "モデル一覧の並び順"
