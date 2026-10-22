@@ -467,22 +467,24 @@ test("a failed or insufficient budget summary never forwards oversized context o
   }
 });
 
-test("does not summarize a compaction handoff a second time in the same request", async (context) => {
+test("extends the original compaction handoff to older completed turns instead of summarizing twice", async (context) => {
   let summaries = 0;
   const metrics = [];
   const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 500,
-    opencodeHardLimitTokens: 1000, onMetric: (metric) => metrics.push(metric), fetcher: async () => {
-      summaries++;
+    opencodeHardLimitTokens: 1000, onMetric: (metric) => metrics.push(metric), fetcher: async (_url, options) => {
+      if (JSON.parse(options.body).model === "gpt-test") summaries++;
       return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "first summary" }] }] });
     } });
   const response = await send({ model: "deepseek-test", input: [
     { type: "compaction", encrypted_content: "opaque" }, { role: "user", content: "x".repeat(10000) },
     { role: "user", content: "recent" }, { role: "user", content: "latest" },
   ] });
-  assert.equal(response.status, 413);
+  assert.equal(response.status, 200);
   await response.text();
   assert.equal(summaries, 1);
   assert.equal(metrics[0].budget_summary_cache, undefined);
+  assert.equal(metrics[0].budget_compaction_extended, true);
+  assert.equal(metrics[0].budget_recovered, true);
 });
 
 test("records reversed soft/hard limits while still recovering at the hard threshold", async (context) => {

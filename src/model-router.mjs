@@ -224,7 +224,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.stage = "handoff";
         const summaryStart = performance.now();
         try {
-          body = await expandCompaction(body, { ...handoffOptions,
+          const boundary = budgetHistoryBoundary(body.input);
+          const threshold = opencodeSoftLimitTokens > 0
+            ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
+          const extend = autoBudgetHandoff && opencodeHardLimitTokens > 0
+            && boundary > body.input.findLastIndex((item) => item.type === "compaction") + 1
+            && estimateInputTokens(JSON.stringify(routedBody(body, route, maxBytes))) > threshold;
+          if (extend) metric.budget_compaction_extended = true;
+          body = await expandCompaction(body, { ...handoffOptions, ...(extend ? { prefixEnd: boundary } : {}),
             observe: ({ cache }) => { metric.summary_cache = cache; } });
           compactionExpanded = true;
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
@@ -273,6 +280,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.forwarded_tools_bytes = Array.isArray(routedObject.tools)
         ? Buffer.byteLength(JSON.stringify(routedObject.tools)) : 0;
       metric.estimated_input_tokens = estimateInputTokens(routed);
+      if (metric.budget_compaction_extended) metric.budget_recovered = metric.estimated_input_tokens <= opencodeHardLimitTokens;
       if (route.provider === "opencode" && opencodeSoftLimitTokens > 0
           && metric.estimated_input_tokens > opencodeSoftLimitTokens) {
         metric.budget_warning = true;
