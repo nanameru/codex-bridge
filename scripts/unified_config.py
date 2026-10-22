@@ -236,6 +236,36 @@ def update_transports(root):
     print(f"カタログのバックアップ: {backup_path}")
 
 
+def configure_flash_code_mode(catalog):
+    model = next((model for model in catalog["models"] if model.get("slug") == "opencode/deepseek-v4.1-flash"), None)
+    if not model or model.get("router_transport") != "responses":
+        raise ValueError("公式Responses接続のFlashが必要です")
+    model.update(tool_mode="code_mode_only", supports_search_tool=True, shell_type="unified_exec")
+
+
+def activate_flash_code_mode(root):
+    path = root / "unified-model-catalog.json"
+    config = tomllib.loads((root / "config.toml").read_text())
+    if (config.get("model_provider") != "codex-bridge"
+            or config.get("model_catalog_json") != str(path)
+            or config.get("model_providers", {}).get("codex-bridge", {}).get("http_headers", {}).get("x-codex-bridge-direct") != "1"):
+        raise ValueError("先に通常codexの公式直接接続を有効にしてください")
+    source = path.read_text()
+    catalog = json.loads(source)
+    configure_flash_code_mode(catalog)
+    if catalog == json.loads(source):
+        return
+    if path.is_symlink() or path.read_text() != source:
+        raise ValueError("カタログが変更されたかリンクです。再確認してください")
+    import tempfile
+    descriptor, backup_path = tempfile.mkstemp(prefix="unified-model-catalog.json.bak.flash-code-mode.", dir=root)
+    with os.fdopen(descriptor, "w") as backup:
+        backup.write(source)
+    atomic_write(path, json.dumps(catalog, ensure_ascii=False))
+    print(f"カタログのバックアップ: {backup_path}")
+    print("Flashのツール設定3項目だけを更新しました。プロセスや既存会話は変更していません。")
+
+
 def activate_normal(root, port):
     path = root / "config.toml"
     source = path.read_text()
@@ -272,12 +302,15 @@ def activate_normal(root, port):
 
 def main():
     parser = argparse.ArgumentParser(description="同じチャットで双方向にモデルを切り替える設定")
-    parser.add_argument("mode", choices=["prepare", "on", "off", "transports", "normal-on"])
+    parser.add_argument("mode", choices=["prepare", "on", "off", "transports", "normal-on", "flash-code-mode"])
     parser.add_argument("--port", type=int, default=8790)
     arguments = parser.parse_args()
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if arguments.mode == "transports":
         update_transports(root)
+        return
+    elif arguments.mode == "flash-code-mode":
+        activate_flash_code_mode(root)
         return
     elif arguments.mode == "normal-on":
         activate_normal(root, arguments.port)

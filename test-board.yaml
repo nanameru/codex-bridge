@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-022
+    title: "Flashコードモード: 標準execで実行しプロンプトを変更しない"
+    feature: "ツール定義の軽量化"
+    scenario: "Flashのツール設定3項目だけを更新し、標準コードモードのツール結果を公式Responsesへ返す"
+    status: done
+    priority: high
+    type: integration
+    source: [scripts/unified_config.py, test/codex-code-mode-e2e.py, test/mock-unified.mjs]
+    test_file: test/test_code_mode_probe.py
+    issues: [35]
+    notes: "模擬E2EおよびGo実API2要求でprintf1回・exit0・結果返送を確認。test/test_unified_config.pyでGPT/Pro/指示保持、バックアップ、冪等性、旧接続拒否、リンク拒否、CLI非fallthroughを検証。本番反映は未実施、全MCP/CUA互換は未検証。"
   - id: TC-021
     title: "速度比較: GPTとDeepSeekの利用者設定と履歴条件を揃える"
     feature: "同条件の速度計測"

@@ -156,6 +156,35 @@ DeepSeekとGPTを交互に2回ずつ呼びます。各回は履歴なしの新�
 見て区別してください。キャッシュは提供先をまたいで共有されず、速度改善や同速化を保証する機能ではありません。
 一時作業場所はCODEX_HOMEとは別にし、共通AGENTSが作業場所の指示としても読まれる比較上の混入を避けます。
 
+### DeepSeek Flashの標準コードモード（任意）
+
+Codex 0.163.0と公式Go APIで、Flashのコードモードによる`printf`実行と結果返送を確認しています。
+既に`normal-on`で公式直接接続を有効にした環境では、次のコマンドでFlashの
+`tool_mode=code_mode_only`、`supports_search_tool=true`、`shell_type=unified_exec`だけを変更できます。
+
+```bash
+python3 scripts/unified_config.py flash-code-mode
+```
+
+カタログはバックアップし、GPT・Pro・他モデル・システムプロンプト・既定モデルは変更しません。
+routerの変換処理や新しい常駐プロセスも追加しません。実行中の会話は停止せず、
+設定は作業完了後にCodexを起動し直して読み込みます。`prepare`でカタログを再生成した場合は再適用してください。
+全てのMCP・ブラウザ操作・画像操作の互換性や、GPTと同じ応答速度を保証するものではありません。
+
+隔離した模擬接続で検証するには次を使います。本番カタログは変更しません。
+
+```bash
+python3 test/codex-code-mode-e2e.py
+```
+
+実APIの検証は明示的なopt-inで、上流への要求を最大2回に制限します。
+同じく本番カタログを変えず、既存のGo APIキーとローカルクライアント用の偽認証で検証します。
+GPTへの要求・ログイン認証のGoへの転送・自動fallbackはありません。
+
+```bash
+RUN_LIVE_CODE_MODE=1 python3 test/codex-code-mode-e2e.py --live
+```
+
 以下は従来の単一providerブリッジの説明です。統合モードでは上記routerが前段に入ります。
 
 **Codex（Responses API）から OpenCode Go の全モデルを使えるようにする翻訳プロキシ。**
