@@ -26,10 +26,27 @@ Codex標準のlocal compactionが選択モデルへ依頼します。独自route
 新しいチャットから使い、移行のために履歴を削除したりGPTへ自動フォールバックしたりはしません。
 未対応モデルは従来のBridge経路に残ります。
 
-統合routerにもモデル別の`router_transport: "responses"`転送を追加していますが、
-既存OpenAI provider内でのremote compactionと同一チャット切替は別の検証が必要です。
-`unified_config.py prepare`はカタログを更新するため、稼働中の旧routerへ無条件に適用しないでください。
-この直接経路を既存チャットに一括反映することはしません。
+### 通常の`codex`コマンドと統合モデル一覧で使う
+
+既定モデルが`opencode/deepseek-v4.1-flash`など公式Responses対応のOpenCodeモデルの場合は、
+次の順に通常起動へ有効化できます。実行中の接続は強制停止しません。
+
+```bash
+python3 scripts/unified_config.py transports
+python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
+python3 scripts/unified_config.py normal-on
+codex
+```
+
+新しい統合チャットはcustom providerの標準local compactionを使います。
+`/model`の統合一覧は維持し、公式対応モデルは直接転送、未対応モデルは従来変換を使います。
+その統合チャットでGPTへ切り替えた場合もlocal compactionで選択したGPTが要約します。
+保存済みのOpenAI providerスレッドは書換えません。
+
+新しいprovider設定が付ける`x-codex-bridge-direct: 1`がない既存接続は旧転送のまま保護します。
+実行中のTUIには設定変更が遡及しないため、同じタブで一度終了して`codex`を起動してください。
+旧履歴を含む`codex resume`の自動移行や、暗号化履歴を含む同一スレッドの提供元切替は保証しません。
+`transports`は既存カタログのOpenCode転送形式だけを更新し、GPTのモデル設定や順序を変えません。
 
 ## 同じチャットで GPT ↔ OpenCode を切り替える（統合モード）
 

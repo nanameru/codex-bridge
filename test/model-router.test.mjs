@@ -45,7 +45,8 @@ async function fixture(context, options = {}) {
   const base = await listen(router);
   context.after(async () => { await close(router); await close(native); await close(bridge); });
   const send = (body, headers = {}) => fetch(base + "/responses", {
-    method: "POST", headers: { authorization: "Bearer fake-native-token", "content-type": "application/json", ...headers },
+    method: "POST", headers: { authorization: "Bearer fake-native-token", "content-type": "application/json",
+      "x-codex-bridge-direct": "1", ...headers },
     body: JSON.stringify(body),
   });
   return { calls, base, send };
@@ -86,7 +87,7 @@ test("official Responses bypasses conversion, GPT summaries and heuristic budget
   assert.equal(calls[0].headers.session_id, "session-direct");
   assert.equal(calls[0].headers["x-opencode-session"], "session-direct");
   const compact = await fetch(base + "/responses/compact", { method: "POST",
-    headers: { authorization: "Bearer native-token", "content-type": "application/json" }, body: JSON.stringify(body) });
+    headers: { authorization: "Bearer native-token", "content-type": "application/json", "x-codex-bridge-direct": "1" }, body: JSON.stringify(body) });
   assert.equal(compact.status, 200, await compact.text());
   assert.equal(calls[1].path, "/v1/responses/compact");
   assert.deepEqual(calls[1].body, { ...body, model: "direct-test" });
@@ -98,6 +99,15 @@ test("direct Responses fails closed without OpenCode credentials and never falls
   assert.equal(response.status, 503);
   assert.match(await response.text(), /opencode_auth_required/);
   assert.equal(calls.length, 0);
+});
+
+test("existing sessions without the direct marker keep their legacy transport", async (context) => {
+  const { calls, send } = await fixture(context);
+  const response = await send({ model: "direct-test", tools: [{ type: "custom", name: "exec" }] }, { "x-codex-bridge-direct": "" });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].headers.authorization, undefined);
+  assert.equal(calls[0].body.tools[0].type, "function");
 });
 
 test("direct Responses preserves native custom events and upstream failures without fallback", async (context) => {

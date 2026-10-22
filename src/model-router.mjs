@@ -135,6 +135,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     if (request.method === "GET" && path === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, models: catalog.models.length,
+        direct_header: "x-codex-bridge-direct",
+        direct_models: catalog.models.filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
         model_ids: catalog.models.map((model) => model.slug) }));
       return;
     }
@@ -209,10 +211,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 400, "invalid_request", "toolsまたはinputの形式が不正です");
         return;
       }
-      const route = nativeTool ? { provider: "openai" } : routes.get(body.model);
+      let route = nativeTool ? { provider: "openai" } : routes.get(body.model);
       if (!route) {
         fail(response, 400, "unknown_model", "統合カタログにないモデルです。カタログを再生成してください");
         return;
+      }
+      if (route.provider === "opencode" && route.transport === "responses" && request.headers["x-codex-bridge-direct"] !== "1") {
+        route = { ...route, transport: "chat" };
       }
       metric.provider = route.provider;
       const directResponses = route.provider === "opencode" && route.transport === "responses";
@@ -258,7 +263,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       if (route.provider === "openai") {
         destination = nativeDestination;
         for (const [name, value] of Object.entries(request.headers)) {
-          if (typeof value === "string" && (NATIVE_HEADERS.includes(name) || name.startsWith("x-codex-") || name.startsWith("x-openai-"))) {
+          if (typeof value === "string" && name !== "x-codex-bridge-direct"
+              && (NATIVE_HEADERS.includes(name) || name.startsWith("x-codex-") || name.startsWith("x-openai-"))) {
             headers[name] = value;
           }
         }

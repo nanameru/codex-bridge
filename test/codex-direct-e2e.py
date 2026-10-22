@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 import queue
 import subprocess
 import sys
@@ -13,14 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from direct_codex import PROVIDER, configure
 from recover_thread import LocalServer
-from unified_config import edit_table, prepare
+from unified_config import activate_normal, edit_table, prepare
 
 spec = importlib.util.spec_from_file_location("router_e2e", ROOT / "test/codex-router-e2e.py")
 router_e2e = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(router_e2e)
 
 
-def run():
+def run(normal=False):
     original = os.environ.get("CODEX_HOME")
     original_key = os.environ.get("OPENCODE_API_KEY")
     source = Path(original or Path.home() / ".codex")
@@ -40,21 +41,32 @@ def run():
             path = home / "config.toml"
             config = edit_table(path.read_text(), ("model_providers", PROVIDER), {"base_url": base})
             path.write_text(config)
+            model = "deepseek-v4.1-flash"
+            if normal:
+                model = "opencode/" + model
+                config = edit_table(config, (), {"model": model, "model_catalog_json": str(home / "unified-model-catalog.json")})
+                config = edit_table(config, ("model_providers", "codex-bridge"), {"name": "Codex Bridge", "base_url": base,
+                                    "wire_api": "responses", "requires_openai_auth": True})
+                path.write_text(config)
+                (home / "auth.json").write_text(json.dumps(router_e2e.fake_auth()))
+                activate_normal(home, urlsplit(base).port)
             os.environ["CODEX_HOME"] = directory
             os.environ["OPENCODE_API_KEY"] = "mock-opencode-key"
             binary = os.environ.get("CODEX_BIN", "codex")
-            cli = subprocess.run([binary, "--profile", PROVIDER, "exec", "--json", "--skip-git-repo-check",
+            cli = subprocess.run([binary, *([] if normal else ["--profile", PROVIDER]), "exec", "--json", "--skip-git-repo-check",
                                   "--sandbox", "read-only", "Reply OK only. Do not use tools."],
                                  cwd=directory, text=True, capture_output=True, timeout=30)
             assert cli.returncode == 0, cli.stderr
-            profile = tomllib.loads((home / (PROVIDER + ".config.toml")).read_text())
-            path.write_text(edit_table(config, (), profile))
+            if not normal:
+                profile = tomllib.loads((home / (PROVIDER + ".config.toml")).read_text())
+                path.write_text(edit_table(config, (), profile))
             server = LocalServer(binary)
             server.request("initialize", {"clientInfo": {"name": "direct-e2e", "version": "1"}})
             server.send({"method": "initialized"})
-            thread = server.request("thread/start", {"cwd": directory, "model": "deepseek-v4.1-flash",
-                                    "modelProvider": PROVIDER, "sandbox": "read-only", "approvalPolicy": "never"})["thread"]["id"]
-            router_e2e.complete_turn(server, thread, "deepseek-v4.1-flash")
+            thread_info = server.request("thread/start", {"cwd": directory, "sandbox": "read-only", "approvalPolicy": "never"})
+            assert thread_info["modelProvider"] == ("codex-bridge" if normal else PROVIDER), thread_info["modelProvider"]
+            thread = thread_info["thread"]["id"]
+            router_e2e.complete_turn(server, thread, model)
             server.request("thread/compact/start", {"threadId": thread})
             deadline = time.monotonic() + 20
             compacted = False
@@ -73,14 +85,14 @@ def run():
                     assert message.get("params", {}).get("turn", {}).get("status") == "completed", message
                     break
             assert compacted, "local compaction did not finish"
-            router_e2e.complete_turn(server, thread, "deepseek-v4.1-flash")
+            router_e2e.complete_turn(server, thread, model)
             upstream.stdin.write("summary\n")
             upstream.stdin.flush()
             calls = json.loads(upstream.stdout.readline())["calls"]
             assert len(calls) == 4, calls
             assert all(call["provider"] == "opencode" and call["path"] == "/v1/responses" for call in calls), calls
             assert all(not call["hasNativeAuth"] for call in calls), calls
-            print("CLI direct profile + app-server turn -> local compaction -> turn; 4 Responses calls, no GPT or remote compact")
+            print(("Plain codex command" if normal else "CLI direct profile") + " + app-server turn -> local compaction -> turn; 4 Responses calls, no GPT or remote compact")
         finally:
             if server:
                 server.close()
@@ -101,4 +113,4 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    run(normal="--normal" in sys.argv)

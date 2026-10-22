@@ -8,14 +8,14 @@ cases:
   - id: TC-020
     title: "公式接続: APIキーとCodex標準圧縮だけでOpenCodeへ接続する"
     feature: "公式Responses直接接続"
-    scenario: "対応モデルだけ直接転送し、独立profileでCodex標準local compactionを利用する"
+    scenario: "対応モデルを直接転送し、通常codex起動でもCodex標準local compactionを利用する"
     status: done
     priority: high
     type: integration
     source: [src/model-router.mjs, scripts/unified_config.py, scripts/direct_codex.py, scripts/direct_launch.py]
     test_file: test/model-router.test.mjs
     issues: [31]
-    notes: "認証分離、ログインDB非読取、未変換のcustom/推論/圧縮、失敗時非fallback、APIキー非引数化、既定設定保持を検証。Python test_direct_config.py、test/codex-direct-e2e.pyでCLIの外部profile読込と模擬app-serverの標準local compact往復（Responses4回、GPT/remote compactなし）を確認。"
+    notes: "認証分離、ログインDB非読取、未変換のcustom/推論/圧縮、失敗時非fallback、APIキー非引数化を検証。test/codex-direct-e2e.py --normalでprofile指定なしの通常codex起動→標準local compact往復（Responses4回、GPT/remote compactなし）を確認。markerなし旧スレッドとGPTカタログの保持も検証。"
   - id: TC-019
     title: "入力予算: 古い完了履歴の自動要約で413を回復する"
     feature: "入力予算管理"
