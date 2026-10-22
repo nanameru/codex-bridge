@@ -467,6 +467,40 @@ test("a failed or insufficient budget summary never forwards oversized context o
   }
 });
 
+test("does not summarize a compaction handoff a second time in the same request", async (context) => {
+  let summaries = 0;
+  const metrics = [];
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 500,
+    opencodeHardLimitTokens: 1000, onMetric: (metric) => metrics.push(metric), fetcher: async () => {
+      summaries++;
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "first summary" }] }] });
+    } });
+  const response = await send({ model: "deepseek-test", input: [
+    { type: "compaction", encrypted_content: "opaque" }, { role: "user", content: "x".repeat(10000) },
+    { role: "user", content: "recent" }, { role: "user", content: "latest" },
+  ] });
+  assert.equal(response.status, 413);
+  await response.text();
+  assert.equal(summaries, 1);
+  assert.equal(metrics[0].budget_summary_cache, undefined);
+});
+
+test("records reversed soft/hard limits while still recovering at the hard threshold", async (context) => {
+  const metrics = [];
+  let summaries = 0;
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 5000,
+    opencodeHardLimitTokens: 1000, onMetric: (metric) => metrics.push(metric), fetcher: async (_url, options) => {
+      if (JSON.parse(options.body).model === "gpt-test") summaries++;
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "summary" }] }] });
+    } });
+  const response = await send({ model: "deepseek-test", input: [{ role: "user", content: "x".repeat(10000) }, { role: "user", content: "latest" }] });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(summaries, 1);
+  assert.equal(metrics[0].budget_limit_clamped, true);
+  assert.equal(metrics[0].budget_recovered, true);
+});
+
 test("records received bytes for rejected and empty input", async (context) => {
   const metrics = [];
   const { send, base } = await fixture(context, { maxBytes: 200, onMetric: (metric) => metrics.push(metric) });

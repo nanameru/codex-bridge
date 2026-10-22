@@ -6,6 +6,7 @@ export class HandoffError extends Error {}
 // Keep the two most recent user turns (or the latest when there are only two).
 // A user may steer while a tool is running, so a user message alone is not
 // proof of a safe boundary: all earlier tool calls must have finished first.
+// Returns the exclusive prefix length (first retained item), always < length.
 export function budgetHistoryBoundary(input) {
   if (!Array.isArray(input)) return -1;
   const outputAt = new Map();

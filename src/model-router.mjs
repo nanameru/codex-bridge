@@ -215,6 +215,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
         threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id };
+      let compactionExpanded = false;
       if (route.provider === "opencode" && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
         if (routes.get(summaryModel)?.provider !== "openai") {
           fail(response, 422, "summary_model_required", "圧縮履歴の引き継ぎに使うOpenAIモデルがカタログにありません");
@@ -225,6 +226,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         try {
           body = await expandCompaction(body, { ...handoffOptions,
             observe: ({ cache }) => { metric.summary_cache = cache; } });
+          compactionExpanded = true;
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
       }
       const suffix = nativeTool ? path.slice(3) : path.endsWith("/compact") ? "/responses/compact" : "/responses";
@@ -237,10 +239,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         const initialTokens = route.provider === "opencode" ? estimateInputTokens(routed) : 0;
         const threshold = opencodeSoftLimitTokens > 0
           ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
-        if (route.provider === "opencode" && autoBudgetHandoff && opencodeHardLimitTokens > 0 && initialTokens > threshold) {
+        if (route.provider === "opencode" && opencodeHardLimitTokens > 0 && opencodeSoftLimitTokens > opencodeHardLimitTokens) {
+          metric.budget_limit_clamped = true;
+        }
+        if (route.provider === "opencode" && autoBudgetHandoff && opencodeHardLimitTokens > 0 && initialTokens > threshold && !compactionExpanded) {
           metric.budget_initial_tokens = initialTokens;
           const prefixEnd = budgetHistoryBoundary(body.input);
-          if (prefixEnd > 0) {
+          if (prefixEnd > 0 && prefixEnd < body.input.length) {
             const preserved = [...body.input.slice(0, prefixEnd).filter((item) => ["system", "developer"].includes(item.role)),
               ...body.input.slice(prefixEnd)];
             const minimum = estimateInputTokens(JSON.stringify(routedBody({ ...body, input: preserved }, route, maxBytes)));
