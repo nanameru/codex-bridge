@@ -43,6 +43,8 @@ router更新は次の既存コマンドで、接続が空くまで待って行�
 python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 ```
 
+本人が通信中断を承知で今すぐ更新する場合だけ、`--update-if-idle --wait-idle 900`の代わりに`--update-now`を明示する。両モードは同時に指定できない。
+
 Codex AppやCLIを強制終了しない。更新を待機させた場合は、更新完了ログとhealthのrevision一致を確認するまで反映済みとは扱わない。
 
 ## 検証
