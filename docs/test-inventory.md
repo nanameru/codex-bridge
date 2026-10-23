@@ -228,3 +228,7 @@
 `LEGACY_BRIDGE_SOURCE=/Users/kimurataiyou/home-runner/bridge/codex-bridge.mjs node --test test/bridge-transport.test.mjs` も成功。
 追加importがあるだけでsecurityパッチの再適用が拒否される不具合を修正した。
 認証・ログ保護の欠落や管理外helperの上書きは引き続き拒否する。既存Pythonケースへ再適用と保護欠落の検証を追加した。
+
+## 実モデル試験の注意
+
+オフライン193件がすべて成功しても実モデルの全成功を意味しない。今回の実APIではHY4の結果文字列照合が初回失敗し、追加1要求では成功した。失敗も `docs/tool-recovery-verification.md` とIssue #51へ残している。

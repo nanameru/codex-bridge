@@ -266,7 +266,7 @@ cases:
     type: security
     source: [src/local-security.mjs, src/model-router.mjs, src/codex-bridge.mjs, scripts/secure_local.py, scripts/install_router_service.py, scripts/patch_legacy_security.py]
     test_file: test/local-security.test.mjs
-    issues: [41]
+    issues: [41, 51]
     notes: "任意Bearer・不正Host/Origin・危険な認証ファイル・期限切れを拒否。内部鍵/本人認証/APIキーの分離、OpenCode公式origin・リダイレクト拒否を検証。test/test_local_operations.pyで更新復元・冪等性・非課金診断・秘密非出力・個別アイドル待機を確認。旧8788実ソースの一時コピーでも模擬上流により拒否・正常接続・本文非保存を検証。ローカル両サービスへ適用しdoctor全項目true、再適用成功。実推論テストは未実施。"
   - id: TC-026
     title: "全モデルの履歴引き継ぎ: 旧直結設定でも全モデルで圧縮履歴を引き継ぐ"
@@ -318,13 +318,13 @@ cases:
     title: "稼働後の実モデルで通常応答と回答復帰を検証する"
     feature: "実API検証"
     scenario: "GLM通常ツール1回とGLM/HY4の回答復帰"
-    status: done
+    status: todo
     priority: high
     type: integration
     source: [src/chat-protocol.mjs, src/model-router.mjs, src/tool-recovery.mjs]
     test_file: test/live-tool-recovery.mjs
     issues: [51]
-    notes: "RUN_LIVE_MODELS=1で明示実行。合成入力のみ、最大4要求/各1024token/60秒。反映後GLM通常1回→回答とGLM/HY4回答復帰を実API計4要求で成功。通常CIは実APIを呼ばない。"
+    notes: "実APIは明示opt-in、合成入力のみ。前回4要求成功。今回4要求ではGLMの3要求成功、HY4はcompleted・ツール無しだが結果文字列照合失敗。追加HY4の1要求は成功したが初回失敗本文がなく原因未確定。未解明事項が残るためdoneにしない。通常CIは実APIを呼ばない。"
 
   - id: TC-032
     title: "入力の型不正を非再試行エラーへ変換する"
