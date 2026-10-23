@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { createRouter } from "../src/model-router.mjs";
 import { WAIT_TEXT } from "../src/handoff-status.mjs";
+import { createLiveCatalog } from "../src/live-catalog.mjs";
 
 const catalog = JSON.parse(readFileSync(process.env.CODEX_HOME + "/unified-model-catalog.json"));
 const calls = [];
@@ -69,11 +70,24 @@ async function bind(server) {
 }
 const native = mock("openai");
 const bridge = mock("opencode");
+let advanced = false;
+const catalogProvider = process.env.MOCK_LIVE_CATALOG === "1" ? createLiveCatalog({
+  initial: catalog, seed: JSON.parse(readFileSync(new URL("../src/models.json", import.meta.url))).models,
+  key: () => "fake-go-key", ttlMs: 0, fetcher: async url => {
+    if (url.includes("chatgpt.com")) return Response.json({ models: catalog.models.filter(m => m.router_provider === "openai") });
+    if (url.includes("models.dev")) return Response.json({ "opencode-go": { models: { "future-test": { name: "Future Test", limit: { context: 128000, output: 32000 } } } } });
+    const ids = catalog.models.filter(m => m.router_provider === "opencode").map(m => m.router_model);
+    return Response.json({ data: [...ids, ...(advanced ? ["future-test"] : [])].map(id => ({ id })) });
+  },
+}) : undefined;
 const router = createRouter({ catalog, nativeBase: await bind(native), bridgeBase: await bind(bridge),
-  allowTestOrigins: true, bridgeKey: () => "fake-internal-key", handoffStatusDelayMs: 20 });
+  allowTestOrigins: true, bridgeKey: () => "fake-internal-key", handoffStatusDelayMs: 20, catalogProvider });
 const url = await bind(router);
 process.stdout.write(JSON.stringify({ url }) + "\n");
-process.stdin.on("data", () => process.stdout.write(JSON.stringify({ calls }) + "\n"));
+process.stdin.on("data", data => {
+  if (data.toString().trim() === "advance") { advanced = true; process.stdout.write('{"advanced":true}\n'); }
+  else process.stdout.write(JSON.stringify({ calls }) + "\n");
+});
 process.stdin.on("end", () => {
   for (const server of [router, native, bridge]) { server.closeAllConnections(); server.close(); }
 });

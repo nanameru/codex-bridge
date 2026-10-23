@@ -635,3 +635,27 @@ cases:
     test_file: test/compaction-handoff.test.mjs
     issues: [71]
     notes: "障害履歴の実要約を既存OAuthで診断し、5278bytesのoutput_item.done本文と空の終端outputを確認。修正前empty_summaryを再現。正常終端と完了項目だけ採用し、deltaのみ・終端欠落・failed・incomplete・重複/欠落index・不正型/role・拒否を遮断。実app-server+模擬thin終端で切替/再圧縮/resumeを検証。"
+
+  - id: TC-057
+    title: "Go提供一覧の新モデルを動的カタログと中継へ無停止反映する"
+    feature: "モデル自動検出"
+    scenario: "実提供ID・能力情報・TTL・同時取得・障害・認証分離・進行中推論"
+    status: done
+    priority: high
+    type: integration
+    source: [src/live-catalog.mjs, src/model-router.mjs]
+    test_file: test/live-catalog.test.mjs
+    issues: [73]
+    notes: "旧routerの404を再現。実Go API37モデルとGPT9モデルの取得でKimi K3.1 Proの検出を確認。実app-server＋模擬提供元で同一プロセスの一覧追加と新モデル応答、native圧縮、resumeが成功。全モデルの実推論は未実施。"
+
+  - id: TC-058
+    title: "固定カタログからの移行と復元で他設定と原本を保持する"
+    feature: "動的カタログ設定"
+    scenario: "idempotence・私有バックアップ・同時編集・独自provider・リンク・書込失敗"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/live_catalog.py]
+    test_file: test/test_live_catalog.py
+    issues: [73]
+    notes: "実Codex0.164.0で標準openai provider定義だけの変更では取得されず、codex-liveで認証付き取得が働くことを確認。モデル選択と他provider/機能/コメントを保持し、変更競合や書込失敗では停止する。"

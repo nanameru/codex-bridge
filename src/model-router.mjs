@@ -13,6 +13,7 @@ import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, comp
 import { toolRecoveryPlan, recoverWithAnswer, answerOnlyStream } from "./tool-recovery.mjs";
 import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFailure } from "./handoff-status.mjs";
 import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
+import { createLiveCatalog } from "./live-catalog.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
 // These JSON endpoints belong to OpenAI, irrespective of the selected chat model.
@@ -22,7 +23,12 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./compaction-handoff.mjs", import.meta.url)))
   .update(readFileSync(new URL("./local-security.mjs", import.meta.url)))
   .update(readFileSync(new URL("./handoff-status.mjs", import.meta.url)))
-  .update(readFileSync(new URL("./tool-recovery.mjs", import.meta.url))).digest("hex");
+  .update(readFileSync(new URL("./tool-recovery.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./live-catalog.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./make-catalog.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./sync-models.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./catalog-safety.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./models.json", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
 export function catalogRoutes(catalog) {
@@ -189,14 +195,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
   // Accept bounded history before reducing it to the smaller forwarding budget.
   maxRequestBytes = maxBytes * 4,
-  summaryModel = "gpt-6.1-sol", onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions,
+  summaryModel = "gpt-6.1-sol", onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
   if (![maxBytes, maxRequestBytes].every(n => Number.isSafeInteger(n) && n > 0) || maxRequestBytes < maxBytes) {
     throw new Error("受信上限は送信上限以上の正の整数で指定してください");
   }
-  const routes = catalogRoutes(catalog);
+  let routes = catalogRoutes(catalog);
   const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes });
   const bridge = new URL(bridgeBase);
   const direct = new URL(openCodeBase);
@@ -223,11 +229,34 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     if (request.method === "GET" && path === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
+        live_catalog: Boolean(catalogProvider),
         request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxBytes },
         history_transport: allowDirectResponses ? "model" : "chat",
         direct_header: "x-codex-bridge-direct",
         direct_models: (allowDirectResponses ? catalog.models : []).filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
         model_ids: catalog.models.map((model) => model.slug) }));
+      return;
+    }
+    if (request.method === "GET" && path === "/codex/models" && catalogProvider) {
+      if (!/^Bearer \S+$/i.test(request.headers.authorization ?? "") || !authenticate(request)) {
+        fail(response, 401, "authentication_required", "Codexのログイン認証が必要です"); return;
+      }
+      const version = new URL(request.url, "http://127.0.0.1").searchParams.get("client_version");
+      if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) {
+        fail(response, 400, "client_version_required", "Codexのclient_versionが必要です"); return;
+      }
+      try {
+        const candidate = await catalogProvider.get(request.headers, version);
+        const nextRoutes = catalogRoutes(candidate);
+        const models = candidate.models.map(({ router_provider, router_model, router_transport, ...model }) => model);
+        const serialized = JSON.stringify({ models });
+        if (Buffer.byteLength(serialized) > 1024 * 1024) throw new Error("catalog_too_large");
+        catalog = candidate; routes = nextRoutes;
+        const etag = '"' + createHash("sha256").update(serialized).digest("hex") + '"';
+        const headers = { "content-type": "application/json", "cache-control": "private, max-age=300", etag };
+        if (request.headers["if-none-match"] === etag) { response.writeHead(304, headers); response.end(); }
+        else { response.writeHead(200, headers); response.end(serialized); }
+      } catch { fail(response, 503, "catalog_unavailable", "モデル一覧を更新できません。直前の一覧を保持しています"); }
       return;
     }
     if (request.method === "GET" && path === "/v1/models") {
@@ -585,7 +614,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const catalog = JSON.parse(readFileSync(join(root, "unified-model-catalog.json"), "utf8"));
+  const catalogProvider = createLiveCatalog({ initial: catalog,
+    seed: JSON.parse(readFileSync(new URL("./models.json", import.meta.url), "utf8")).models,
+    key: readOpenCodeKey, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
   const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
+    catalogProvider,
     onMetric: (metric) => console.log(JSON.stringify(metric)) });
   server.listen(Number(process.env.ROUTER_PORT ?? 8790), "127.0.0.1", () => {
     console.log("Unified model router listening on loopback");
