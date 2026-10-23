@@ -108,6 +108,8 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 - `item_reference`、`previous_response_id`だけで会話を継続する入力は他providerへ持ち出せないため、
   履歴を黙って捨てず422を返します。
   全履歴を送るCodex 0.163で、同じ会話のGPT→DeepSeek→GPT・逆順を検証しています。
+- OpenCodeが返さないassistant messageの`phase`は`final_answer`へ補完します。
+  GPT互換のイベント形式にすることで、Codex TUIで回答が二重表示されるのを防ぎます。
 - OpenCodeのremote compactionは未対応です。カタログの掲載は各アカウントの利用権限を
   保証しません。実応答の検証対象はGPT-6.1 SolとDeepSeek V4.1 Flashです。
 - routerの実行ファイルは`CODEX_HOME/router-runtime/<revision>/`へ配置されるため、

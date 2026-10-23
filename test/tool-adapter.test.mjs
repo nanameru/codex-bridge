@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Readable } from "node:stream";
-import { nativeToolPayload, normalizeToolCallId, openCodeBody, toolResponseStream } from "../src/tool-adapter.mjs";
+import { nativeToolPayload, normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "../src/tool-adapter.mjs";
 
 test("normalizes only mismatched tool item prefixes idempotently and preserves execution IDs", () => {
   for (const [type, id, expected] of [
@@ -84,6 +84,71 @@ test("adapts non-streaming JSON responses", async () => {
   for await (const chunk of stream) text += chunk;
   assert.equal(JSON.parse(text).output[0].input, "patch");
   assert.equal(JSON.parse(text).output[0].id, "ctc_1");
+});
+
+test("normalizes OpenCode assistant messages to GPT-compatible phases", () => {
+  const finalMessage = { type: "message", role: "assistant", status: "completed", content: [] };
+  const commentary = { ...finalMessage, phase: "commentary" };
+  const userMessage = { type: "message", role: "user", content: [] };
+  const result = nativeToolPayload({ item: finalMessage, output: [finalMessage, commentary, userMessage],
+    response: { output: [finalMessage] } }, new Set());
+  assert.equal(result.item.phase, "final_answer");
+  assert.equal(result.output[0].phase, "final_answer");
+  assert.equal(result.output[1].phase, "commentary");
+  assert.equal(result.output[2].phase, undefined);
+  assert.equal(result.response.output[0].phase, "final_answer");
+  assert.equal(finalMessage.phase, undefined);
+});
+
+test("adds final_answer phase to streamed OpenCode assistant messages", async () => {
+  const item = { type: "message", id: "msg_1", role: "assistant", status: "completed",
+    content: [{ type: "output_text", text: "PHASE_OK", annotations: [], logprobs: [] }] };
+  const events = [
+    { type: "response.output_item.added", item: { ...item, status: "in_progress", content: [] } },
+    { type: "response.output_text.delta", item_id: item.id, delta: "PHASE_OK" },
+    { type: "response.output_item.done", item },
+    { type: "response.completed", response: { output: [item] } },
+  ];
+  const bytes = Buffer.from(events.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(""));
+  let text = "";
+  for await (const chunk of Readable.from([bytes]).pipe(toolResponseStream(new Set(), "text/event-stream", 10000))) text += chunk;
+  const payloads = text.split("\n").filter((line) => line.startsWith("data:")).map((line) => JSON.parse(line.slice(5)));
+  assert.deepEqual(payloads.filter((value) => value.item?.type === "message").map((value) => value.item.phase),
+    ["final_answer", "final_answer"]);
+  assert.equal(payloads.at(-1).response.output[0].phase, "final_answer");
+  assert.equal(item.phase, undefined);
+});
+
+test("normalizes phases on direct Responses SSE without changing other items", async () => {
+  const message = { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] };
+  const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "shell", arguments: "{}" };
+  const events = [
+    { type: "response.output_item.added", sequence_number: 7, item: message },
+    { type: "response.output_text.delta", sequence_number: 8, item_id: message.id, delta: "OK" },
+    { type: "response.output_item.done", sequence_number: 9, item: call },
+    { type: "response.completed", sequence_number: 10, response: { output: [message, call] } },
+  ];
+  const frames = events.map((value) => `event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`).join("") + "data: [DONE]\n\n";
+  let text = "";
+  for await (const chunk of Readable.from([Buffer.from(frames)]).pipe(normalizeResponseStream("text/event-stream", 10000))) text += chunk;
+  const payloads = text.split("\n").filter((line) => line.startsWith("data:") && !line.includes("[DONE]"))
+    .map((line) => JSON.parse(line.slice(5)));
+  assert.equal(payloads[0].item.phase, "final_answer");
+  assert.equal(payloads[1].sequence_number, 8);
+  assert.equal(payloads[2].item.type, "function_call");
+  assert.equal(payloads[2].item.phase, undefined);
+  assert.equal(payloads[3].response.output[0].phase, "final_answer");
+  assert.match(text, /data: \[DONE\]/);
+  assert.equal(message.phase, undefined);
+});
+
+test("normalizes phases on direct non-streaming Responses JSON", async () => {
+  const payload = { output: [{ type: "message", id: "msg_1", role: "assistant", content: [] }] };
+  let text = "";
+  for await (const chunk of Readable.from([Buffer.from(JSON.stringify(payload))])
+    .pipe(normalizeResponseStream("application/json", 10000))) text += chunk;
+  assert.equal(JSON.parse(text).output[0].phase, "final_answer");
+  assert.equal(payload.output[0].phase, undefined);
 });
 
 test("repairs trailing bridge reasoning for each assistant message and tool group without crossing turns", () => {

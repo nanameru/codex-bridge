@@ -89,6 +89,12 @@ export function nativeToolPayload(payload, customNames, depth = 0) {
     throw new Error("invalid response envelope");
   }
   const item = (value) => {
+    // OpenCode omits phase on assistant messages. Codex uses final_answer to
+    // merge the streamed draft with the completed message instead of showing
+    // the same response twice.
+    if (value?.type === "message" && value.role === "assistant" && value.phase == null) {
+      value = { ...value, phase: "final_answer" };
+    }
     if (value?.type !== "function_call" || !customNames.has(value.name)) return value;
     const { arguments: argumentsText, ...rest } = value;
     if (!argumentsText && value.status !== "in_progress") throw new Error("custom tool arguments are missing");
@@ -101,6 +107,50 @@ export function nativeToolPayload(payload, customNames, depth = 0) {
   if (Array.isArray(payload.output)) result.output = payload.output.map(item);
   if (payload.response) result.response = nativeToolPayload(payload.response, customNames, depth + 1);
   return result;
+}
+
+// Direct OpenCode Responses do not pass through the chat bridge, so normalize
+// their assistant phases separately without rewriting tool items or history.
+export function normalizeResponseStream(contentType, maxBytes) {
+  const decoder = new TextDecoder();
+  const isSse = contentType.includes("text/event-stream");
+  let buffer = "";
+  const convert = (text) => {
+    if (Buffer.byteLength(text) > maxBytes) throw new Error("upstream event too large");
+    if (!isSse) return JSON.stringify(nativeToolPayload(JSON.parse(text), new Set()));
+    const lines = text.split(/\r?\n/);
+    const data = lines.filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart()).join("\n");
+    if (!data || data === "[DONE]") return text + "\n\n";
+    const prefix = lines.filter((line) => line.trim() && !line.startsWith("data:"));
+    const converted = nativeToolPayload(JSON.parse(data), new Set());
+    return (prefix.length ? prefix.join("\n") + "\n" : "")
+      + "data: " + JSON.stringify(converted) + "\n\n";
+  };
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      try {
+        buffer += decoder.decode(chunk, { stream: true });
+        if (isSse) {
+          let boundary;
+          while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+            this.push(convert(buffer.slice(0, boundary.index)));
+            buffer = buffer.slice(boundary.index + boundary[0].length);
+          }
+        }
+        if (Buffer.byteLength(buffer) > maxBytes) throw new Error("upstream event too large");
+        callback();
+      } catch (error) { callback(error); }
+    },
+    flush(callback) {
+      try {
+        buffer += decoder.decode();
+        if (Buffer.byteLength(buffer) > maxBytes) throw new Error("upstream event too large");
+        if (buffer.trim()) this.push(convert(buffer));
+        callback();
+      } catch (error) { callback(error); }
+    },
+  });
 }
 
 export function toolResponseStream(customNames, contentType, maxBytes) {
