@@ -58,7 +58,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
     response.end();
     return;
   }
-  if (toolMode && !hasToolOutput) {
+  if (toolMode && (!hasToolOutput || (process.env.MOCK_TOOL_LOOP === "1" && JSON.stringify(body.input?.[lastUser]).includes("LOOP_TRIGGER")))) {
     const call = { id: "fc_" + calls.length, type: "function_call", call_id: "call_" + calls.length,
       name: "route_probe", arguments: "{}", status: "completed" };
     if (provider === "openai") emit("response.output_item.done", { output_index: 0, item: reasoning });

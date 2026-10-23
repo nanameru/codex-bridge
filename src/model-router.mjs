@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
-import { normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
+import { repeatedToolCycle, normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 import { HandoffStatus, failHandoffStatus, isHandoffStatusItem } from "./handoff-status.mjs";
 import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
@@ -251,6 +251,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 422, "history_required", "参照IDだけでは履歴を引き継げません。展開した履歴が必要です");
         return;
       }
+      // Inspect the original current turn before compaction can hide repeated calls.
+      const repeatedCycles = route.provider === "opencode" && !nativeTool ? repeatedToolCycle(body.input) : 0;
+      if (repeatedCycles) {
+        metric.stage = "tool_loop_guard";
+        metric.repeated_tool_cycles = repeatedCycles;
+        fail(response, 422, "repeated_tool_loop",
+          `同じツール実行が同一ターンで${repeatedCycles}回繰り返されたため停止しました。履歴は保持しています。新しいメッセージで、既存の結果から回答するよう指示してください。`);
+        return;
+      }
       const headers = { "content-type": "application/json", accept: nativeTool ? "application/json" : "text/event-stream, application/json" };
       if (route.provider === "opencode" && !directResponses) {
         const key = bridgeKey();
@@ -313,7 +322,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           if (extend) metric.budget_compaction_extended = true;
           if (extend && plan.preserveRecentUsers) metric.budget_intra_turn = true;
           body = await expandCompaction(body, { ...handoffOptions, ...(extend ? plan : {}),
-            observe: ({ cache }) => { metric.summary_cache = cache; handoffStatus.observe(cache); } });
+            observe: ({ cache }) => { metric.summary_cache = cache; handoffStatus.observe(cache, extend ? "budget" : "handoff"); } });
           compactionExpanded = true;
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
       }
@@ -341,7 +350,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
               const summaryStart = performance.now();
               try {
                 body = await expandCompaction(body, { ...handoffOptions, ...plan,
-                  observe: ({ cache }) => { metric.budget_summary_cache = cache; handoffStatus.observe(cache); } });
+                  observe: ({ cache }) => { metric.budget_summary_cache = cache; handoffStatus.observe(cache, "budget"); } });
               } finally { metric.budget_summary_ms = Math.round(performance.now() - summaryStart); }
               routedObject = routedBody(body, route, maxBytes);
               routed = JSON.stringify(routedObject);

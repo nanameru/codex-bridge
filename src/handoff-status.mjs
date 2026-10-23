@@ -3,7 +3,8 @@ import { Transform } from "node:stream";
 
 const active = new WeakMap();
 const ITEM_PREFIX = "msg_bridge_handoff_";
-export const WAIT_TEXT = "接続ステータス：OpenCodeへ切り替えるため、会話履歴を引き継いでいます。";
+export const WAIT_TEXT = "接続ステータス：OpenCode向けに会話履歴を引き継いでいます。";
+export const BUDGET_TEXT = "接続ステータス：入力上限に収まるよう、会話履歴を要約しています。";
 const READY_TEXT = "\n履歴の引き継ぎが完了しました。OpenCodeの応答を待っています。";
 
 export function isHandoffStatusItem(item) {
@@ -25,8 +26,9 @@ export class HandoffStatus {
     this.id = "resp_bridge_handoff_" + randomUUID();
     this.itemId = ITEM_PREFIX + randomUUID();
   }
-  observe(cache) {
+  observe(cache, reason = "handoff") {
     if (!this.enabled || !["miss", "shared"].includes(cache) || this.timer || this.started) return;
+    this.reason = reason;
     this.timer = setTimeout(() => this.begin(), this.delayMs);
     this.timer.unref?.();
   }
@@ -47,7 +49,7 @@ export class HandoffStatus {
   begin() {
     if (this.started || this.response.destroyed || this.response.writableEnded) return;
     this.started = true;
-    this.text = WAIT_TEXT;
+    this.text = this.reason === "budget" ? BUDGET_TEXT : WAIT_TEXT;
     active.set(this.response, this);
     this.response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" });
     this.response.flushHeaders();
@@ -56,9 +58,9 @@ export class HandoffStatus {
       item: { ...this.item("in_progress"), content: [] } });
     this.emit({ type: "response.content_part.added", item_id: this.itemId, output_index: 0, content_index: 0,
       part: { type: "output_text", text: "", annotations: [] } });
-    this.emit({ type: "response.output_text.delta", item_id: this.itemId, output_index: 0, content_index: 0, delta: WAIT_TEXT });
+    this.emit({ type: "response.output_text.delta", item_id: this.itemId, output_index: 0, content_index: 0, delta: this.text });
   }
-  ready() { this.finish(READY_TEXT); }
+  ready() { this.finish(this.reason === "budget" ? "\n履歴の要約が完了しました。OpenCodeの応答を待っています。" : READY_TEXT); }
   finish(suffix) {
     clearTimeout(this.timer);
     this.timer = null;

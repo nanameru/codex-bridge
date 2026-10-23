@@ -290,3 +290,15 @@ cases:
     test_file: test/handoff-status.test.mjs
     issues: [47]
     notes: "SSE整合・分割UTF-8・JSON・ツール・認証分離・429・失敗・timeout・cancel・共有要求を検証。実Codex app-serverでnative圧縮からの待機/完了通知、cache、resume、失敗停止、上流非送信を確認。Appの実描画/実API推論は未検証。"
+
+  - id: TC-029
+    title: "同一ツールの反復停止と追加要約通知"
+    feature: "ツール反復保護"
+    scenario: "同一ターンの6連続実行を停止し、新しい発言で復帰する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-adapter.mjs, src/model-router.mjs, src/handoff-status.mjs]
+    test_file: test/tool-loop.test.mjs
+    issues: [49]
+    notes: "動的な結果・call_id変更・引数順序・並列一式・未完了・新規発言・GPT経路を検証。test/tool-loop-app-e2e.pyで実app-serverの停止/非再試行/同一スレッド復帰を検証。追加要約文言はtest/handoff-status.test.mjs。"

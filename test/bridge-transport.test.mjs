@@ -118,6 +118,22 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.equal(routed.status, 200, await routed.text());
   assert.equal(calls.at(-1).headers.authorization, "Bearer dummy-test-token");
   assert.equal(calls.at(-1).headers["x-codex-bridge-auth"], undefined);
+  // Verify an already-executed Codex custom tool remains a tool result at
+  // the actual Chat boundary, not a fresh instruction or another tool call.
+  const roundtrip = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, { method: "POST", headers: {
+    authorization: "Bearer owner-test-token", "content-type": "application/json",
+  }, body: JSON.stringify({ model: "opencode/deepseek-v4.1-flash", stream: false,
+    tools: [{ type: "custom", name: "exec" }], input: [
+      { role: "user", content: "Check then answer" },
+      { type: "custom_tool_call", id: "ctc_saved", call_id: "saved-call", name: "exec", input: "printf CHECK" },
+      { type: "custom_tool_call_output", call_id: "saved-call", output: "CHECK_RESULT" },
+    ] }) });
+  assert.equal(roundtrip.status, 200, await roundtrip.text());
+  const messages = calls.at(-1).body.messages;
+  const results = messages.filter(message => message.role === "tool");
+  assert.deepEqual(results, [{ role: "tool", tool_call_id: "saved-call", content: "CHECK_RESULT" }]);
+  const toolCalls = messages.flatMap(message => message.tool_calls ?? []);
+  assert.deepEqual(toolCalls, [{ id: "saved-call", type: "function", function: { name: "exec", arguments: '{"input":"printf CHECK"}' } }]);
   const error = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST", headers: {
     "content-type": "application/json", "x-codex-bridge-auth": internalKey,
   }, body: JSON.stringify({ input: "UPSTREAM_PRIVATE_SENTINEL", stream: false }) });

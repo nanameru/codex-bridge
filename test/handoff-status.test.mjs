@@ -3,7 +3,7 @@ import http from "node:http";
 import { once } from "node:events";
 import test from "node:test";
 import { createRouter, routedBody } from "../src/model-router.mjs";
-import { WAIT_TEXT, isHandoffStatusItem } from "../src/handoff-status.mjs";
+import { HandoffStatus, WAIT_TEXT, BUDGET_TEXT, isHandoffStatusItem } from "../src/handoff-status.mjs";
 
 const catalog = { models: [
   { slug: "gpt-test", router_provider: "openai" },
@@ -26,10 +26,10 @@ function events(text) {
   return text.split(/\r?\n\r?\n/).filter(Boolean).map((frame) => JSON.parse(frame.split(/\r?\n/)
     .filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n")));
 }
-async function prefix(response) {
+async function prefix(response, expected = WAIT_TEXT) {
   const reader = response.body.getReader();
   let text = "";
-  while (!text.includes(WAIT_TEXT)) {
+  while (!text.includes(expected)) {
     const next = await reader.read();
     assert.equal(next.done, false, "waiting message must precede completion");
     text += new TextDecoder().decode(next.value);
@@ -225,4 +225,39 @@ test("one shared client may cancel without cancelling the remaining status waite
   const stream = events(first[1].text + await remainder(first[1].reader));
   assert.equal(stream.at(-1).type, "response.completed");
   assert.equal(calls.length, 2);
+});
+
+
+test("budget summary reports input reduction rather than a model switch", async () => {
+  let stream = "";
+  const response = { writeHead() {}, flushHeaders() {}, write(text) { stream += text; } };
+  const status = new HandoffStatus(response, { model: "opencode/test", enabled: true, delayMs: 1 });
+  status.observe("miss", "budget");
+  await new Promise(resolve => setTimeout(resolve, 10));
+  status.ready();
+  status.dispose();
+  const output = events(stream);
+  assert.ok(output.some(e => e.delta === BUDGET_TEXT));
+  assert.ok(output.some(e => e.delta?.includes("履歴の要約が完了")));
+  assert.doesNotMatch(stream, /切り替えるため/);
+  assert.doesNotMatch(WAIT_TEXT, /切り替えるため/);
+});
+
+
+test("router chooses budget notification for both new summaries and extended compacted history", { timeout: 5000 }, async context => {
+  for (const compacted of [false, true]) {
+    const { gate, send, calls } = await fixture(context, { router: { opencodeSoftLimitTokens: 500, opencodeHardLimitTokens: 1000 } });
+    const response = await send({ ...requestBody, input: [
+      ...(compacted ? [{ type: "compaction", encrypted_content: "old" }] : []),
+      { role: "user", content: "x".repeat(10000) },
+      { role: "user", content: "recent" }, { role: "user", content: "latest" },
+    ] });
+    const first = await prefix(response, BUDGET_TEXT);
+    gate.resolve();
+    const text = first.text + await remainder(first.reader);
+    assert.match(text, /履歴の要約が完了/);
+    assert.doesNotMatch(text, /切り替えるため/);
+    assert.equal(calls.filter(c => c.body.instructions?.startsWith("Produce only")).length, 1);
+    assert.equal(calls.at(-1).body.input.at(-1).content, "latest");
+  }
 });
