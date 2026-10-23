@@ -118,7 +118,10 @@ def run(fail=False):
                 assert status == "completed"
             upstream.stdin.write("summary\n")
             upstream.stdin.flush()
-            calls = json.loads(upstream.stdout.readline())["calls"]
+            result = json.loads(upstream.stdout.readline())
+            calls = result["calls"]
+            if os.environ.get("MOCK_HANDOFF_CONNECT_TIMEOUT") == "1":
+                assert result["connectFailures"] == 1, result
             retry = os.environ.get("MOCK_HANDOFF_TRANSIENT") == "1" or os.environ.get("MOCK_HANDOFF_RESULT") in ("incomplete", "empty")
             expected_summaries = 2 if fail else 3 if retry else 2
             assert sum(bool(c["summary"]) for c in calls) == expected_summaries, calls

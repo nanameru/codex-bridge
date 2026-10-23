@@ -131,3 +131,13 @@ native SSEでは`response.output_item.done`に完成した文章が届いても�
 ```bash
 MOCK_HANDOFF_THIN=1 python3 test/handoff-app-e2e.py
 ```
+
+## 要約先への接続タイムアウト
+
+HTTP応答を受け取る前の`ETIMEDOUT` / `UND_ERR_CONNECT_TIMEOUT`は`summary_connect_timeout`に分類し、既存の合計最大2回の要約要求予算で一度だけ再試行する。複数アドレスへの接続失敗をまとめたエラーも最大16件の固定コードだけを調べる。
+
+HTTP応答後の読取失敗、未知の通信エラー、親timeout、利用者による中断はこの再試行の対象にしない。HTTP応答がない場合は架空のHTTP statusを付けず、再失敗時は元の履歴を保持して停止する。接続先のアドレスや生のエラー本文はログへ残さない。ネットワーク自体の障害を解決する機能ではない。
+
+```bash
+MOCK_HANDOFF_CONNECT_TIMEOUT=1 python3 test/handoff-app-e2e.py
+```
