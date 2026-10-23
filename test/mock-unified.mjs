@@ -13,6 +13,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
   for await (const chunk of request) text += chunk;
   const body = JSON.parse(text);
   const lastUser = body.input?.findLastIndex((item) => item.role === "user") ?? -1;
+  const probeRequested = JSON.stringify(body.input?.[lastUser]?.content ?? "").includes("Call route_probe, then reply OK.");
   const current = body.input?.slice(lastUser + 1) ?? [];
   const hasToolOutput = current.some((item) => ["function_call_output", "custom_tool_call_output"].includes(item.type));
   if (toolMode && process.env.MOCK_DIRECT_RESPONSES !== "1" && provider === "opencode" && hasToolOutput) {
@@ -58,7 +59,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
     response.end();
     return;
   }
-  if (toolMode && !hasToolOutput) {
+  if (toolMode && !hasToolOutput && probeRequested) {
     const call = { id: "fc_" + calls.length, type: "function_call", call_id: "call_" + calls.length,
       name: "route_probe", arguments: "{}", status: "completed" };
     if (provider === "openai") emit("response.output_item.done", { output_index: 0, item: reasoning });

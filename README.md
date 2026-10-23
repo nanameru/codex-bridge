@@ -73,6 +73,15 @@ codex
 旧履歴を含む`codex resume`の自動移行や、暗号化履歴を含む同一スレッドの提供元切替は保証しません。
 `transports`は既存カタログのOpenCode転送形式だけを更新し、GPTのモデル設定や順序を変えません。
 
+## 文章要約でGPTとOpenCodeの履歴を共有する
+
+OSSの仕組みを既存bridge向けに分解した[導入仕様と設定コマンド](docs/portable-history.md)を追加しました。新規統合チャットでCodex標準の文章圧縮を使うための設定をプレビューできます。既存暗号化履歴の移行と画像413の修正は別工程です。
+
+```bash
+python3 scripts/portable_history.py        # 変更なしで確認
+python3 scripts/portable_history.py --apply
+```
+
 ## 同じチャットで GPT ↔ OpenCode を切り替える（統合モード）
 
 モデル名で送信先を選ぶ共通routerを使用できます。GPTはOpenAIへ、
