@@ -5,6 +5,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 try:
     import tomllib
@@ -114,9 +115,20 @@ def switch(mode, root):
             'stream_idle_timeout_ms = 300000\n'
         )
     if (root / "unified-router-state.json").exists():
+        from unified_config import edit_table
+
         values = selection(tomllib.loads(candidate))
         values["model_catalog_json"] = str(root / "unified-model-catalog.json")
         candidate = replace_selection(candidate, values)
+        # 一覧だけ統合してもnative providerの会話はChatGPTへ直送される。
+        # on/off/repairのいずれでも両providerを同じrouterへ向ける。
+        router_url = tomllib.loads(candidate)["model_providers"]["codex-bridge"]["base_url"]
+        endpoint = urlsplit(router_url)
+        if (endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or not endpoint.port
+                or endpoint.path != "/v1" or endpoint.username or endpoint.password
+                or endpoint.query or endpoint.fragment):
+            raise ValueError("統合routerのloopback接続定義を確認してください")
+        candidate = edit_table(candidate, (), {"openai_base_url": router_url})
     tomllib.loads(candidate)
     if candidate != source:
         descriptor, backup_path = tempfile.mkstemp(prefix="config.toml.bak.switch.", dir=root)
