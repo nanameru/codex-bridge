@@ -325,3 +325,99 @@ cases:
     test_file: test/live-tool-recovery.mjs
     issues: [51]
     notes: "RUN_LIVE_MODELS=1で明示実行。合成入力のみ、最大4要求/各1024token/60秒。反映後GLM通常1回→回答とGLM/HY4回答復帰を実API計4要求で成功。通常CIは実APIを呼ばない。"
+
+  - id: TC-032
+    title: "入力の型不正を非再試行エラーへ変換する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-01"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-01。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-033
+    title: "choice 0以外のツールを実行しない"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-02"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-02。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-034
+    title: "ツールID変更とdelta型不正を拒否する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-03"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-03。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-035
+    title: "使用量記録の障害が正常完了を壊さない"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-04"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-04。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-036
+    title: "回答復帰で組み込みツールと引数deltaを拒否する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-05"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-05。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-037
+    title: "空回答と矛盾する終端を拒否する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-06"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-06。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-038
+    title: "並列ツールの逆順結果を保持する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-07"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-07。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-039
+    title: "重複終端と不正UTF8を拒否する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-08"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-08。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"

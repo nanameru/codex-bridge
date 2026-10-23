@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
@@ -54,22 +54,43 @@ export function recoverWithAnswer(body) {
 // dispatch a tool. Buffer only this exceptional response until validation.
 export function answerOnlyStream(contentType, maxBytes) {
   let bytes = 0, chunks = [];
-  const failure = { type: 'response.failed', response: { id: 'resp_recovery_failed', object: 'response', status: 'failed', output: [],
+  const failure = { type: 'response.failed', response: { id: 'resp_recovery_' + randomUUID(), object: 'response', status: 'failed', output: [],
     error: { code: 'invalid_prompt', message: '回答への復帰中に不正な応答を受けたため停止しました。履歴は保持しています。' } } };
   const isSse = contentType.includes('text/event-stream');
-  const invalidTool = value => value?.item && ['function_call','custom_tool_call'].includes(value.item.type)
-    || (value?.output ?? value?.response?.output ?? []).some(item => ['function_call','custom_tool_call'].includes(item.type));
+  const safeItem = item => item && ['message','reasoning'].includes(item.type);
+  const hasAnswer = output => Array.isArray(output) && output.some(item => item.type === 'message'
+    && [undefined,'assistant'].includes(item.role) && Array.isArray(item.content)
+    && item.content.some(part => (part.type === 'output_text' && typeof part.text === 'string' && part.text.trim())
+      || (part.type === 'refusal' && typeof part.refusal === 'string' && part.refusal.trim())));
+  const safeEvent = type => ['response.created','response.in_progress','response.queued','response.completed','response.failed','response.incomplete',
+    'response.output_item.added','response.output_item.done','response.content_part.added','response.content_part.done'].includes(type)
+    || /^response\.(output_text|refusal|reasoning_[a-z_]+)\./.test(type);
+  const validPayload = value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    if (value.item && !safeItem(value.item)) return false;
+    const output = value.output ?? value.response?.output;
+    return output === undefined || (Array.isArray(output) && output.every(safeItem));
+  };
   return new Transform({
     transform(chunk, _encoding, callback) { bytes += chunk.length; if (bytes <= maxBytes) chunks.push(chunk); callback(); },
     flush(callback) {
-      let text = Buffer.concat(chunks).toString('utf8');
+      let text = '';
       try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
         if (bytes > maxBytes) throw new Error('size');
         const frames = isSse ? text.split(/\r?\n\r?\n/).map(frame => frame.split(/\r?\n/).filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n'))
           .filter(data=>data && data !== '[DONE]').map(data=>JSON.parse(data)) : [JSON.parse(text)];
-        if (frames.some(invalidTool)) throw new Error('tool');
-        if (isSse && !frames.some(frame=>['response.completed','response.failed','response.incomplete'].includes(frame.type))) throw new Error('terminal');
-        if (!isSse && !['completed','failed','incomplete'].includes(frames[0].status)) throw new Error('terminal');
+        if (!frames.length || !frames.every(validPayload)) throw new Error('tool');
+        let result;
+        if (isSse) {
+          if (!frames.every(frame => safeEvent(frame.type))) throw new Error('event');
+          const terminals = frames.filter(frame => ['response.completed','response.failed','response.incomplete'].includes(frame.type));
+          if (terminals.length !== 1 || frames.at(-1) !== terminals[0]) throw new Error('terminal');
+          result = terminals[0].response;
+          if (result?.status !== terminals[0].type.slice('response.'.length)) throw new Error('status');
+        } else result = frames[0];
+        if (!result || !['completed','failed','incomplete'].includes(result.status)) throw new Error('terminal');
+        if (result.status === 'completed' && !hasAnswer(result.output)) throw new Error('empty answer');
       } catch {
         text = isSse ? `event: response.failed\ndata: ${JSON.stringify(failure)}\n\n` : JSON.stringify(failure.response);
       }

@@ -3,12 +3,25 @@ import { randomUUID } from 'node:crypto';
 const id = prefix => prefix + randomUUID().replaceAll('-', '');
 const encodeReasoning = text => 'cxb1:' + Buffer.from(text).toString('base64url');
 class ProtocolError extends Error {}
+function primaryChoice(chunk) {
+  if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) throw new ProtocolError('Chat応答の形式が不正です。');
+  if (!Array.isArray(chunk.choices)) {
+    if (chunk.choices == null && chunk.usage && typeof chunk.usage === 'object') return undefined;
+    throw new ProtocolError('Chat choicesの形式が不正です。');
+  }
+  if (chunk.choices.some(choice => !choice || typeof choice !== 'object' || Array.isArray(choice))) throw new ProtocolError('Chat choiceの形式が不正です。');
+  return chunk.choices.find(choice => choice.index === 0 || choice.index == null);
+}
+function optionalString(value) {
+  if (value != null && typeof value !== 'string') throw new ProtocolError('Chat文字列フィールドの形式が不正です。');
+}
 function validate(reason, calls) {
   if (!['stop', 'tool_calls'].includes(reason)) throw new ProtocolError('Chat応答が正常終了していません（終了理由: ' + (['length','content_filter'].includes(reason) ? reason : '不明') + '）。ツールは実行していません。');
   if ((reason === 'tool_calls') !== Boolean(calls.length)) throw new ProtocolError('Chat応答の終了理由とツール呼び出しが一致しません。');
+  if (!Array.isArray(calls)) throw new ProtocolError('Chat tool_callsの形式が不正です。');
   const ids = new Set();
   for (const call of calls) {
-    if (!call.id || ids.has(call.id) || !call.function?.name) throw new ProtocolError('Chatツール呼び出しのIDまたは名前が不正です。');
+    if (typeof call.id !== 'string' || !call.id || ids.has(call.id) || typeof call.function?.name !== 'string' || !call.function.name) throw new ProtocolError('Chatツール呼び出しのIDまたは名前が不正です。');
     ids.add(call.id);
     try { const args = JSON.parse(call.function.arguments); if (!args || Array.isArray(args) || typeof args !== 'object') throw new Error('object required'); } catch { throw new ProtocolError('Chatツール引数が未完了です。ツールは実行していません。'); }
   }
@@ -25,11 +38,12 @@ function items(message) {
 }
 export function chatToResponses(chat, model) {
   const envelope = { id: id('resp_'), object: 'response', created_at: Math.floor(Date.now()/1000), model, output: [] };
-  const choice = chat.choices?.find(c => c.index === 0) ?? chat.choices?.[0];
   try {
+    const choice = primaryChoice(chat);
     if (chat.error) throw new ProtocolError('上流Chatがエラーを返しました。');
     validate(choice?.finish_reason, choice?.message?.tool_calls ?? []);
     if (!choice.message?.content && !choice.message?.tool_calls?.length) throw new ProtocolError('Chat最終回答が空です。');
+    optionalString(choice.message?.content); optionalString(choice.message?.reasoning_content);
     const usage = chat.usage ?? {};
     return { ...envelope, status: 'completed', output: items(choice.message ?? {}), usage: {
       input_tokens: usage.prompt_tokens ?? 0, output_tokens: usage.completion_tokens ?? 0, total_tokens: usage.total_tokens ?? 0 } };
@@ -62,15 +76,18 @@ export async function pipeChatStream(upstream, response, model, threadId, option
   const frame = (raw) => {
     const data = raw.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n').trim();
     if (!data) return;
-    if (data === '[DONE]') { terminal = true; return; }
     if (terminal) throw new ProtocolError('Chat終端後に応答が続きました。');
+    if (data === '[DONE]') { terminal = true; return; }
     let chunk;
     try { chunk = JSON.parse(data); } catch { throw new ProtocolError('ChatストリームのJSONが不正です。'); }
+    const choice = primaryChoice(chunk);
     if (chunk.error) throw new ProtocolError('上流Chatがエラーを返しました。');
     if (chunk.usage) usage = chunk.usage;
-    const choice = chunk.choices?.find(c => c.index === 0) ?? chunk.choices?.[0];
     if (!choice) return;
     const delta = choice.delta ?? {};
+    if (typeof delta !== 'object' || Array.isArray(delta)) throw new ProtocolError('Chat deltaの形式が不正です。');
+    optionalString(delta.content); optionalString(delta.reasoning_content); optionalString(choice.finish_reason);
+    if (delta.tool_calls != null && !Array.isArray(delta.tool_calls)) throw new ProtocolError('Chat tool_callsの形式が不正です。');
     if (finish && (delta.content || delta.reasoning_content || delta.tool_calls?.length)) throw new ProtocolError('Chat終了理由の後に生成が続きました。');
     if (delta.reasoning_content) { reasoningItem ??= begin('reasoning'); reasoning += delta.reasoning_content; }
     if (delta.content) {
@@ -78,8 +95,11 @@ export async function pipeChatStream(upstream, response, model, threadId, option
       emit('response.output_text.delta', { item_id: textItem.item.id, output_index: textItem.index, content_index: 0, delta: delta.content });
     }
     for (const tc of delta.tool_calls ?? []) {
+      if (!tc || typeof tc !== 'object') throw new ProtocolError('Chatツールdeltaの形式が不正です。');
       if (!Number.isInteger(tc.index) || tc.index < 0) throw new ProtocolError('Chatツールindexが不正です。');
       const call = calls.get(tc.index) ?? { id: '', function: { name: '', arguments: '' } };
+      optionalString(tc.id); optionalString(tc.function?.name); optionalString(tc.function?.arguments);
+      if (tc.id && call.id && tc.id !== call.id) throw new ProtocolError('ChatツールのIDが途中で変わりました。');
       if (tc.id) call.id = tc.id;
       if (tc.function?.name) call.function.name += tc.function.name;
       if (tc.function?.arguments) call.function.arguments += tc.function.arguments;
@@ -95,13 +115,14 @@ export async function pipeChatStream(upstream, response, model, threadId, option
     reader = upstream.body.getReader();
     abortHandle?.setTimer(firstByteTimeoutMs, 'upstream first byte timeout');
     const decoder = new TextDecoder('utf-8', { fatal: true });
+    const decode = (value, options) => { try { return decoder.decode(value, options); } catch { throw new ProtocolError('Chat応答のUTF8が不正です。'); } };
     while (true) {
       const { done, value } = await reader.read();
-      if (done) { buffer += decoder.decode(); break; }
+      if (done) { buffer += decode(); break; }
       abortHandle?.setTimer(idleTimeoutMs, 'upstream idle timeout');
       size += value.length;
       if (size > maxBytes) throw new ProtocolError('Chat応答が上限を超えました。');
-      buffer += decoder.decode(value, { stream: true });
+      buffer += decode(value, { stream: true });
       let boundary;
       while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
         frame(buffer.slice(0, boundary.index)); buffer = buffer.slice(boundary.index + boundary[0].length);
@@ -130,7 +151,10 @@ export async function pipeChatStream(upstream, response, model, threadId, option
       emit('response.output_item.added', { output_index: index, item });
       emit('response.output_item.done', { output_index: index, item }); output.push([index,item]);
     }
-    if (usage) recordUsage(threadId, model, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0);
+    if (usage) {
+      try { recordUsage(threadId, model, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0); }
+      catch { /* Usage telemetry must not change an already validated completion. */ }
+    }
     emit('response.completed', { response: { ...envelope, status: 'completed', output: output.sort((a,b)=>a[0]-b[0]).map(([,item])=>item),
       usage: usage ? { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens, total_tokens: usage.total_tokens } : undefined } });
     response.end();
