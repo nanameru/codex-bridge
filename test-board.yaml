@@ -318,10 +318,10 @@ cases:
     title: "稼働後の実モデルで通常応答と回答復帰を検証する"
     feature: "実API検証"
     scenario: "GLM通常ツール1回とGLM/HY4の回答復帰"
-    status: doing
+    status: done
     priority: high
     type: integration
     source: [src/chat-protocol.mjs, src/model-router.mjs, src/tool-recovery.mjs]
     test_file: test/live-tool-recovery.mjs
     issues: [51]
-    notes: "RUN_LIVE_MODELS=1で明示実行。合成入力のみ、最大4要求/各1024token/60秒。通常CIは実APIを呼ばない。"
+    notes: "RUN_LIVE_MODELS=1で明示実行。合成入力のみ、最大4要求/各1024token/60秒。反映後GLM通常1回→回答とGLM/HY4回答復帰を実API計4要求で成功。通常CIは実APIを呼ばない。"
