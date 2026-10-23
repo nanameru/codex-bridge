@@ -62,6 +62,9 @@ codex
 
 ## 同じチャットで GPT ↔ OpenCode を切り替える（統合モード）
 
+GPTは標準の圧縮を維持します。OpenCodeへの履歴引き継ぎに時間がかかるときは、Codex App/CLIへ接続ステータスを表示します。[表示・設定・検証手順](docs/handoff-status.md)。
+
+
 モデル名で送信先を選ぶ共通routerを使用できます。GPTはOpenAIへ、
 `OpenCode · …` のモデルは既存のOpenCodeブリッジへ転送します。
 これにより、チャットに保存されたproviderが`openai`でも`codex-bridge`でも、

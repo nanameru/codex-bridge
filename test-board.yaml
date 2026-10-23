@@ -279,3 +279,14 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [43]
     notes: "全33モデルの圧縮履歴・ツール結果・会話ID・旧直結マーカー・要約失敗を模擬上流で検証。Python設定テストも全33モデルを確認。実APIへの課金検証は未実施。"
+  - id: TC-028
+    title: "引き継ぎ状態表示: AppとCLIへ待機・完了・失敗を伝える"
+    feature: "引き継ぎ状態表示"
+    scenario: "標準圧縮から外部モデルへ切り替える待ち時間を表示し、cache hitでは省略する"
+    status: done
+    priority: high
+    type: integration
+    source: [src/handoff-status.mjs, src/model-router.mjs, src/compaction-handoff.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [47]
+    notes: "SSE整合・分割UTF-8・JSON・ツール・認証分離・429・失敗・timeout・cancel・共有要求を検証。実Codex app-serverでnative圧縮からの待機/完了通知、cache、resume、失敗停止、上流非送信を確認。Appの実描画/実API推論は未検証。"

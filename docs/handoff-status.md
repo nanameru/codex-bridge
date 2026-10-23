@@ -1,0 +1,58 @@
+# Codex AppとCLIで履歴引き継ぎの待機状態を表示する
+
+通常のGPT利用ではOpenAI標準の履歴圧縮を使い、同じ会話の`/model`からOpenCodeへ切り替えたとき、読めない圧縮履歴だけを既存のGPT接続で文章要約へ変換する。全文の復号ではなく、省略のあり得る引き継ぎ要約である。
+
+## 表示
+
+要約の新規作成または同時要求の要約待ちが1秒以上続いたとき、bridge生成のcommentaryを送る。
+
+> 接続ステータス：OpenCodeへ切り替えるため、会話履歴を引き継いでいます。
+
+要約が完成したら次を続け、その後にモデルの回答・ツール呼び出しを通常どおり流す。
+
+> 履歴の引き継ぎが完了しました。OpenCodeの応答を待っています。
+
+これはモデルが生成した思考ではなく、接続処理の状態表示。Codex AppとCLIが共通で使うapp-serverの`item/agentMessage/delta`へ届く。Appの会話欄に表示するための通常のcommentary形式であり、専用のバナーやApp本体の変更ではない。
+
+## 表示しない場合
+
+- 同じ会話・認証・圧縮内容の要約キャッシュがhitした場合。
+- GPTの通常要求、または要約不要なOpenCode要求。
+- 1秒以内に要約が終わった場合。
+- `stream=false`の要求。
+
+キャッシュはrouterのメモリ内のみ。初回だけ永久に要約するという意味ではなく、router再起動・認証や圧縮内容の変更・キャッシュ退避後は再要約する。要約に必要なGPTの利用枠と待ち時間が発生する。
+
+## 履歴と失敗の扱い
+
+待機表示は`msg_bridge_handoff_`で始まる専用ID、assistant role、commentary phaseを持つ。次の上流要求と引き継ぎ要約からこの専用表示だけを除外する。普通のcommentary、ユーザー依頼、ツール結果は保持し、会話ファイルは編集しない。
+
+待機表示を出した後はHTTPヘッダーを変更できないため、後続の失敗を`response.failed`で返す。要約失敗を完了回答として扱わず、不完全な履歴をOpenCodeへ送らない。変換失敗や入力不正は非再試行エラーとして返し、同じ要約を自動的に何度も呼ばない。上流429はrate-limitとして区別する。
+
+ステータスを先に出すストリームに限り、response ID・output index・sequenceを整合させ、最終outputにも表示項目を含める。要約が速く表示しなかった要求は従来のレスポンスを維持する。通信の本文・認証・要約内容をログへ記録しない。
+
+## 設定と適用
+
+本スレッドで先に有効にした全体の`remote_compaction="unsupported"`設定は、本人のバックアップと現設定を比較したうえで戻す。新規の通常起動は組み込み`openai` providerを使い、`openai_base_url`の共通router接続は維持する。GPT専用と切替用の起動分離は不要。
+
+既存のcustom provider会話の保存設定は自動書換えしない。設定の読込みにはCodexの再起動が必要な場合がある。既存OpenAI会話でも共通routerを使っていれば、必要時の引き継ぎ処理を使える。
+
+router更新は次の既存コマンドで、接続が空くまで待って行う。
+
+```bash
+python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
+```
+
+Codex AppやCLIを強制終了しない。更新を待機させた場合は、更新完了ログとhealthのrevision一致を確認するまで反映済みとは扱わない。
+
+## 検証
+
+```bash
+node --test test/handoff-status.test.mjs
+python3 test/handoff-app-e2e.py
+python3 test/handoff-app-e2e.py --fail
+```
+
+実Codex＋偽認証＋模擬上流で、native remote compactionからの切替、App共通の待機/完了通知、cache hit、再起動resume、失敗時の停止、認証分離、表示文の上流非送信を確認する。単体では分割UTF-8 SSE、JSON上流、ツール変換、429、タイムアウト、キャンセル、同時要求も検証する。
+
+App共通プロトコルの検証であり、実Appの描画スクリーンショットと実モデルによる要約品質は別検証。画像413の入力見積もり修正は含めない。

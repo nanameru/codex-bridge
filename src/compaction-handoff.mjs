@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isHandoffStatusItem } from "./handoff-status.mjs";
 import { normalizeToolCallId } from "./tool-adapter.mjs";
 
 export class HandoffError extends Error {}
@@ -69,7 +70,7 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
     if (prefix.some((item) => item.type === "compaction" && typeof item.encrypted_content !== "string")) {
       throw new HandoffError("圧縮履歴の形式が不正です。元の会話を保持したまま停止しました");
     }
-    const input = prefix.filter((item) => !["system", "developer"].includes(item.role)
+    const input = prefix.filter((item) => !isHandoffStatusItem(item) && !["system", "developer"].includes(item.role)
       && (item.type !== "reasoning" || !item.encrypted_content?.startsWith("cxb1:"))).map(normalizeToolCallId);
     const fingerprint = createHash("sha256").update(destination).update("\0").update(model).update("\0")
       .update(headers.authorization ?? "")
