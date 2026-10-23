@@ -190,6 +190,24 @@ class UnifiedConfigTests(unittest.TestCase):
             unified_config.activate_normal(self.root, 8790)
         self.assertEqual(len(list(self.root.glob("config.toml.bak.normal-direct.*"))), 1)
 
+    def test_common_history_accepts_every_model_and_removes_old_direct_marker(self):
+        models = json.loads((ROOT / "src/models.json").read_text())["models"]
+        for entry in models:
+            with self.subTest(model=entry["id"]):
+                self.normal_setup()
+                slug = "opencode/" + entry["id"]
+                self.path.write_text(self.path.read_text().replace("opencode/deepseek-v4.1-flash", slug)
+                                     + '[model_providers.codex-bridge.http_headers]\nx-codex-bridge-direct="1"\n')
+                (self.root / "unified-model-catalog.json").write_text(json.dumps({"models": [
+                    {"slug": slug, "router_provider": "opencode", "router_transport": "chat"}]}))
+                health = {"history_transport": "chat", "model_ids": [slug]}
+                with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO(json.dumps(health))):
+                    unified_config.activate_normal(self.root, 8790)
+                result = tomllib.loads(self.path.read_text())
+                self.assertEqual(result["model"], slug)
+                self.assertEqual(result["model_provider"], "codex-bridge")
+                self.assertNotIn("x-codex-bridge-direct", result["model_providers"]["codex-bridge"]["http_headers"])
+
     def test_normal_activation_keeps_gpt_default_and_routes_both_model_choices(self):
         self.normal_setup()
         self.catalog = {"models": [

@@ -3,7 +3,7 @@ import http from "node:http";
 import { once } from "node:events";
 import test from "node:test";
 import * as zlib from "node:zlib";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { catalogRoutes, createRouter, estimateInputTokens, readOpenCodeKey, routedBody } from "../src/model-router.mjs";
@@ -41,7 +41,7 @@ async function fixture(context, options = {}) {
   const nativeBase = await listen(native);
   const bridgeBase = await listen(bridge);
   const router = createRouter({ catalog, nativeBase, bridgeBase, openCodeBase: bridgeBase,
-    openCodeKey: () => "fake-opencode-key", allowTestOrigins: true,
+    openCodeKey: () => "fake-opencode-key", allowTestOrigins: true, allowDirectResponses: true,
     authenticate: () => true, bridgeKey: () => "test-internal-key", ...options });
   const base = await listen(router);
   context.after(async () => { await close(router); await close(native); await close(bridge); });
@@ -672,4 +672,55 @@ test("streams first output before completion even with metrics enabled", async (
     while (!(await reader.read()).done) {}
   }
   assert.equal(metrics[0].outcome, "complete");
+});
+
+// Exercise the production default against every bundled model, including old direct markers.
+test("all OpenCode models share history handoff after switching or resuming", async (context) => {
+  const models = JSON.parse(readFileSync(new URL("../src/models.json", import.meta.url))).models;
+  const allCatalog = { models: [catalog.models[0], ...models.map(({ id }) => ({
+    slug: "opencode/" + id, router_provider: "opencode", router_model: id, router_transport: "responses",
+  }))] };
+  const calls = [];
+  const input = [{ type: "compaction", encrypted_content: "saved-native-history" },
+    { role: "user", content: "resumed request" },
+    { type: "custom_tool_call", id: "ctc_probe", call_id: "probe", name: "exec", input: "read file" },
+    { type: "custom_tool_call_output", call_id: "probe", output: "saved tool result" }];
+  const before = structuredClone(input);
+  const { send, base } = await fixture(context, { catalog: allCatalog, allowDirectResponses: false,
+    summaryModel: "gpt-test", fetcher: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push({ body, headers: options.headers });
+      return Response.json({ status: "completed", output: [{ type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "prior requirements and next actions" }] }] });
+    } });
+  const health = await (await fetch(base.replace(/\/v1$/, "") + "/health")).json();
+  assert.equal(health.history_transport, "chat");
+  assert.deepEqual(health.direct_models, []);
+  for (const { id } of models) {
+    const start = calls.length;
+    const response = await send({ model: "opencode/" + id, input, prompt_cache_key: "resumed-" + id,
+      tools: [{ type: "custom", name: "exec" }] });
+    assert.equal(response.status, 200, id + ": " + await response.text());
+    assert.equal(calls.length - start, 2, id);
+    const forwarded = calls.at(-1);
+    assert.equal(forwarded.body.model, id);
+    assert.equal(forwarded.body.prompt_cache_key, "resumed-" + id);
+    assert.equal(forwarded.headers.authorization, undefined);
+    assert.equal(forwarded.headers["x-codex-bridge-auth"], "test-internal-key");
+    assert.equal(forwarded.body.tools[0].type, "function");
+    assert.equal(forwarded.body.input.at(-2).call_id, "probe");
+    assert.equal(forwarded.body.input.at(-1).output, "saved tool result");
+    assert.match(JSON.stringify(forwarded.body.input), /prior requirements and next actions/);
+    assert.doesNotMatch(JSON.stringify(forwarded.body.input), /saved-native-history/);
+  }
+  assert.deepEqual(input, before);
+});
+
+test("default history handoff stops every route on summary failure", async (context) => {
+  const calls = [];
+  const { send } = await fixture(context, { allowDirectResponses: false, summaryModel: "gpt-test",
+    fetcher: async (url) => { calls.push(url); return new Response("unavailable", { status: 503 }); } });
+  const response = await send({ model: "direct-test", input: [{ type: "compaction", encrypted_content: "saved" }] });
+  assert.equal(response.status, 502);
+  assert.equal(calls.length, 1);
 });

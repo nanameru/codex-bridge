@@ -38,40 +38,27 @@ Codex標準のlocal compactionが選択モデルへ依頼します。独自route
 
 ### 通常の`codex`コマンドと統合モデル一覧で使う
 
-GPTで会話を始め、途中で`/model`からDeepSeekへ切り替える場合も、通常起動の
-接続先を共通routerへ向ける必要があります。モデル一覧にDeepSeekがあるだけでは、
-ChatGPTへの直結は切り替わらず「model is not supported when using Codex with a ChatGPT account」になります。
-
-GPTが既定の場合は、稼働中の共通routerと統合カタログを確認したうえで次を実行します。
-既定のGPTとnative providerは保持し、`/model`の変更先に応じてrouterが転送します。
-
-```bash
-python3 scripts/unified_config.py normal-on
-```
-
-実行中のTUIには遡及しないため、作業完了後に一度終了して通常の`codex`を起動してください。
-保存済み会話は`codex resume`から再開できます。会話ファイルの書き換えや強制再起動は行いません。
-この経路のDeepSeekは履歴互換のため従来変換を使用します。停止中のrouterやカタログ不一致では設定を変更しません。
-
-既定モデルが`opencode/deepseek-v4.1-flash`など公式Responses対応のOpenCodeモデルの場合は、
-次の順に通常起動へ有効化できます。実行中の接続は強制停止しません。
+GPTとOpenCodeを同じスレッドで切り替える場合は共通routerを使います。
+統合routerは**全OpenCodeモデルを同じChat Completions変換経路へ送信**します。
+DeepSeek、GPT、Grok、Muse Sparkも例外ではありません。カタログの
+`router_transport`は公式API対応情報として残りますが、統合routerの既定経路は変えません。
+旧設定の`x-codex-bridge-direct: 1`が残る接続でも、共通の履歴変換を適用します。
 
 ```bash
-python3 scripts/unified_config.py transports
+python3 scripts/unified_config.py prepare
 python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 python3 scripts/unified_config.py normal-on
 codex
 ```
 
-新しい統合チャットはcustom providerの標準local compactionを使います。
-`/model`の統合一覧は維持し、公式対応モデルは直接転送、未対応モデルは従来変換を使います。
-その統合チャットでGPTへ切り替えた場合もlocal compactionで選択したGPTが要約します。
-保存済みのOpenAI providerスレッドは書換えません。
+既定GPTはOpenAI providerを保持します。既定がOpenCodeなら、モデルを問わず
+統合providerを使います。通常会話・ツール履歴は変換して引き継ぎ、OpenAIの暗号化
+圧縮履歴は引き継ぎ要約へ変換します。`codex resume`も同じ処理を通ります。
+要約にはOpenAIの追加利用が必要で、失敗時は履歴を捨てず停止します。
+既存の会話ファイルは書き換えず、実行中のTUIは強制再起動しません。
 
-新しいprovider設定が付ける`x-codex-bridge-direct: 1`がない既存接続は旧転送のまま保護します。
-実行中のTUIには設定変更が遡及しないため、同じタブで一度終了して`codex`を起動してください。
-旧履歴を含む`codex resume`の自動移行や、暗号化履歴を含む同一スレッドの提供元切替は保証しません。
-`transports`は既存カタログのOpenCode転送形式だけを更新し、GPTのモデル設定や順序を変えません。
+上記の独立した`codex-opencode`起動だけは公式Responses直結のままです。
+同一スレッドの提供元切替には統合routerを使ってください。
 
 ## 同じチャットで GPT ↔ OpenCode を切り替える（統合モード）
 

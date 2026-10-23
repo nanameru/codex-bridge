@@ -106,7 +106,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   codexRoot = defaultCodexRoot(), authenticate = (request) => authenticateCodex(request, codexRoot),
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
-  nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
+  nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
   summaryModel = "gpt-6.1-sol", onMetric = () => {},
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
@@ -138,8 +138,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     if (request.method === "GET" && path === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
+        history_transport: allowDirectResponses ? "model" : "chat",
         direct_header: "x-codex-bridge-direct",
-        direct_models: catalog.models.filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
+        direct_models: (allowDirectResponses ? catalog.models : []).filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
         model_ids: catalog.models.map((model) => model.slug) }));
       return;
     }
@@ -219,7 +220,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 400, "unknown_model", "統合カタログにないモデルです。カタログを再生成してください");
         return;
       }
-      if (route.provider === "opencode" && route.transport === "responses" && request.headers["x-codex-bridge-direct"] !== "1") {
+      if (route.provider === "opencode" && route.transport === "responses"
+          && (!allowDirectResponses || request.headers["x-codex-bridge-direct"] !== "1")) {
         route = { ...route, transport: "chat" };
       }
       metric.provider = route.provider;

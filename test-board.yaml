@@ -268,3 +268,14 @@ cases:
     test_file: test/local-security.test.mjs
     issues: [41]
     notes: "任意Bearer・不正Host/Origin・危険な認証ファイル・期限切れを拒否。内部鍵/本人認証/APIキーの分離、OpenCode公式origin・リダイレクト拒否を検証。test/test_local_operations.pyで更新復元・冪等性・非課金診断・秘密非出力・個別アイドル待機を確認。旧8788実ソースの一時コピーでも模擬上流により拒否・正常接続・本文非保存を検証。ローカル両サービスへ適用しdoctor全項目true、再適用成功。実推論テストは未実施。"
+  - id: TC-026
+    title: "全モデルの履歴引き継ぎ: 旧直結設定でも全モデルで圧縮履歴を引き継ぐ"
+    feature: "全モデルの履歴引き継ぎ"
+    scenario: "旧直結設定でも全モデルで圧縮履歴を引き継ぐ"
+    status: done
+    priority: medium
+    type: regression
+    source: [src/model-router.mjs, scripts/unified_config.py]
+    test_file: test/model-router.test.mjs
+    issues: [43]
+    notes: "全33モデルの圧縮履歴・ツール結果・会話ID・旧直結マーカー・要約失敗を模擬上流で検証。Python設定テストも全33モデルを確認。実APIへの課金検証は未実施。"

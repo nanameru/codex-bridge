@@ -286,7 +286,7 @@ def activate_normal(root, port):
         # 同じrouterを通し、OpenCode側へは提供元に合わせて履歴を変換する。
         configure(root, "on", port)
         return
-    if not model or model.get("router_provider") != "opencode" or model.get("router_transport") != "responses":
+    if not model or model.get("router_provider") != "opencode":
         raise ValueError("通常起動の既定モデルが統合接続に対応していません。変更しません")
     provider = parsed.get("model_providers", {}).get("codex-bridge", {})
     if (provider.get("base_url") != f"http://127.0.0.1:{port}/v1" or provider.get("name") in (None, "OpenAI")
@@ -295,10 +295,14 @@ def activate_normal(root, port):
         raise ValueError("標準local compactionを使う統合providerの設定を確認してください")
     with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
         health = json.load(response)
-    if health.get("direct_header") != "x-codex-bridge-direct" or model["slug"] not in health.get("direct_models", []):
-        raise ValueError("先に公式直接転送対応routerを起動してください")
+    common_history = health.get("history_transport") == "chat"
+    if common_history:
+        if model["slug"] not in health.get("model_ids", []):
+            raise ValueError("同じ統合カタログでrouterを起動してください")
+    elif health.get("direct_header") != "x-codex-bridge-direct" or model["slug"] not in health.get("direct_models", []):
+        raise ValueError("先に共通履歴対応routerを起動してください")
     candidate = edit_table(source, (), {"model_provider": "codex-bridge"})
-    candidate = edit_table(candidate, ("model_providers", "codex-bridge", "http_headers"), {"x-codex-bridge-direct": "1"})
+    candidate = edit_table(candidate, ("model_providers", "codex-bridge", "http_headers"), {"x-codex-bridge-direct": None if common_history else "1"})
     if tomllib.loads(candidate) == parsed:
         return
     if path.is_symlink() or path.read_text() != source:
@@ -309,7 +313,7 @@ def activate_normal(root, port):
         backup.write(source)
     atomic_write(path, candidate, path.stat().st_mode & 0o777)
     print(f"バックアップ: {backup_path}")
-    print("通常のcodex起動で公式接続を有効にしました。既存スレッドは変更していません。実行中のTUIは同じタブで再起動してください。")
+    print("通常のcodex起動で統合接続を有効にしました。既存スレッドは変更していません。実行中のTUIは同じタブで再起動してください。")
 
 
 def main():

@@ -95,6 +95,7 @@ const bridge = mock("opencode");
 const bridgeBase = await bind(bridge);
 const router = createRouter({ catalog, nativeBase: await bind(native), bridgeBase, openCodeBase: bridgeBase,
   openCodeKey: () => "mock-opencode-key", bridgeKey: () => "mock-internal-key", allowTestOrigins: true,
+  allowDirectResponses: process.env.MOCK_DIRECT_RESPONSES === "1",
   authenticate: (request) => authenticateCodex(request) || (process.env.MOCK_DIRECT_RESPONSES === "1"
     && request.headers.authorization === "Bearer mock-opencode-key") });
 const url = await bind(router);

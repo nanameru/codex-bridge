@@ -62,8 +62,6 @@ def run():
         prepare(home, ROOT)
         catalog_path = home / "unified-model-catalog.json"
         catalog = json.loads(catalog_path.read_text())
-        for model in catalog["models"]:
-            model.pop("router_transport", None)
         catalog_path.write_text(json.dumps(catalog))
         home.joinpath("auth.json").write_text(json.dumps(fake_auth()))
         home.joinpath("auth.json").chmod(0o600)

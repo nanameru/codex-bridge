@@ -8,7 +8,7 @@ import test from "node:test";
 import { createRouter } from "../src/model-router.mjs";
 import { validateOpenCodeBase, fetchOpenCode } from "../src/local-security.mjs";
 
-async function fixture(context) {
+async function fixture(context, options = {}) {
   const root = mkdtempSync(join(tmpdir(), "router-security-"));
   const auth = join(root, "auth.json");
   const bridgeKey = "b".repeat(64);
@@ -22,7 +22,7 @@ async function fixture(context) {
   ] }, openCodeKey: () => "opencode-key", fetcher: async (url, options) => {
     calls.push({ url, ...options });
     return Response.json({ output: [] });
-  } });
+  }, ...options });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   context.after(async () => {
@@ -82,7 +82,7 @@ test("owner authentication is reloaded after refresh; missing, public and linked
 });
 
 test("internal bridge credentials never accompany native or official OpenCode requests", async (context) => {
-  const { send, calls, bridgeKey } = await fixture(context);
+  const { send, calls, bridgeKey } = await fixture(context, { allowDirectResponses: true });
   const malicious = { "x-codex-bridge-auth": "attacker-controlled" };
   assert.equal((await send("gpt-test", malicious)).status, 200);
   assert.equal((await send("opencode/test", malicious)).status, 200);
