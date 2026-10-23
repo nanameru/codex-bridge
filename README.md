@@ -1,5 +1,15 @@
 # codex-bridge
 
+## 本人認証とローカル運用
+
+中継の両ポートは本人のCodex認証または内部専用鍵で保護します。本文ログは既定で無効です。
+導入・診断・アイドル時更新・復元・履歴の送信先は[ローカル運用手順](docs/local-operations.md)を参照してください。
+
+```bash
+python3 scripts/secure_local.py apply --wait-idle 120
+python3 scripts/secure_local.py doctor
+```
+
 ## 公式Responsesへ直接接続する（対応モデル向け）
 
 OpenCode Goの公式案内でResponsesに対応するDeepSeek V4、GPT、Grok、Muse Sparkは、

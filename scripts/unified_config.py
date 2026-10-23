@@ -8,6 +8,7 @@ import tomllib
 from urllib.request import urlopen
 
 from switch_config import atomic_write
+from local_security import SECURITY_VERSION
 
 
 ROOT_KEYS = ("openai_base_url", "model_catalog_json")
@@ -170,6 +171,8 @@ def configure(root, mode, port):
             health = json.load(response)
         if health.get("mode") != "unified" or set(health.get("model_ids", [])) != model_ids:
             raise ValueError("同じ統合カタログでrouterを起動してから有効にしてください")
+        if (root / "bridge-local-token").exists() and health.get("security") != SECURITY_VERSION:
+            raise ValueError("保護版routerを起動してから有効にしてください")
         state = json.loads(state_path.read_text()) if state_path.exists() else {
             "root": {key: data.get(key) for key in ROOT_KEYS},
             "bridge": {key: bridge.get(key) for key in BRIDGE_KEYS},

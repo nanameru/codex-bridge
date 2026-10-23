@@ -17,5 +17,6 @@ jobs:
           node-version: '22.16'
       - run: bash -n scripts/switch.sh
       - run: bash -n scripts/legacy-switch.sh
+      - run: python3 -m py_compile scripts/*.py
       - run: python3 -m unittest discover -s test -p 'test_*.py'
       - run: node --test test/*.test.mjs

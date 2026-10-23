@@ -3,3 +3,12 @@ node_modules/
 models.openai.json
 .DS_Store
 __pycache__/
+# CODEX_HOME must normally live outside the checkout. Never commit its credentials.
+/auth.json
+/bridge-local-token
+/config.toml
+/config.toml.bak.*
+/security-update.lock
+/router-service-update.lock
+/router-runtime/
+/log/

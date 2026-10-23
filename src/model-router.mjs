@@ -9,13 +9,15 @@ import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
+import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
 // These JSON endpoints belong to OpenAI, irrespective of the selected chat model.
 const NATIVE_TOOL_PATHS = new Set(["/v1/images/generations", "/v1/images/edits", "/v1/alpha/search"]);
 const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.meta.url)))
   .update(readFileSync(new URL("./tool-adapter.mjs", import.meta.url)))
-  .update(readFileSync(new URL("./compaction-handoff.mjs", import.meta.url))).digest("hex");
+  .update(readFileSync(new URL("./compaction-handoff.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./local-security.mjs", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
 export function catalogRoutes(catalog) {
@@ -57,7 +59,8 @@ function fail(response, status, code, message) {
     response.destroy();
     return;
   }
-  response.writeHead(status, { "content-type": "application/json" });
+  response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
+    ...([401, 403].includes(status) ? { connection: "close" } : {}) });
   response.end(JSON.stringify({ error: { type: code, message } }));
 }
 
@@ -97,15 +100,11 @@ function envLimit(name, fallback) {
   return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
-export function readOpenCodeKey({ environment = process.env, home = homedir() } = {}) {
-  if (environment.OPENCODE_API_KEY) return environment.OPENCODE_API_KEY;
-  try {
-    const auth = JSON.parse(readFileSync(join(home, ".local/share/opencode/auth.json"), "utf8"))["opencode-go"];
-    return auth?.type === "api" && typeof auth.key === "string" && auth.key.length > 0 ? auth.key : null;
-  } catch { return null; }
-}
+export const readOpenCodeKey = readOpenCodeApiKey;
 
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
+  codexRoot = defaultCodexRoot(), authenticate = (request) => authenticateCodex(request, codexRoot),
+  bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
   nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
   summaryModel = "gpt-6.1-sol", onMetric = () => {},
@@ -131,10 +130,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     }
   }
   const server = http.createServer(async (request, response) => {
+    if (localRequestError(request)) {
+      fail(response, 403, "local_request_required", "本人用loopback CLI接続だけを受け付けます");
+      return;
+    }
     const path = new URL(request.url, "http://127.0.0.1").pathname;
     if (request.method === "GET" && path === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, models: catalog.models.length,
+      response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
         direct_header: "x-codex-bridge-direct",
         direct_models: catalog.models.filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
         model_ids: catalog.models.map((model) => model.slug) }));
@@ -152,7 +155,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       fail(response, 404, "not_found", "未対応のパスです");
       return;
     }
-    if (!/^Bearer \S+$/i.test(request.headers.authorization ?? "")) {
+    if (!/^Bearer \S+$/i.test(request.headers.authorization ?? "") || !authenticate(request)) {
       fail(response, 401, "authentication_required", "Codexのログイン認証を有効にして接続し直してください");
       return;
     }
@@ -242,6 +245,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       const headers = { "content-type": "application/json", accept: nativeTool ? "application/json" : "text/event-stream, application/json" };
+      if (route.provider === "opencode" && !directResponses) {
+        const key = bridgeKey();
+        if (!key) {
+          fail(response, 503, "local_bridge_key_required", "ローカル中継鍵を安全な権限で準備してください");
+          return;
+        }
+        headers[INTERNAL_AUTH_HEADER] = key;
+      }
       const nativeDestination = nativeBase ?? (/^Bearer sk-/i.test(request.headers.authorization)
         ? "https://api.openai.com/v1" : "https://chatgpt.com/backend-api/codex");
       let destination = bridge.href.replace(/\/$/, "");
@@ -263,7 +274,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       if (route.provider === "openai") {
         destination = nativeDestination;
         for (const [name, value] of Object.entries(request.headers)) {
-          if (typeof value === "string" && name !== "x-codex-bridge-direct"
+          if (typeof value === "string" && name !== "x-codex-bridge-direct" && name !== INTERNAL_AUTH_HEADER
               && (NATIVE_HEADERS.includes(name) || name.startsWith("x-codex-") || name.startsWith("x-openai-"))) {
             headers[name] = value;
           }

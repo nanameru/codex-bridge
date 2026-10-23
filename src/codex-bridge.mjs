@@ -13,7 +13,7 @@
  *   （既定ポート 8788）
  *
  * 環境変数:
- *   OPENCODE_API_KEY     必須
+ *   OPENCODE_API_KEY     またはOpenCode Goの保存済みAPI設定
  *   PORT                 既定 8788
  *   UPSTREAM_BASE        既定 https://opencode.ai/inference/go/openai/v1
  *   DEFAULT_MODEL        モデル未指定時の既定 deepseek-v4.1-flash
@@ -21,6 +21,7 @@
  */
 
 import http from "node:http";
+import { guardBridgeRequest, validateOpenCodeBase, fetchOpenCode, readOpenCodeApiKey } from "./local-security.mjs";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -28,53 +29,14 @@ import { join, dirname } from "node:path";
 import { reasoningOptions, upstreamSession } from "./upstream-options.mjs";
 
 const PORT = Number(process.env.PORT ?? 8788);
-const UPSTREAM_BASE = (process.env.UPSTREAM_BASE ?? "https://opencode.ai/inference/go/openai/v1").replace(/\/+$/, "");
-const API_KEY = process.env.OPENCODE_API_KEY ?? "";
+const UPSTREAM_BASE = validateOpenCodeBase((process.env.UPSTREAM_BASE ?? "https://opencode.ai/inference/go/openai/v1").replace(/\/+$/, ""));
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL ?? "deepseek-v4.1-flash";
 const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/**
- * 認証トークンの取得。
- *   1. OPENCODE_API_KEY があればそれを使う
- *   2. 無ければ OpenCode が保存している OAuth トークン（ログイン認証）を使う
- *      → サブスクのログインをそのまま流用できる。APIキー不要。
- */
-import { execFileSync } from "node:child_process";
-const OC_DB = join(homedir(), ".local/share/opencode/opencode.db");
-let cachedToken = null;
-let cachedAt = 0;
-
-function readOAuthToken() {
-  try {
-    const out = execFileSync(
-      "sqlite3",
-      [OC_DB, "select value from credential where integration_id='opencode' and active=1 limit 1;"],
-      { encoding: "utf8", timeout: 5000 },
-    ).trim();
-    if (!out) return null;
-    const v = JSON.parse(out);
-    if (!v.access) return null;
-    if (v.expires && v.expires < Date.now() + 60_000) {
-      log("!! OAuth トークンの期限が近い/切れています。OpenCode を開いて再ログインしてください");
-      return null;
-    }
-    return v.access;
-  } catch (e) {
-    return null;
-  }
-}
-
-function getToken(force = false) {
-  if (API_KEY) return { token: API_KEY, kind: "api_key" };
-  const now = Date.now();
-  if (!force && cachedToken && now - cachedAt < 120_000) return { token: cachedToken, kind: "oauth" };
-  const t = readOAuthToken();
-  if (t) {
-    cachedToken = t;
-    cachedAt = now;
-    return { token: t, kind: "oauth" };
-  }
-  return { token: null, kind: "none" };
+// OpenCode公式APIキーのみ。ログインDBやOAuth資格情報は取り出さない。
+function getToken() {
+  const token = readOpenCodeApiKey();
+  return { token, kind: token ? "api_key" : "none" };
 }
 
 const log = (...a) => LOG_LEVEL !== "error" && console.log(new Date().toISOString(), ...a);
@@ -180,17 +142,17 @@ function guardTripped() {
   return recent.length > MAX_REQ_PER_MIN;
 }
 
-// デバッグ用にリクエストを保存（DISABLE_DUMP=1 で無効化）
+// 本文保存は明示的なローカル診断時だけ。既定は無効。
 import { appendFileSync } from "node:fs";
-const DUMP_DIR = "/tmp/codex-bridge-dumps";
-if (process.env.DISABLE_DUMP !== "1") {
-  try { mkdirSync(DUMP_DIR, { recursive: true }); } catch {}
+const DUMP_DIR = process.env.DUMP_DIR ?? "/tmp/codex-bridge-dumps";
+if (process.env.ALLOW_REQUEST_DUMP === "1" && process.env.DISABLE_DUMP !== "1") {
+  try { mkdirSync(DUMP_DIR, { recursive: true, mode: 0o700 }); } catch {}
 }
 function dump(body) {
-  if (process.env.DISABLE_DUMP === "1") return;
+  if (process.env.ALLOW_REQUEST_DUMP !== "1" || process.env.DISABLE_DUMP === "1") return;
   try {
     const file = `${DUMP_DIR}/${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-    appendFileSync(file, JSON.stringify({ at: Date.now(), body }, null, 2));
+    appendFileSync(file, JSON.stringify({ at: Date.now(), body }, null, 2), { mode: 0o600 });
   } catch {}
 }
 
@@ -519,6 +481,7 @@ function readBody(req) {
 }
 
 const server = http.createServer(async (req, res) => {
+  if (!guardBridgeRequest(req, res)) return;
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   dbg(req.method, url.pathname);
 
@@ -630,7 +593,7 @@ const server = http.createServer(async (req, res) => {
 
     let upstream;
     const doFetch = (path, bodyObj) =>
-      fetch(`${UPSTREAM_BASE}${path}`, {
+      fetchOpenCode(`${UPSTREAM_BASE}${path}`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${authInfo.token}`,
@@ -696,7 +659,7 @@ const server = http.createServer(async (req, res) => {
 
     if (!upstream.ok) {
       const t = await upstream.text();
-      log("upstream", upstream.status, t.slice(0, 200));
+      log("upstream", upstream.status);
       res.writeHead(upstream.status, { "content-type": "application/json" });
       res.end(t);
       return;

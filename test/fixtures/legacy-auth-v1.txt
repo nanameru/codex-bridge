@@ -1,0 +1,47 @@
+/**
+ * 認証トークンの取得。
+ *   1. OPENCODE_API_KEY があればそれを使う
+ *   2. 無ければ OpenCode が保存している OAuth トークン（ログイン認証）を使う
+ *      → サブスクのログインをそのまま流用できる。APIキー不要。
+ */
+import { execFileSync } from "node:child_process";
+const OC_DB = join(homedir(), ".local/share/opencode/opencode.db");
+let cachedToken = null;
+let cachedAt = 0;
+
+function readOAuthToken() {
+  try {
+    const out = execFileSync(
+      "sqlite3",
+      [OC_DB, "select value from credential where integration_id='opencode' and active=1 limit 1;"],
+      { encoding: "utf8", timeout: 5000 },
+    ).trim();
+    if (!out) return null;
+    const v = JSON.parse(out);
+    if (!v.access) return null;
+    if (v.expires && v.expires < Date.now() + 60_000) {
+      log("!! OAuth トークンの期限が近い/切れています。OpenCode を開いて再ログインしてください");
+      return null;
+    }
+    return v.access;
+  } catch (e) {
+    return null;
+  }
+}
+
+function getToken(force = false) {
+  if (API_KEY) return { token: API_KEY, kind: "api_key" };
+  const now = Date.now();
+  if (force) {
+    cachedToken = null;
+    cachedAt = 0;
+  }
+  if (!force && cachedToken && now - cachedAt < 120_000) return { token: cachedToken, kind: "oauth" };
+  const t = readOAuthToken();
+  if (t) {
+    cachedToken = t;
+    cachedAt = now;
+    return { token: t, kind: "oauth" };
+  }
+  return { token: null, kind: "none" };
+}

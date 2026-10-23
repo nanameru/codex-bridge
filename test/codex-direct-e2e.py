@@ -49,6 +49,7 @@ def run(normal=False):
                                     "wire_api": "responses", "requires_openai_auth": True})
                 path.write_text(config)
                 (home / "auth.json").write_text(json.dumps(router_e2e.fake_auth()))
+                (home / "auth.json").chmod(0o600)
                 activate_normal(home, urlsplit(base).port)
             os.environ["CODEX_HOME"] = directory
             os.environ["OPENCODE_API_KEY"] = "mock-opencode-key"
