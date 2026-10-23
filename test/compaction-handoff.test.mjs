@@ -297,3 +297,51 @@ test('cancelling a token-limited summary during retry backoff prevents regenerat
  await assert.rejects(expand(body,{...options(),signal:abort.signal,diagnose:d=>{if(d.summary_retrying)abort.abort();}}),{name:'AbortError'});
  assert.equal(calls,1);
 });
+
+test('native thin terminal uses completed output items, not partial deltas, and caches the summary', async () => {
+  let calls = 0; const diagnostics = [];
+  const expand = compactionHandoff({ model: 'gpt-test', maxBytes: 100000, retryDelayMs: 0, fetcher: async () => {
+    calls++;
+    const events = [
+      { type: 'response.output_text.delta', delta: 'PRIVATE PARTIAL' },
+      { type: 'response.output_item.done', output_index: 0, item: { id: 'msg_done', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Completed factual handoff.' }] } },
+      { type: 'response.completed', response: { status: 'completed', output: [] } },
+    ];
+    return new Response(events.map(e => 'data: ' + JSON.stringify(e) + '\n\n').join(''), { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  const result = await expand(body, { ...options(), diagnose: d => diagnostics.push(d) });
+  assert.match(JSON.stringify(result), /Completed factual handoff/);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+  await expand(body, options()); assert.equal(calls, 1);
+  assert.ok(diagnostics.some(d => d.summary_output_source === 'completed_items'));
+});
+
+test('thin terminal restores ordered completed messages across UTF8 chunks and never exposes reasoning', async () => {
+ const item={type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:'日本語の引き継ぎ✅'}]};
+ const events=[{type:'response.output_item.done',output_index:1,item},
+  {type:'response.output_item.done',output_index:0,item:{type:'reasoning',encrypted_content:'PRIVATE REASONING'}},
+  {type:'response.completed',response:{status:'completed',output:[]}}];
+ const bytes=new TextEncoder().encode(events.map(e=>'data: '+JSON.stringify(e)+'\r\n\r\n').join(''));
+ const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,fetcher:async()=>new Response(new ReadableStream({start(c){for(let n=0;n<bytes.length;n+=7)c.enqueue(bytes.slice(n,n+7));c.close();}}),{headers:{'content-type':'text/event-stream'}})});
+ const result=JSON.stringify(await expand(body,options()));
+ assert.match(result,/日本語の引き継ぎ✅/);assert.doesNotMatch(result,/PRIVATE/);
+});
+
+test('completed items never bypass terminal status, item validation, or authoritative terminal output', async () => {
+ const message={type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:'PRIVATE STREAM'}]};
+ for(const scenario of ['delta_only','missing_terminal','failed','incomplete','gap','duplicate','unexpected','unfinished','refusal','role','terminal']){
+  let calls=0;const diagnostics=[];
+  const item=scenario==='unexpected'?{type:'function_call',name:'unsafe'}:scenario==='refusal'?{...message,content:[{type:'refusal',refusal:'PRIVATE'}]}:scenario==='unfinished'?{...message,status:'in_progress'}:scenario==='role'?{...message,role:'user'}:message;
+  const events=[{type:'response.output_text.delta',delta:'PRIVATE DELTA'}];
+  if(scenario!=='delta_only')events.push({type:'response.output_item.done',output_index:scenario==='gap'?1:0,item});
+  if(scenario==='duplicate')events.push(events.at(-1));
+  if(scenario!=='missing_terminal')events.push(scenario==='failed'?{type:'response.failed',response:{status:'failed',error:{code:'invalid_prompt'}}}:scenario==='incomplete'?{type:'response.incomplete',response:{status:'incomplete',incomplete_details:{reason:'content_filter'},output:[]}}:{type:'response.completed',response:{status:'completed',output:scenario==='terminal'?[{...message,content:[{type:'output_text',text:'Authoritative final summary'}]}]:[]}});
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{calls++;return new Response(events.map(e=>'data: '+JSON.stringify(e)+'\n\n').join(''),{headers:{'content-type':'text/event-stream'}});}});
+  if(scenario==='terminal'){
+   const result=JSON.stringify(await expand(body,{...options(),diagnose:d=>diagnostics.push(d)}));
+   assert.match(result,/Authoritative final summary/);assert.doesNotMatch(result,/PRIVATE/);
+  }else await assert.rejects(expand(body,{...options(),diagnose:d=>diagnostics.push(d)}));
+  assert.equal(calls,['delta_only','missing_terminal'].includes(scenario)?2:1,scenario);
+  assert.doesNotMatch(JSON.stringify(diagnostics),/PRIVATE|unsafe/);
+ }
+});

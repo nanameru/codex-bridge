@@ -623,3 +623,15 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [69]
     notes: "修正前413を再現。合成33MiB画像のgzip入力が要約を経て送信可能。同一ターン完了画像・native compaction後・未完了ツール・直近依頼の保持、保護入力過大・不十分な要約・無効化・GPT経路の停止を確認。受信/展開上限のちょうど/1byte超をJSON/gzip/br/zstdで検証。実会話の外部再送は未実施。"
+
+  - id: TC-056
+    title: "終端outputが空のnative要約を完了済みストリーム項目から復元する"
+    feature: "native要約ストリーム互換"
+    scenario: "実応答構造、UTF8分割、index順序、未完了・拒否・不正項目の拒否"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [71]
+    notes: "障害履歴の実要約を既存OAuthで診断し、5278bytesのoutput_item.done本文と空の終端outputを確認。修正前empty_summaryを再現。正常終端と完了項目だけ採用し、deltaのみ・終端欠落・failed・incomplete・重複/欠落index・不正型/role・拒否を遮断。実app-server+模擬thin終端で切替/再圧縮/resumeを検証。"

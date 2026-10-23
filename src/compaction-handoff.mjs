@@ -17,6 +17,23 @@ function summaryFailure(code, status, stage, attempts) {
   return error;
 }
 
+function summaryText(output, status, kind, attempt) {
+  if (!Array.isArray(output)) throw summaryFailure("summary_invalid_response", status, kind, attempt);
+  if (output.some(item => !item || !["message", "reasoning"].includes(item.type))) {
+    throw summaryFailure("summary_unexpected_item", status, kind, attempt);
+  }
+  const messages = output.filter(item => item.type === "message");
+  if (messages.some(item => ![undefined, "assistant"].includes(item.role) || ![undefined, "completed"].includes(item.status) || !Array.isArray(item.content)
+      || item.content.some(part => !part || !["output_text", "refusal"].includes(part.type)
+        || (part.type === "output_text" && typeof part.text !== "string")))) {
+    throw summaryFailure("summary_invalid_response", status, kind, attempt);
+  }
+  if (messages.some(item => item.content.some(part => part.type === "refusal"))) {
+    throw summaryFailure("content_filter", status, kind, attempt);
+  }
+  return messages.flatMap(item => item.content).map(part => part.text).join("\n");
+}
+
 // Keep the two most recent user turns (or the latest when there are only two).
 // A user may steer while a tool is running, so a user message alone is not
 // proof of a safe boundary: all earlier tool calls must have finished first.
@@ -124,6 +141,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             let scan = "";
             let terminal = false;
             let terminalEvent;
+            const completedItems = new Map();
             const reader = response.body.getReader();
             try {
               while (!terminal) {
@@ -142,6 +160,14 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
                   if (data === "[DONE]") { terminal = true; break; }
                   if (data) {
                     const event = JSON.parse(data);
+                    if (event.type === "response.output_item.done") {
+                      const index = event.output_index;
+                      if (!Number.isSafeInteger(index) || index < 0 || index >= 128 || completedItems.has(index)) {
+                        throw summaryFailure("summary_invalid_response", response.status, "sse", attempt);
+                      }
+                      summaryText([event.item], response.status, "sse", attempt);
+                      completedItems.set(index, event.item);
+                    }
                     terminal = ["response.completed", "response.failed", "response.incomplete", "error"].includes(event.type);
                     if (terminal) { terminalEvent = event; break; }
                   }
@@ -184,20 +210,19 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             if (completed.status !== "completed" || !Array.isArray(completed.output)) {
               throw summaryFailure("summary_invalid_response", response.status, responseKind, attempt);
             }
-            if (completed.output.some(item => !item || !["message", "reasoning"].includes(item.type))) {
-              throw summaryFailure("summary_unexpected_item", response.status, responseKind, attempt);
+            let output = completed.output;
+            let outputSource = "terminal";
+            if (responseKind === "sse" && output.length === 0 && completedItems.size > 0) {
+              const indices = [...completedItems.keys()].sort((a, b) => a - b);
+              if (indices.some((value, index) => value !== index)) {
+                throw summaryFailure("summary_invalid_response", response.status, "sse", attempt);
+              }
+              output = indices.map(index => completedItems.get(index));
+              outputSource = "completed_items";
             }
-            const messages = completed.output.filter(item => item.type === "message");
-            if (messages.some(item => ![undefined, "completed"].includes(item.status) || !Array.isArray(item.content)
-                || item.content.some(part => !part || !["output_text", "refusal"].includes(part.type)
-                  || (part.type === "output_text" && typeof part.text !== "string")))) {
-              throw summaryFailure("summary_invalid_response", response.status, responseKind, attempt);
-            }
-            if (messages.some(item => item.content.some(part => part.type === "refusal"))) {
-              throw summaryFailure("content_filter", response.status, responseKind, attempt);
-            }
-            summary = messages.flatMap(item => item.content).map(part => part.text).join("\n");
-            report({ summary_output_bytes: Buffer.byteLength(summary) });
+            summary = summaryText(output, response.status, responseKind, attempt);
+            report({ summary_output_bytes: Buffer.byteLength(summary), summary_output_source: outputSource,
+              summary_completed_items: completedItems.size });
             if (!summary.trim()) throw summaryFailure("empty_summary", response.status, responseKind, attempt);
             if (Buffer.byteLength(summary) > summaryLimit) throw summaryFailure("summary_too_large", response.status, responseKind, attempt);
           } catch (error) {
