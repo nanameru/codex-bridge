@@ -109,3 +109,13 @@ OpenCode Chat向けの画像入力では、Codexの`detail: original`を`high`�
 MOCK_HANDOFF_RESULT=incomplete python3 test/handoff-app-e2e.py
 MOCK_HANDOFF_RESULT=empty python3 test/handoff-app-e2e.py
 ```
+
+## 画像を含む大きな履歴
+
+受信した本文と圧縮展開後の本文には128MiB、変換後のモデルへの送信と上流応答には32MiBの上限を設ける。`/health`の`request_limits`で稼働値を確認できる。上流への要約生成に渡す過去履歴は受信上限内で扱い、要約結果は従来どおり64KiB以内とする。
+
+OpenCode Chatへの送信が32MiBを超える場合は、token見積もりが小さくても既存の安全な履歴境界を使って要約する。圧縮履歴がある場合も必要に応じて完了済みの画像ツールまで要約範囲を広げ、二重要約を避ける。最新の依頼、指示、未完了のツール交換を保持する。
+
+受信上限超過、保護する内容だけで送信上限超過、要約失敗、自動要約の無効化では停止する。通常GPT経路と明示的な直接Responses経路では、この容量回復による要約を行わない。容量制限そのものを撤廃したり、最新画像を黙って削除したりする処理ではない。
+
+診断には`received_bytes`、`decoded_bytes`、`budget_initial_bytes`と、拒否した制限の固定分類`input_limit_reason`（wire_bytes / decoded_bytes / forwarded_bytes）を使う。会話本文や画像データは記録しない。
