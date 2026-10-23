@@ -119,3 +119,15 @@ OpenCode Chatへの送信が32MiBを超える場合は、token見積もりが小
 受信上限超過、保護する内容だけで送信上限超過、要約失敗、自動要約の無効化では停止する。通常GPT経路と明示的な直接Responses経路では、この容量回復による要約を行わない。容量制限そのものを撤廃したり、最新画像を黙って削除したりする処理ではない。
 
 診断には`received_bytes`、`decoded_bytes`、`budget_initial_bytes`と、拒否した制限の固定分類`input_limit_reason`（wire_bytes / decoded_bytes / forwarded_bytes）を使う。会話本文や画像データは記録しない。
+
+## 完了イベントに本文が再掲されない要約応答
+
+native SSEでは`response.output_item.done`に完成した文章が届いても、最後の`response.completed.response.output`が空の場合がある。終端だけを見て`empty_summary`と判定せず、正常完了した応答に限り、完了済み項目をindex順に復元する。上限128項目で、indexの欠落・重複、不正形式、拒否、ツール実行項目を拒否する。
+
+終端に非空のoutputがある場合は、それを正本として採用し、ストリーム項目と二重に連結しない。deltaや進行中メッセージは要約に使わず、終端欠落・failed・incompleteからは復元しない。推論本文は転送しない。
+
+`summary_output_source`（terminal / completed_items）と`summary_completed_items`を記録する。本文のログは残さない。
+
+```bash
+MOCK_HANDOFF_THIN=1 python3 test/handoff-app-e2e.py
+```

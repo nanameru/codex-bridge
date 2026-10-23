@@ -59,7 +59,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
     emit("response.content_part.done", { output_index: 0, content_index: 0, item_id: item.id, part: item.content[0] });
   }
   emit("response.output_item.done", { output_index: 0, item });
-  emit("response.completed", { response: result });
+  emit("response.completed", { response: summary && process.env.MOCK_HANDOFF_THIN === "1" ? { ...result, output: [] } : result });
   response.end();
 });
 async function bind(server) {
