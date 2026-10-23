@@ -192,6 +192,8 @@ def configure(root, mode, port):
             "base_url": "http://127.0.0.1:8788/v1", "requires_openai_auth": None, "wire_api": "responses",
         }
         candidate = edit_table(candidate, BRIDGE_TABLE, changes)
+    if path.is_symlink() or path.read_text() != source:
+        raise ValueError("設定が変更されたかリンクです。再確認してください")
     if candidate != source:
         import tempfile
         descriptor, backup_path = tempfile.mkstemp(prefix="config.toml.bak.unified.", dir=root)
@@ -267,15 +269,22 @@ def activate_flash_code_mode(root):
 
 
 def activate_normal(root, port):
+    if not 1 <= port <= 65535:
+        raise ValueError("ポートは1〜65535で指定してください")
     path = root / "config.toml"
     source = path.read_text()
     parsed = tomllib.loads(source)
     catalog = json.loads((root / "unified-model-catalog.json").read_text())
     model = next((model for model in catalog["models"] if model["slug"] == parsed.get("model")), None)
-    if not model or model.get("router_provider") != "opencode" or model.get("router_transport") != "responses":
-        raise ValueError("通常起動の既定モデルが公式Responses対応のOpenCodeモデルではありません。変更しません")
     if parsed.get("model_provider") not in (None, "openai", "codex-bridge"):
         raise ValueError("独自の既定providerは変更しません")
+    if model and model.get("router_provider") == "openai":
+        # GPTで開始する会話はnative providerを保つ。モデル名だけを変える/modelも
+        # 同じrouterを通し、OpenCode側へは提供元に合わせて履歴を変換する。
+        configure(root, "on", port)
+        return
+    if not model or model.get("router_provider") != "opencode" or model.get("router_transport") != "responses":
+        raise ValueError("通常起動の既定モデルが統合接続に対応していません。変更しません")
     provider = parsed.get("model_providers", {}).get("codex-bridge", {})
     if (provider.get("base_url") != f"http://127.0.0.1:{port}/v1" or provider.get("name") in (None, "OpenAI")
             or provider.get("requires_openai_auth") is not True or provider.get("wire_api") != "responses"

@@ -7,11 +7,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from recover_thread import LocalServer
-from unified_config import prepare
+from unified_config import activate_normal, prepare
 
 
 def fake_auth():
@@ -74,23 +76,32 @@ def run():
         try:
             base = json.loads(upstream.stdout.readline())["url"]
             home.joinpath("config.toml").write_text(
-                'model="gpt-6.1-sol"\nopenai_base_url=' + json.dumps(base)
-                + '\nmodel_catalog_json=' + json.dumps(str(home / "unified-model-catalog.json"))
+                'model="gpt-6.1-sol"\nmodel_provider="openai"'
                 + '\n[model_providers.codex-bridge]\nname="mock"\nwire_api="responses"\nrequires_openai_auth=true\nbase_url=' + json.dumps(base) + '\n'
             )
+            # 通常のGPT直結設定から、本番と同じ有効化コマンドで/model切替を準備する。
+            activate_normal(home, urlsplit(base).port)
+            configured = tomllib.loads(home.joinpath("config.toml").read_text())
+            assert configured["model"] == "gpt-6.1-sol"
+            assert configured["model_provider"] == "openai"
             server = LocalServer(os.environ.get("CODEX_BIN", "codex"))
             server.request("initialize", {"clientInfo": {"name": "unified-e2e", "version": "1"}, "capabilities": {"experimentalApi": True}})
             server.send({"method": "initialized"})
+            listed = server.request("model/list", {"includeHidden": True})["data"]
+            assert {"gpt-6.1-sol", "opencode/deepseek-v4.1-flash"} <= {model["id"] for model in listed}
             saved = []
             for provider, models in [
                 ("openai", ["gpt-6.1-sol", "opencode/deepseek-v4.1-flash", "gpt-6.1-sol"]),
                 ("codex-bridge", ["opencode/deepseek-v4.1-flash", "gpt-6.1-sol", "opencode/deepseek-v4.1-flash"]),
             ]:
-                params = {"cwd": directory, "model": models[0], "modelProvider": provider,
-                          "sandbox": "read-only", "approvalPolicy": "never"}
+                params = {"cwd": directory, "sandbox": "read-only", "approvalPolicy": "never"}
+                if provider != "openai":
+                    params.update(model=models[0], modelProvider=provider)
                 if os.environ.get("MOCK_TOOL_ROUNDTRIP") == "1":
                     params["dynamicTools"] = [{"type": "function", "name": "route_probe", "description": "Return ROUTE_OK", "inputSchema": {"type": "object", "properties": {}}}]
-                thread = server.request("thread/start", params)["thread"]["id"]
+                started = server.request("thread/start", params)
+                assert started["modelProvider"] == provider
+                thread = started["thread"]["id"]
                 for model in models:
                     complete_turn(server, thread, model)
                 history = server.request("thread/read", {"threadId": thread, "includeTurns": True})["thread"]

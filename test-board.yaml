@@ -246,3 +246,14 @@ cases:
     source: [src/tool-adapter.mjs]
     test_file: test/context-input.test.mjs
     issues: [9]
+  - id: TC-024
+    title: "通常起動のモデル切替: GPT開始後にDeepSeekへ切り替える"
+    feature: "通常起動のモデル切替"
+    scenario: "GPT開始後にDeepSeekへ切り替える"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/unified_config.py, scripts/switch_config.py, test/codex-router-e2e.py]
+    test_file: test/test_unified_config.py
+    issues: [39]
+    notes: "修正前のGPT有効化拒否とnative送信先欠落を再現。既定GPT・profile・バックアップ・復元・冪等性・競合保護・外部送信先拒否を検証。実Codex 0.163＋模擬上流で通常設定から有効化し、GPT→DeepSeek→GPT、逆方向、会話再開（各8ターン、ツールあり16要求）と認証分離を確認。有料の実推論は未実施。"

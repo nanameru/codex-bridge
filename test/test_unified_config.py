@@ -181,11 +181,88 @@ class UnifiedConfigTests(unittest.TestCase):
             unified_config.activate_normal(self.root, 8790)
         self.assertEqual(len(list(self.root.glob("config.toml.bak.normal-direct.*"))), 1)
 
-    def test_normal_activation_refuses_old_router_native_default_and_custom_provider(self):
-        for kind in ["old-router", "native-model", "custom-provider"]:
+    def test_normal_activation_keeps_gpt_default_and_routes_both_model_choices(self):
+        self.normal_setup()
+        self.catalog = {"models": [
+            {"slug": "gpt-6.1-sol", "router_provider": "openai"},
+            {"slug": "opencode/deepseek-v4.1-flash", "router_provider": "opencode", "router_transport": "responses"},
+        ]}
+        (self.root / "unified-model-catalog.json").write_text(json.dumps(self.catalog))
+        self.path.write_text('model="gpt-6.1-sol"\nmodel_provider="openai"\n# preserve\n'
+                             '[profiles.work]\nmodel="profile"\n' + self.path.read_text().split("\n", 1)[1])
+        original = tomllib.loads(self.path.read_text())
+        with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
+            unified_config.activate_normal(self.root, 8790)
+            first = self.path.read_text()
+            unified_config.activate_normal(self.root, 8790)
+        data = tomllib.loads(first)
+        self.assertEqual(self.path.read_text(), first)
+        self.assertEqual(data["model"], "gpt-6.1-sol")
+        self.assertEqual(data["model_provider"], "openai")
+        self.assertEqual(data["openai_base_url"], "http://127.0.0.1:8790/v1")
+        self.assertEqual(data["model_catalog_json"], str(self.root / "unified-model-catalog.json"))
+        self.assertEqual(data["profiles"], original["profiles"])
+        self.assertIn("# preserve", first)
+        self.assertEqual(len(list(self.root.glob("config.toml.bak.unified.*"))), 1)
+        unified_config.configure(self.root, "off", 8790)
+        self.assertEqual(tomllib.loads(self.path.read_text()), original)
+
+    def test_legacy_switch_restores_missing_native_route_in_unified_mode(self):
+        with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
+            unified_config.configure(self.root, "on", 8790)
+        self.path.write_text(unified_config.edit_table(self.path.read_text(), (), {"openai_base_url": None}))
+        for mode in ["repair", "on", "off"]:
+            switch_config.switch(mode, self.root)
+            self.assertEqual(tomllib.loads(self.path.read_text())["openai_base_url"], "http://127.0.0.1:8790/v1")
+        self.assertEqual(tomllib.loads(self.path.read_text())["model"], "gpt-test")
+
+    def test_unified_switch_never_points_native_auth_at_a_remote_bridge(self):
+        with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
+            unified_config.configure(self.root, "on", 8790)
+        for url in ["https://remote.example/v1", "http://user:secret@127.0.0.1:8790/v1",
+                    "http://127.0.0.1:8790/v1?redirect=1", "http://127.0.0.1:8790/other"]:
+            self.path.write_text(unified_config.edit_table(self.path.read_text(), unified_config.BRIDGE_TABLE, {"base_url": url}))
+            before = self.path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "loopback"):
+                switch_config.switch("repair", self.root)
+            self.assertEqual(self.path.read_bytes(), before)
+
+    def test_gpt_activation_refuses_wrong_catalog_and_custom_provider(self):
+        self.catalog["models"][0]["router_provider"] = "openai"
+        (self.root / "unified-model-catalog.json").write_text(json.dumps(self.catalog))
+        before = self.path.read_bytes()
+        with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO('{"mode":"unified","model_ids":[]}')):
+            with self.assertRaisesRegex(ValueError, "カタログ"):
+                unified_config.activate_normal(self.root, 8790)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.path.write_text('model_provider="custom"\n' + self.path.read_text())
+        before = self.path.read_bytes()
+        with mock.patch.object(unified_config, "urlopen") as fetch:
+            with self.assertRaisesRegex(ValueError, "独自"):
+                unified_config.activate_normal(self.root, 8790)
+            fetch.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_gpt_activation_preserves_a_concurrent_model_change(self):
+        self.catalog["models"][0]["router_provider"] = "openai"
+        (self.root / "unified-model-catalog.json").write_text(json.dumps(self.catalog))
+        newer = self.path.read_text().replace('model="gpt-test"', 'model="new-choice"')
+
+        def changing_health(*args, **kwargs):
+            self.path.write_text(newer)
+            return self.health(*args, **kwargs)
+
+        with mock.patch.object(unified_config, "urlopen", side_effect=changing_health):
+            with self.assertRaisesRegex(ValueError, "変更"):
+                unified_config.activate_normal(self.root, 8790)
+        self.assertEqual(self.path.read_text(), newer)
+        self.assertFalse((self.root / "unified-router-state.json").exists())
+
+    def test_normal_activation_refuses_old_router_unknown_model_and_custom_provider(self):
+        for kind in ["old-router", "unknown-model", "custom-provider"]:
             self.normal_setup()
-            if kind == "native-model":
-                self.path.write_text(self.path.read_text().replace('model="opencode/deepseek-v4.1-flash"', 'model="gpt-6.1-sol"'))
+            if kind == "unknown-model":
+                self.path.write_text(self.path.read_text().replace('model="opencode/deepseek-v4.1-flash"', 'model="unknown-model"'))
             if kind == "custom-provider":
                 self.path.write_text('model_provider="custom"\n' + self.path.read_text())
             before = self.path.read_bytes()

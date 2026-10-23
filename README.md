@@ -28,6 +28,21 @@ Codex標準のlocal compactionが選択モデルへ依頼します。独自route
 
 ### 通常の`codex`コマンドと統合モデル一覧で使う
 
+GPTで会話を始め、途中で`/model`からDeepSeekへ切り替える場合も、通常起動の
+接続先を共通routerへ向ける必要があります。モデル一覧にDeepSeekがあるだけでは、
+ChatGPTへの直結は切り替わらず「model is not supported when using Codex with a ChatGPT account」になります。
+
+GPTが既定の場合は、稼働中の共通routerと統合カタログを確認したうえで次を実行します。
+既定のGPTとnative providerは保持し、`/model`の変更先に応じてrouterが転送します。
+
+```bash
+python3 scripts/unified_config.py normal-on
+```
+
+実行中のTUIには遡及しないため、作業完了後に一度終了して通常の`codex`を起動してください。
+保存済み会話は`codex resume`から再開できます。会話ファイルの書き換えや強制再起動は行いません。
+この経路のDeepSeekは履歴互換のため従来変換を使用します。停止中のrouterやカタログ不一致では設定を変更しません。
+
 既定モデルが`opencode/deepseek-v4.1-flash`など公式Responses対応のOpenCodeモデルの場合は、
 次の順に通常起動へ有効化できます。実行中の接続は強制停止しません。
 
