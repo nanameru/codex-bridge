@@ -26,7 +26,8 @@ def candidate(source, port=8790):
     result = edit_table(source, (), {"model_catalog_json": None, "model_provider": PROVIDER})
     result = edit_table(result, ("model_providers", PROVIDER), wanted)
     parsed = tomllib.loads(result)
-    assert parsed.get("model_catalog_json") is None
+    if parsed.get("model_catalog_json") is not None:
+        raise ValueError("model_catalog_jsonの削除に失敗しました")
     return result
 
 

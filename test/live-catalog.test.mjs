@@ -137,3 +137,24 @@ test("cached metadata survives an outage and is not downloaded on every catalog 
  assert.equal(metadataCalls(), 1);
  assert.deepEqual(catalog.models.find(m => m.slug === "opencode/old").input_modalities, ["text", "image"]);
 });
+
+test("active native catalog identities survive LRU eviction", async () => {
+ const f = setup();
+ const get = account => f.live.get({ ...headers, "chatgpt-account-id": account }, "0.164.0");
+ for (let i = 0; i < 8; i++) await get(String(i));
+ const nativeCalls = () => f.calls.filter(c => c.url.includes("chatgpt.com")).length;
+ assert.equal(nativeCalls(), 8);
+ await get("0"); await get("8"); assert.equal(nativeCalls(), 9);
+ await get("0"); assert.equal(nativeCalls(), 9, "the active first caller remains cached");
+ await get("1"); assert.equal(nativeCalls(), 10, "the least recently used caller was evicted");
+});
+
+test("native catalog preserves evolving metadata but removes prototype keys and route overrides", async () => {
+ const value = JSON.parse('{"slug":"gpt-test","__proto__":{"polluted":true},"constructor":"unsafe","prototype":"unsafe","router_transport":"responses","router_provider":"opencode","router_model":"evil","future_capability":{"enabled":true}}');
+ const f = setup({ fetcher: async url => url.includes("chatgpt.com") ? Response.json({ models: [value] })
+  : url.includes("models.dev") ? Response.json({}) : Response.json({ data: [{ id: "old" }] }) });
+ const result = (await f.live.get(headers, "0.164.0")).models[0];
+ assert.equal(result.router_provider, "openai"); assert.equal(result.router_model, "gpt-test");
+ for (const name of ["__proto__", "constructor", "prototype", "router_transport"]) assert.equal(Object.hasOwn(result, name), false);
+ assert.deepEqual(result.future_capability, { enabled: true }); assert.equal({}.polluted, undefined);
+});

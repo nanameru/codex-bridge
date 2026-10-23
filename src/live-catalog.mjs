@@ -94,6 +94,8 @@ export function createLiveCatalog({ initial, seed, fetcher = fetch, key, now = D
       if (!entry) {
         if (native.size >= 8) native.delete(native.keys().next().value);
         entry = { due: 0 }; native.set(identity, entry);
+      } else {
+        native.delete(identity); native.set(identity, entry);
       }
       const nativeHeaders = { authorization: auth };
       if (typeof account === "string") nativeHeaders["chatgpt-account-id"] = account;
@@ -109,7 +111,11 @@ export function createLiveCatalog({ initial, seed, fetcher = fetch, key, now = D
             const models = data.models.map(m => {
               if (!ID.test(m?.slug ?? "") || ids.has(m.slug)) throw new Error("catalog_invalid");
               ids.add(m.slug);
-              return { ...m, router_provider: "openai", router_model: m.slug };
+              // Preserve version-specific OpenAI capabilities and instructions,
+              // but never accept prototype keys or upstream routing overrides.
+              const safe = Object.fromEntries(Object.entries(m).filter(([name]) =>
+                !["__proto__", "constructor", "prototype", "router_provider", "router_model", "router_transport"].includes(name)));
+              return { ...safe, router_provider: "openai", router_model: m.slug };
             });
             entry.models = models; entry.due = now() + ttlMs;
           } catch { entry.due = now() + retryMs; report("native_refresh_failed"); }
