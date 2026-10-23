@@ -15,6 +15,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
   const compactionTrigger = Boolean(body.input?.some((item) => item.type === "compaction_trigger"));
   const compact = compactEndpoint || (compactionTrigger && provider === "openai");
   calls.push({ provider, summary, compact, compactEndpoint, compactionTrigger, hasNativeAuth: Boolean(request.headers.authorization),
+    outputLimit: body.max_output_tokens,
     statusReplayed: JSON.stringify(body.input).includes(WAIT_TEXT), inputTypes: body.input?.map((item) => item.type) });
   if (summary) {
     await new Promise((resolve) => setTimeout(resolve, 160));
@@ -27,6 +28,16 @@ const mock = (provider) => http.createServer(async (request, response) => {
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.end('event: response.failed\ndata: ' + JSON.stringify({ type: "response.failed",
         response: { status: "failed", error: { code: "server_error", message: "private upstream error" } } }) + '\n\n');
+      return;
+    }
+    if (calls.filter(call => call.summary).length === 1 && ["incomplete", "empty"].includes(process.env.MOCK_HANDOFF_RESULT)) {
+      const incomplete = process.env.MOCK_HANDOFF_RESULT === "incomplete";
+      const type = incomplete ? "response.incomplete" : "response.completed";
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(`event: ${type}\ndata: ${JSON.stringify({ type, response: {
+        status: incomplete ? "incomplete" : "completed", output: [],
+        ...(incomplete ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+      } })}\n\n`);
       return;
     }
   }

@@ -227,3 +227,73 @@ test('cancelling during summary retry wait prevents a second upstream request',a
   if(d.summary_retrying)abort.abort();
  }}),{name:'AbortError'});assert.equal(calls,1);
 });
+
+test('empty, truncated and token-limited summaries recover once and cache only a complete result',async()=>{
+ for(const transport of ['json','sse'])for(const reason of ['empty','max_output_tokens',...(transport==='sse'?['missing_terminal']:[])]){
+  let calls=0;const sent=[],diagnostics=[];
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async(_url,args)=>{
+   sent.push(JSON.parse(args.body));calls++;
+   if(calls>1)return completed();
+   const response=reason==='empty'?{status:'completed',output:[{type:'reasoning',encrypted_content:'PRIVATE'}]}:{status:'incomplete',incomplete_details:{reason:'max_output_tokens'},output:[{type:'message',content:[{type:'output_text',text:'PRIVATE PARTIAL'}]}]};
+   if(transport==='json')return Response.json(response);
+   const event=reason==='missing_terminal'?{type:'response.output_text.delta',delta:'PRIVATE PARTIAL'}:{type:'response.'+response.status,response};
+   return new Response('data: '+JSON.stringify(event)+'\n\n',{headers:{'content-type':'text/event-stream'}});
+  }});
+  const original=structuredClone(body);
+  const result=await expand(body,{...options(),diagnose:d=>diagnostics.push(d)});
+  assert.equal(calls,2);assert.doesNotMatch(JSON.stringify(result),/PRIVATE/);assert.deepEqual(body,original);
+  assert.equal(sent[0].max_output_tokens,8192);assert.equal(sent[1].max_output_tokens,reason==='max_output_tokens'?16384:8192);
+  assert.deepEqual(sent[0].input,sent[1].input);assert.deepEqual(sent[1].tools,[]);
+  assert.ok(diagnostics.some(d=>d.summary_error_code===(reason==='empty'?'empty_summary':reason==='max_output_tokens'?'summary_max_output_tokens':'summary_stream_truncated')));
+  await expand(body,options());assert.equal(calls,2);
+ }
+});
+
+test('summary validation distinguishes permanent failures and never forwards partial/private summaries',async()=>{
+ const cases=[
+  [{status:'incomplete',incomplete_details:{reason:'content_filter'},output:[]},'content_filter'],
+  [{status:'incomplete',incomplete_details:{reason:'PRIVATE'}},'summary_incomplete'],
+  [{status:'completed',output:[{type:'function_call',name:'unsafe'}]},'summary_unexpected_item'],
+  [{status:'completed',output:[{type:'message',content:[{type:'refusal',refusal:'PRIVATE'}]}]},'content_filter'],
+  [{status:'completed',output:[{type:'message',status:'in_progress',content:[{type:'output_text',text:'PRIVATE PARTIAL'}]}]},'summary_invalid_response'],
+  [{status:'completed',output:[{type:'message',content:[{type:'output_text',text:'PRIVATE'.repeat(10000)}]}]},'summary_too_large'],
+  [{status:'completed',output:'PRIVATE'},'summary_invalid_response'],
+ ];
+ for(const transport of ['json','sse'])for(const [response,code]of cases){
+  let calls=0;const diagnostics=[];
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
+   calls++;
+   return transport==='json'?Response.json(response):new Response('data: '+JSON.stringify({type:'response.'+response.status,response})+'\n\n',{headers:{'content-type':'text/event-stream'}});
+  }});
+  await assert.rejects(expand(body,{...options(),diagnose:d=>diagnostics.push(d)}),error=>{assert.equal(error.upstreamCode,code);assert.doesNotMatch(error.message,/PRIVATE/);return true;});
+  assert.equal(calls,1);assert.doesNotMatch(JSON.stringify(diagnostics),/PRIVATE|unsafe/);
+ }
+});
+
+test('two incomplete/empty attempts stop without caching, and a later request can recover',async()=>{
+ for(const reason of ['empty','max_output_tokens']){
+  let calls=0;
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
+   if(++calls>2)return completed();
+   return Response.json(reason==='empty'?{status:'completed',output:[]}:{status:'incomplete',incomplete_details:{reason:'max_output_tokens'},output:[]});
+  }});
+  await assert.rejects(expand(body,options()),error=>{assert.equal(error.attempts,2);return true;});assert.equal(calls,2);
+  await expand(body,options());assert.equal(calls,3);
+ }
+});
+
+test('incomplete SSE is terminal even if the server keeps the connection open',async()=>{
+ let calls=0,cancelled=false;
+ const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
+  if(++calls>1)return completed();
+  return new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('data: '+JSON.stringify({type:'response.incomplete',response:{status:'incomplete',incomplete_details:{reason:'max_output_tokens'}}})+'\n\n'));},cancel(){cancelled=true;}}),{headers:{'content-type':'text/event-stream'}});
+ }});
+ await expand(body,options());assert.equal(calls,2);assert.equal(cancelled,true);
+});
+
+test('cancelling a token-limited summary during retry backoff prevents regeneration',async()=>{
+ let calls=0;const abort=new AbortController();
+ const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:1000,fetcher:async()=>{calls++;return Response.json({status:'incomplete',incomplete_details:{reason:'max_output_tokens'}});}});
+ await assert.rejects(expand(body,{...options(),signal:abort.signal,diagnose:d=>{if(d.summary_retrying)abort.abort();}}),{name:'AbortError'});
+ assert.equal(calls,1);
+});

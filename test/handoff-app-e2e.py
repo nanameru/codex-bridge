@@ -119,8 +119,13 @@ def run(fail=False):
             upstream.stdin.write("summary\n")
             upstream.stdin.flush()
             calls = json.loads(upstream.stdout.readline())["calls"]
-            expected_summaries = 2 if fail else 3 if os.environ.get("MOCK_HANDOFF_TRANSIENT") == "1" else 2
+            retry = os.environ.get("MOCK_HANDOFF_TRANSIENT") == "1" or os.environ.get("MOCK_HANDOFF_RESULT") in ("incomplete", "empty")
+            expected_summaries = 2 if fail else 3 if retry else 2
             assert sum(bool(c["summary"]) for c in calls) == expected_summaries, calls
+            summaries = [c for c in calls if c["summary"]]
+            assert summaries[0]["outputLimit"] == 8192, summaries
+            if not fail and os.environ.get("MOCK_HANDOFF_RESULT") == "incomplete":
+                assert summaries[1]["outputLimit"] == 16384, summaries
             assert any(c["compact"] and c["provider"] == "openai" for c in calls)
             assert not any(c["compactionTrigger"] and c["provider"] == "opencode" for c in calls), calls
             assert all(c["hasNativeAuth"] == (c["provider"] == "openai") for c in calls)
