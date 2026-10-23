@@ -292,6 +292,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 422, "history_required", "参照IDだけでは履歴を引き継げません。展開した履歴が必要です");
         return;
       }
+      const requestedOutputLimit = body.max_output_tokens;
       const recovery = route.provider === "opencode" && !nativeTool ? toolRecoveryPlan(body.input, toolRecoveryOptions) : null;
       if (recovery) {
         metric.tool_recovery = recovery.reason;
@@ -463,7 +464,25 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       } });
       const customNames = new Set((nativeTool ? [] : body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
       const streams = [Readable.fromWeb(upstream.body), meter];
-      if (recovery && upstream.ok) streams.push(answerOnlyStream(responseHeaders["content-type"], maxBytes));
+      if (recovery && upstream.ok) {
+        const retryLimit = Math.min(requestedOutputLimit ?? 16384, 16384);
+        const initialLimit = body.max_output_tokens;
+        metric.recovery_output_limit = initialLimit;
+        streams.push(answerOnlyStream(responseHeaders["content-type"], maxBytes, {
+          diagnose: details => Object.assign(metric, details),
+          retry: retryLimit > initialLimit ? async () => {
+            abort.signal.throwIfAborted();
+            metric.recovery_length_retries = 1;
+            metric.recovery_retry_output_limit = retryLimit;
+            const retried = await fetcher(destination.replace(/\/$/, "") + suffix, {
+              method: "POST", headers, body: JSON.stringify({ ...routedObject, max_output_tokens: retryLimit }),
+              signal: abort.signal, redirect: "manual",
+            });
+            metric.recovery_retry_upstream_status = retried.status;
+            return retried;
+          } : undefined,
+        }));
+      }
       if (route.provider === "opencode" && !directResponses && upstream.ok) {
         streams.push(toolResponseStream(customNames, responseHeaders["content-type"], maxBytes));
       } else if (route.provider === "opencode" && directResponses && upstream.ok) {

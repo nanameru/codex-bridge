@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { Transform } from 'node:stream';
+import { Readable, Transform, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -44,15 +45,15 @@ export function toolRecoveryPlan(input, { maxRounds = 64, repeatedResults = 3 } 
   return null;
 }
 export function recoverWithAnswer(body) {
-  return { ...body, tools: [], tool_choice: 'none', max_output_tokens: Math.min(body.max_output_tokens ?? 1024, 1024),
+  return { ...body, tools: [], tool_choice: 'none', max_output_tokens: Math.min(body.max_output_tokens ?? 8192, 8192),
     input: [...body.input, { type: 'message', role: 'developer', content:
       'Tool execution is paused for this turn. Use the tool results already in this conversation to answer the latest user request now. '
       + 'Do not call or simulate more tools. State completed work, remaining work and uncertainty honestly. If observation is still pending, report that status. '
-      + 'Do not repeat promises to check. Never claim an unfinished task succeeded. Reply in the user\'s language.' }] };
+      + 'Keep the report concise, around 1500 characters. Do not repeat promises to check. Never claim an unfinished task succeeded. Reply in the user\'s language.' }] };
 }
-// Recovery gets one answer request. Even a provider ignoring tools=[]/none cannot
+// Recovery allows one bounded length retry. A provider ignoring tools=[]/none cannot
 // dispatch a tool. Buffer only this exceptional response until validation.
-export function answerOnlyStream(contentType, maxBytes) {
+export function answerOnlyStream(contentType, maxBytes, { retry, diagnose = () => {} } = {}) {
   let bytes = 0, chunks = [];
   const failure = { type: 'response.failed', response: { id: 'resp_recovery_' + randomUUID(), object: 'response', status: 'failed', output: [],
     error: { code: 'invalid_prompt', message: '回答への復帰中に不正な応答を受けたため停止しました。履歴は保持しています。' } } };
@@ -74,6 +75,7 @@ export function answerOnlyStream(contentType, maxBytes) {
   return new Transform({
     transform(chunk, _encoding, callback) { bytes += chunk.length; if (bytes <= maxBytes) chunks.push(chunk); callback(); },
     flush(callback) {
+      const run = async () => {
       let text = '';
       try {
         text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
@@ -91,10 +93,26 @@ export function answerOnlyStream(contentType, maxBytes) {
         } else result = frames[0];
         if (!result || !['completed','failed','incomplete'].includes(result.status)) throw new Error('terminal');
         if (result.status === 'completed' && !hasAnswer(result.output)) throw new Error('empty answer');
+        const length = result.error?.reason === 'max_output_tokens' || result.incomplete_details?.reason === 'max_output_tokens';
+        diagnose({ recovery_response_status: result.status, ...(length ? { recovery_finish_reason: 'length' } : {}) });
+        if (result.status !== 'completed' && length && retry) {
+          const upstream = await retry();
+          if (!upstream.ok || !upstream.body) { await upstream.body?.cancel(); throw new Error('retry upstream'); }
+          const retryType = upstream.headers.get('content-type') ?? 'application/json';
+          if (retryType.includes('text/event-stream') !== isSse) { await upstream.body.cancel(); throw new Error('retry format'); }
+          const recovered = [];
+          // Same validation, no retry callback: at most one extra generation.
+          await pipeline(Readable.fromWeb(upstream.body), answerOnlyStream(retryType, maxBytes, { diagnose }),
+            new Writable({ write(chunk, _encoding, done) { recovered.push(chunk); done(); } }));
+          text = Buffer.concat(recovered).toString('utf8');
+        }
       } catch {
+        diagnose({ recovery_response_status: 'failed' });
         text = isSse ? `event: response.failed\ndata: ${JSON.stringify(failure)}\n\n` : JSON.stringify(failure.response);
       }
-      chunks = []; this.push(text); callback();
+      chunks = []; return text;
+      };
+      run().then(text => { this.push(text); callback(); }, callback);
     },
   });
 }

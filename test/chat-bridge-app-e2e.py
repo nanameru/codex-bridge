@@ -73,7 +73,7 @@ def run():
                                   'inputSchema': {'type': 'object', 'properties': {'iteration': {'type': 'integer'}}}}]})['thread']['id']
             cases = [('NORMAL', 'completed', 1),
                     ('LOOP_TRIGGER', 'completed', 3), ('POLL_TRIGGER', 'completed', 8),
-                    ('MIXED_LOOP', 'completed', 10), ('TRUNCATED', 'failed', 0)]
+                    ('MIXED_LOOP', 'completed', 10), ('LENGTH_LOOP', 'completed', 3), ('TRUNCATED', 'failed', 0)]
             if os.environ.get('CHAT_PROTOCOL_CASES') == 'truncated':
                 cases = [('TRUNCATED', 'failed', 0)]
             for label, expected_status, expected_calls in cases:
@@ -86,10 +86,13 @@ def run():
                 assert len(calls) == 1
                 print('Truncated tool response rejected with no execution.')
                 return
-            assert len(calls) == 27, len(calls)
-            assert sum(call['recovery'] for call in calls) == 2
+            assert len(calls) == 32, len(calls)
+            assert sum(call['recovery'] for call in calls) == 4
+            length_calls = [call for call in calls if call['label'] == 'LENGTH_LOOP' and call['recovery']]
+            assert [call['max_tokens'] for call in length_calls] == [8192, 16384]
+            assert all(call['tools'] == 0 for call in length_calls)
             assert not any(call['recovery'] for call in calls if call['label'] == 'POLL_TRIGGER')
-            print('Real app-server + real Chat bridge: normal=1; repeated result=3 then answer; polling=8 without intervention; changed arguments=10 then answer; truncated tools=0; 27 requests.')
+            print('Real app-server + real Chat bridge: normal=1; repeated result=3 then answer; polling=8 without intervention; changed arguments=10 then answer; length recovery=1 without extra tools; truncated tools=0; 32 requests.')
         finally:
             if server:
                 server.close()

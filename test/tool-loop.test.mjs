@@ -56,3 +56,63 @@ test('provider ignoring tool_choice cannot dispatch tools during recovery',async
     const result=Buffer.concat(chunks).toString();assert.match(result,/invalid_prompt/);assert.doesNotMatch(result,/unsafe|function_call/);
   }
 });
+
+test('length recovery grows output once without executing tools or replaying the partial answer', async context => {
+ for (const stream of [false,true]) {
+  for (const mode of ['success','length','tool','filter','explicit-cap']) {
+   const calls=[],metrics=[];
+   const failed=reason=>({id:'resp_cut',status:'failed',output:[],error:{code:'invalid_prompt',reason}});
+   const wrap=payload=>stream?new Response(`event: response.${payload.status}\ndata: ${JSON.stringify({type:'response.'+payload.status,response:payload})}\n\n`,{headers:{'content-type':'text/event-stream'}}):Response.json(payload);
+   const router=createRouter({authenticate:()=>true,bridgeKey:()=> 'test',catalog:{models:[{slug:'opencode/test',router_provider:'opencode'}]},onMetric:m=>metrics.push(m),
+    fetcher:async (_url,options)=>{
+     calls.push(JSON.parse(options.body));
+     if(calls.length===1)return wrap(failed(mode==='filter'?'content_filter':'max_output_tokens'));
+     if(mode==='length')return wrap(failed('max_output_tokens'));
+     const output=mode==='tool'?[{type:'function_call',name:'unsafe',call_id:'danger',arguments:'{}'}]:[{type:'message',role:'assistant',content:[{type:'output_text',text:'RECOVERED'}]}];
+     return wrap({id:'resp_ok',status:'completed',output});
+    }});
+   router.listen(0,'127.0.0.1');await once(router,'listening');
+   try{
+    const response=await fetch(`http://127.0.0.1:${router.address().port}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test'},body:JSON.stringify({model:'opencode/test',input:history(3),stream,...(mode==='explicit-cap'?{max_output_tokens:1024}:{})})});
+    const text=await response.text();
+    const retry= !['filter','explicit-cap'].includes(mode);
+    assert.equal(calls.length,retry?2:1);
+    assert.equal(calls[0].max_output_tokens,mode==='explicit-cap'?1024:8192);
+    for(const call of calls){assert.deepEqual(call.tools,[]);assert.equal(call.tool_choice,'none');}
+    if(retry){assert.equal(calls[1].max_output_tokens,16384);assert.deepEqual(calls[1].input,calls[0].input);}
+    if(mode==='success')assert.match(text,/RECOVERED/);else assert.doesNotMatch(text,/RECOVERED/);
+    assert.doesNotMatch(text,/unsafe|danger|function_call/);
+    if(mode==='success')assert.match(text,/completed/);else assert.match(text,/failed/);
+    await new Promise(r=>setImmediate(r));
+    assert.equal(metrics.at(-1).recovery_length_retries,retry?1:undefined);
+   }finally{router.closeAllConnections();await new Promise(r=>router.close(r));}
+  }
+ }
+});
+
+test('cancelled length retry terminates without issuing another generation',async context=>{
+ let count=0,retrySignal;
+ let ready;const retryStarted=new Promise(r=>ready=r);
+ const router=createRouter({authenticate:()=>true,bridgeKey:()=> 'test',catalog:{models:[{slug:'opencode/test',router_provider:'opencode'}]},
+  fetcher:async(_url,options)=>{
+   if(++count===1)return Response.json({status:'failed',output:[],error:{reason:'max_output_tokens'}});
+   retrySignal=options.signal;ready();
+   return new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));
+  }});
+ router.listen(0,'127.0.0.1');await once(router,'listening');
+ context.after(async()=>{router.closeAllConnections();await new Promise(r=>router.close(r));});
+ const controller=new AbortController();
+ const request=fetch(`http://127.0.0.1:${router.address().port}/v1/responses`,{method:'POST',signal:controller.signal,headers:{'content-type':'application/json',authorization:'Bearer test'},body:JSON.stringify({model:'opencode/test',input:history(3)})}).then(r=>r.text()).catch(()=>{});
+ await retryStarted;controller.abort();await request;
+ for(let i=0;i<100&&!retrySignal.aborted;i++)await new Promise(r=>setTimeout(r,2));
+ assert.equal(retrySignal.aborted,true);assert.equal(count,2);
+});
+
+test('retry body read failures terminate safely instead of escaping as unhandled stream errors',async()=>{
+ const failed=JSON.stringify({status:'failed',output:[],error:{reason:'max_output_tokens'}});
+ const stream=answerOnlyStream('application/json',4096,{retry:async()=>new Response(new ReadableStream({start(controller){controller.error(new Error('PRIVATE upstream failure'));}}))});
+ const chunks=[];
+ for await(const chunk of Readable.from([Buffer.from(failed)]).pipe(stream))chunks.push(chunk);
+ const result=JSON.parse(Buffer.concat(chunks).toString());
+ assert.equal(result.status,'failed');assert.doesNotMatch(JSON.stringify(result),/PRIVATE/);
+});

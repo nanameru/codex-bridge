@@ -16,7 +16,7 @@ function optionalString(value) {
   if (value != null && typeof value !== 'string') throw new ProtocolError('Chat文字列フィールドの形式が不正です。');
 }
 function validate(reason, calls) {
-  if (!['stop', 'tool_calls'].includes(reason)) throw new ProtocolError('Chat応答が正常終了していません（終了理由: ' + (['length','content_filter'].includes(reason) ? reason : '不明') + '）。ツールは実行していません。');
+  if (!['stop', 'tool_calls'].includes(reason)) throw Object.assign(new ProtocolError('Chat応答が正常終了していません（終了理由: ' + (['length','content_filter'].includes(reason) ? reason : '不明') + '）。ツールは実行していません。'), reason === 'length' ? { reason: 'max_output_tokens' } : {});
   if ((reason === 'tool_calls') !== Boolean(calls.length)) throw new ProtocolError('Chat応答の終了理由とツール呼び出しが一致しません。');
   if (!Array.isArray(calls)) throw new ProtocolError('Chat tool_callsの形式が不正です。');
   const ids = new Set();
@@ -48,7 +48,7 @@ export function chatToResponses(chat, model) {
     return { ...envelope, status: 'completed', output: items(choice.message ?? {}), usage: {
       input_tokens: usage.prompt_tokens ?? 0, output_tokens: usage.completion_tokens ?? 0, total_tokens: usage.total_tokens ?? 0 } };
   } catch (error) {
-    return { ...envelope, status: 'failed', error: { code: 'invalid_prompt', message: error instanceof ProtocolError ? error.message : 'Chat応答の形式が不正です。' } };
+    return { ...envelope, status: 'failed', error: { code: 'invalid_prompt', ...(error.reason ? { reason: error.reason } : {}), message: error instanceof ProtocolError ? error.message : 'Chat応答の形式が不正です。' } };
   }
 }
 export async function pipeChatStream(upstream, response, model, threadId, options = {}) {
@@ -160,7 +160,7 @@ export async function pipeChatStream(upstream, response, model, threadId, option
     response.end();
   } catch (error) {
     emit('response.failed', { response: { ...envelope, status: 'failed', output: [], error: { code: error instanceof ProtocolError ? 'invalid_prompt' : 'server_error',
-      message: error instanceof ProtocolError ? error.message : 'Chatストリームが中断しました。ツールは実行していません。' } } });
+      ...(error.reason ? { reason: error.reason } : {}), message: error instanceof ProtocolError ? error.message : 'Chatストリームが中断しました。ツールは実行していません。' } } });
     response.end();
   } finally {
     clearInterval(heartbeat); abortHandle?.clearTimer(); response.off('close', cancel);

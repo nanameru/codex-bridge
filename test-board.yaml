@@ -529,3 +529,15 @@ cases:
     test_file: test/image-tool-results.test.mjs
     issues: [59]
     notes: "修正前original転送を再現し、high変換と画像データ・履歴の非変更を検証。通常GPT経路はこの変換を通らない。"
+
+  - id: TC-049
+    title: "回答復帰のlength打ち切りをツールなしで1回だけ再生成する"
+    feature: "有限の回答復帰"
+    scenario: "8192/16384予算・明示上限・SSE/JSON・再失敗・ツール拒否・キャンセル"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-recovery.mjs, src/model-router.mjs, src/chat-protocol.mjs]
+    test_file: test/tool-loop.test.mjs
+    issues: [61]
+    notes: "基準commitで失敗を再現。実app-serverと実Chat bridge+模擬上流でlength後の再生成が完了しツール追加なしを検証。実上流での再発は未検証。"
