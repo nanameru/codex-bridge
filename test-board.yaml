@@ -575,3 +575,15 @@ cases:
     test_file: test/upstream-retry.test.mjs
     issues: [9, 63]
     notes: "旧PR12の限定再試行を最新認証/要約/length復帰の実装へ統合。HTTPと取消・本文読取上限を検証。"
+
+  - id: TC-052
+    title: "thinking履歴の互換マーカーと推論項目の往復を最新中継で保持する"
+    feature: "thinking履歴互換"
+    scenario: "assistantとtool統合・thinking無効時の非付与・JSON/SSE往復"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/codex-bridge.mjs]
+    test_file: test/bridge-reasoning.test.mjs
+    issues: [27, 63]
+    notes: "旧PR28の4つのHTTPシナリオを本人認証と厳密終端へ移植。obsoleteな旧変換コードは戻さず最新の共有helperで確認。"
