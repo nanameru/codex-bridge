@@ -421,3 +421,39 @@ cases:
     test_file: test/protocol-edge.test.mjs
     issues: [51]
     notes: "EDGE-08。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-040
+    title: "画像Base64を文章トークンと混同せず転送容量制限を維持する"
+    feature: "画像の413誤拒否"
+    scenario: "構造化画像と通常文字列を区別する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [53]
+    notes: "画像を改変・削除せず1枚8192の保守的予約で見積もる。通常テキスト/schema内Base64・不正画像は減算しない。raw bytes上限は別途維持。正確な課金tokenizerではない。"
+
+  - id: TC-041
+    title: "画像のツール結果を文字列化せず並列結果の後へ送る"
+    feature: "ツール画像のChat変換"
+    scenario: "逆順並列結果・混在・未完了・通常文字列"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs]
+    test_file: test/image-tool-results.test.mjs
+    issues: [53]
+    notes: "tool_call_idと本文を保持し、全並列結果の後にラベル付き画像をuser画像ブロックとして渡す。通常文字列をJSON解析し直さない。"
+
+  - id: TC-042
+    title: "大きな画像結果が実routerと実bridgeを画像のまま通る"
+    feature: "画像の413誤拒否"
+    scenario: "実repo/legacy変換から模擬Chat上流へ3MB画像2枚を送る"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/chat-protocol.mjs]
+    test_file: test/bridge-transport.test.mjs
+    issues: [53]
+    notes: "実API課金・顧客画像送信なし。schema/指示/認証/本文非保存の既存試験も継続。"

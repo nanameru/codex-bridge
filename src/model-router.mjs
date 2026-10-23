@@ -71,14 +71,37 @@ function fail(response, status, code, message) {
 }
 
 export function estimateInputTokens(value) {
-  const bytes = Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
+  // Binary image transfer bytes are not text tokens. Only discount typed image
+  // parts at wire-defined locations, never arbitrary strings or tool schemas.
+  // 8192 is a conservative reservation, not a universal/model-exact tokenizer.
+  let body = value;
+  if (typeof value === "string") {
+    try { body = JSON.parse(value); } catch { /* Plain strings remain text. */ }
+  }
+  let imageTokens = 0;
+  const parts = content => Array.isArray(content) ? content.map(part => {
+    if (part?.type !== "input_image") return part;
+    const source = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+    if (typeof source !== "string" || !(/^https?:\/\//.test(source)
+        || /^data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=\r\n]+$/.test(source))) return part;
+    imageTokens += 8192;
+    return { ...part, image_url: "[image token reservation]" };
+  }) : content;
+  if (body && typeof body === "object" && Array.isArray(body.input)) {
+    body = { ...body, input: body.input.map(item => {
+      if ([undefined, "message"].includes(item.type) && item.role === "user") return { ...item, content: parts(item.content) };
+      if (["function_call_output", "custom_tool_call_output"].includes(item.type)) return { ...item, output: parts(item.output) };
+      return item;
+    }) };
+  }
+  const bytes = Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
   let ascii = 0;
   let nonAscii = 0;
   for (const byte of bytes) {
     if (byte < 0x80) ascii += 1;
     else nonAscii += 1;
   }
-  return Math.ceil(ascii / 4 + nonAscii / 2);
+  return Math.ceil(ascii / 4 + nonAscii / 2) + imageTokens;
 }
 
 function budgetHandoffPlan(body, route, maxBytes, threshold) {

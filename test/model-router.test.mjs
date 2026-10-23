@@ -724,3 +724,38 @@ test("default history handoff stops every route on summary failure", async (cont
   assert.equal(response.status, 502);
   assert.equal(calls.length, 1);
 });
+
+test("image budget counts structured user and parallel tool images without charging Base64 as text", async context => {
+  const image = 'data:image/png;base64,' + 'A'.repeat(3 * 1024 * 1024);
+  const tools = [{type:'function',name:'view_image',parameters:{type:'object'}}];
+  const input = [{role:'user',content:[{type:'input_text',text:'Inspect screenshots'}, {type:'input_image',image_url:image}]},
+    {type:'function_call',call_id:'a',name:'view_image',arguments:'{}'},
+    {type:'function_call',call_id:'b',name:'view_image',arguments:'{}'},
+    {type:'function_call_output',call_id:'a',output:[{type:'input_image',image_url:image}]},
+    {type:'function_call_output',call_id:'b',output:[{type:'input_image',image_url:image}]},
+    {role:'user',content:'Continue'}];
+  const original=structuredClone(input);
+  const {send,calls}=await fixture(context,{opencodeHardLimitTokens:100000,opencodeSoftLimitTokens:90000});
+  const response=await send({model:'deepseek-test',input,tools});
+  assert.equal(response.status,200,await response.text());
+  assert.equal(calls.length,1);assert.deepEqual(calls[0].body.input,input);
+  assert.deepEqual(input,original);assert.deepEqual(calls[0].body.tools,tools);
+  assert.ok(estimateInputTokens({input})>=3*8192);
+  assert.equal(estimateInputTokens(JSON.stringify({input})),estimateInputTokens({input}));
+});
+
+test("image budget never discounts Base64 in plain text, schemas or malformed image sources",()=>{
+  const image='data:image/png;base64,'+'A'.repeat(40000);
+  for(const body of [
+    {input:[{role:'user',content:image}]},
+    {input:[{role:'user',content:[{type:'input_text',text:image}]}]},
+    {tools:[{type:'function',name:'f',parameters:{type:'object',description:image}}]},
+    {input:[{role:'user',content:[{type:'input_image',image_url:'data:image/png;base64,'+'!'.repeat(40000)}]}]},
+  ]) assert.ok(estimateInputTokens(body)>10000);
+});
+
+test("image token reservation does not bypass the raw request byte limit", async context=>{
+ const {send,calls}=await fixture(context,{maxBytes:2048,opencodeHardLimitTokens:20000});
+ const response=await send({model:'deepseek-test',input:[{role:'user',content:[{type:'input_image',image_url:'data:image/png;base64,'+'A'.repeat(3000)}]}]});
+ assert.equal(response.status,413);await response.text();assert.equal(calls.length,0);
+});

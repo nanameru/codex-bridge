@@ -138,6 +138,24 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.deepEqual(results, [{ role: "tool", tool_call_id: "saved-call", content: "CHECK_RESULT" }]);
   const toolCalls = messages.flatMap(message => message.tool_calls ?? []);
   assert.deepEqual(toolCalls, [{ id: "saved-call", type: "function", function: { name: "exec", arguments: '{"input":"printf CHECK"}' } }]);
+  // Large view_image results must survive both real adapters as image blocks,
+  // rather than crossing the token guard as serialized Base64 text.
+  const image = "data:image/png;base64," + "A".repeat(3 * 1024 * 1024);
+  const multimodal = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, { method: "POST", headers: {
+    authorization: "Bearer owner-test-token", "content-type": "application/json",
+  }, body: JSON.stringify({ model: "opencode/deepseek-v4.1-flash", stream: false, input: [
+    {role:"user",content:"Inspect screenshots"},
+    ...["image-a","image-b"].map(call_id=>({type:"function_call",call_id,name:"view_image",arguments:"{}"})),
+    ...["image-b","image-a"].map(call_id=>({type:"function_call_output",call_id,output:[{type:"input_image",image_url:image}]})),
+    {role:"user",content:"Continue"},
+  ] }) });
+  assert.equal(multimodal.status, 200, await multimodal.text());
+  const imageMessages = calls.at(-1).body.messages;
+  assert.deepEqual(imageMessages.filter(m=>m.role==="tool").map(m=>m.tool_call_id), ["image-b","image-a"]);
+  assert.ok(imageMessages.filter(m=>m.role==="tool").every(m=>!m.content.includes("base64")));
+  const imageParts = imageMessages.flatMap(m=>Array.isArray(m.content)?m.content:[]).filter(p=>p.type==="image_url");
+  assert.equal(imageParts.length, 2);
+  assert.ok(imageParts.every(p=>p.image_url.url===image));
   const error = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST", headers: {
     "content-type": "application/json", "x-codex-bridge-auth": internalKey,
   }, body: JSON.stringify({ input: "UPSTREAM_PRIVATE_SENTINEL", stream: false }) });

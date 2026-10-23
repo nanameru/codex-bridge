@@ -1,8 +1,8 @@
-# Issue #51: テスト全件と再実行方法
+# Issue #51 / #53: テスト全件と再実行方法
 
-最新のローカル実行はNode112件・Python81件、全193件成功。実API・app-server E2Eをこの件数に加算していない。
+最新のローカル実行はNode118件・Python81件、全199件成功。実API・app-server E2Eをこの件数に加算していない。
 
-- 正本: `test-board.yaml`（Issue #51にはTC-029〜039を紐付け）
+- 正本: `test-board.yaml`（Issue #51にはTC-025/029〜039、#53にはTC-040〜042を紐付け）
 - 全オフラインケースの再生成: `python3 scripts/run_test_inventory.py --output test-results`
 - 生の結果: `test-results/node.tap` / `python.txt` / `inventory.json`
 - CI: Actionsの`case-results` artifactへケース別結果を14日保存
@@ -69,6 +69,9 @@
 | Node | test/handoff-status.test.mjs | one shared client may cancel without cancelling the remaining status waiter | pass |
 | Node | test/handoff-status.test.mjs | budget summary reports input reduction rather than a model switch | pass |
 | Node | test/handoff-status.test.mjs | router chooses budget notification for both new summaries and extended compacted history | pass |
+| Node | test/image-tool-results.test.mjs | parallel tool image outputs stay images after all tool results, not JSON Base64 text | pass |
+| Node | test/image-tool-results.test.mjs | text-only and JSON-string tool results are not reinterpreted as images | pass |
+| Node | test/image-tool-results.test.mjs | tool image results retain call association for mixed text and image parallel batches | pass |
 | Node | test/local-security.test.mjs | rejects arbitrary Bearer tokens on native and OpenCode routes before calling upstream | pass |
 | Node | test/local-security.test.mjs | rejects browser Origins and foreign Hosts even with the owner credential | pass |
 | Node | test/local-security.test.mjs | owner authentication is reloaded after refresh; missing, public and linked files fail closed | pass |
@@ -113,6 +116,9 @@
 | Node | test/model-router.test.mjs | streams first output before completion even with metrics enabled | pass |
 | Node | test/model-router.test.mjs | all OpenCode models share history handoff after switching or resuming | pass |
 | Node | test/model-router.test.mjs | default history handoff stops every route on summary failure | pass |
+| Node | test/model-router.test.mjs | image budget counts structured user and parallel tool images without charging Base64 as text | pass |
+| Node | test/model-router.test.mjs | image budget never discounts Base64 in plain text, schemas or malformed image sources | pass |
+| Node | test/model-router.test.mjs | image token reservation does not bypass the raw request byte limit | pass |
 | Node | test/protocol-edge.test.mjs | EDGE-01 null and malformed choices return non-retry failure without throwing | pass |
 | Node | test/protocol-edge.test.mjs | EDGE-02 choice one cannot dispatch a tool when choice zero is the answer | pass |
 | Node | test/protocol-edge.test.mjs | EDGE-03 changing a streamed call ID and malformed delta types cannot complete a tool | pass |
