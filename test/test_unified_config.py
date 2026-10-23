@@ -83,6 +83,15 @@ class UnifiedConfigTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
         self.assertFalse((self.root / "unified-router-state.json").exists())
 
+    def test_protected_install_never_reenables_a_legacy_unprotected_router(self):
+        (self.root / "bridge-local-token").write_text("present")
+        before = self.path.read_bytes()
+        with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
+            with self.assertRaisesRegex(ValueError, "保護版"):
+                unified_config.configure(self.root, "on", 8790)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertFalse((self.root / "unified-router-state.json").exists())
+
     def test_refuses_custom_provider_credentials(self):
         self.path.write_text(self.path.read_text() + 'env_key="OTHER_KEY"\n')
         before = self.path.read_bytes()

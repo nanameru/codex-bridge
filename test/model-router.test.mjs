@@ -41,7 +41,8 @@ async function fixture(context, options = {}) {
   const nativeBase = await listen(native);
   const bridgeBase = await listen(bridge);
   const router = createRouter({ catalog, nativeBase, bridgeBase, openCodeBase: bridgeBase,
-    openCodeKey: () => "fake-opencode-key", allowTestOrigins: true, ...options });
+    openCodeKey: () => "fake-opencode-key", allowTestOrigins: true,
+    authenticate: () => true, bridgeKey: () => "test-internal-key", ...options });
   const base = await listen(router);
   context.after(async () => { await close(router); await close(native); await close(bridge); });
   const send = (body, headers = {}) => fetch(base + "/responses", {
@@ -58,7 +59,7 @@ test("direct authentication uses API keys only and never extracts login credenti
   const directory = join(home, ".local/share/opencode");
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "opencode.db"), "DO NOT READ LOGIN CREDENTIALS");
-  writeFileSync(join(directory, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "test-api" } }));
+  writeFileSync(join(directory, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "test-api" } }), { mode: 0o600 });
   const options = { home, environment: {} };
   assert.equal(readOpenCodeKey(options), "test-api");
   assert.equal(readOpenCodeKey({ ...options, environment: { OPENCODE_API_KEY: "test-override" } }), "test-override");

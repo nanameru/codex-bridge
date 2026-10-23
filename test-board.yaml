@@ -257,3 +257,14 @@ cases:
     test_file: test/test_unified_config.py
     issues: [39]
     notes: "修正前のGPT有効化拒否とnative送信先欠落を再現。既定GPT・profile・バックアップ・復元・冪等性・競合保護・外部送信先拒否を検証。実Codex 0.163＋模擬上流で通常設定から有効化し、GPT→DeepSeek→GPT、逆方向、会話再開（各8ターン、ツールあり16要求）と認証分離を確認。有料の実推論は未実施。"
+  - id: TC-025
+    title: "中継の本人認証と運用: 任意Bearerを拒否し安全に更新する"
+    feature: "中継の本人認証と運用"
+    scenario: "任意Bearerを拒否し安全に更新する"
+    status: done
+    priority: high
+    type: security
+    source: [src/local-security.mjs, src/model-router.mjs, src/codex-bridge.mjs, scripts/secure_local.py, scripts/install_router_service.py, scripts/patch_legacy_security.py]
+    test_file: test/local-security.test.mjs
+    issues: [41]
+    notes: "任意Bearer・不正Host/Origin・危険な認証ファイル・期限切れを拒否。内部鍵/本人認証/APIキーの分離、OpenCode公式origin・リダイレクト拒否を検証。test/test_local_operations.pyで更新復元・冪等性・非課金診断・秘密非出力・個別アイドル待機を確認。旧8788実ソースの一時コピーでも模擬上流により拒否・正常接続・本文非保存を検証。ローカル両サービスへ適用しdoctor全項目true、再適用成功。実推論テストは未実施。"

@@ -2,6 +2,7 @@ import http from "node:http";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { createRouter } from "../src/model-router.mjs";
+import { authenticateCodex } from "../src/local-security.mjs";
 
 const catalog = JSON.parse(readFileSync(process.env.CODEX_HOME + "/unified-model-catalog.json", "utf8"));
 const calls = [];
@@ -93,7 +94,9 @@ const native = mock("openai");
 const bridge = mock("opencode");
 const bridgeBase = await bind(bridge);
 const router = createRouter({ catalog, nativeBase: await bind(native), bridgeBase, openCodeBase: bridgeBase,
-  openCodeKey: () => "mock-opencode-key", allowTestOrigins: true });
+  openCodeKey: () => "mock-opencode-key", bridgeKey: () => "mock-internal-key", allowTestOrigins: true,
+  authenticate: (request) => authenticateCodex(request) || (process.env.MOCK_DIRECT_RESPONSES === "1"
+    && request.headers.authorization === "Bearer mock-opencode-key") });
 const url = await bind(router);
 process.stdout.write(JSON.stringify({ url }) + "\n");
 process.stdin.on("data", () => process.stdout.write(JSON.stringify({ calls }) + "\n"));

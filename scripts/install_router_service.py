@@ -7,8 +7,8 @@ import shutil
 import subprocess
 import sys
 import time
-from urllib.request import urlopen
 from switch_config import atomic_write
+from local_security import ensure_bridge_key, verify_service
 
 
 def wait_for_unload(service):
@@ -21,14 +21,15 @@ def wait_for_unload(service):
     raise SystemExit("常駐登録の解除待ちがタイムアウトしました")
 
 
-def wait_for_idle(timeout):
+def wait_for_idle(timeout, ports=(8790,)):
     deadline = time.monotonic() + timeout
     notified = False
     while True:
-        connections = subprocess.run(["lsof", "-nP", "-iTCP:8790", "-sTCP:ESTABLISHED"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if connections.returncode == 1:
+        states = [subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:ESTABLISHED"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode for port in ports]
+        if all(status == 1 for status in states):
             return
-        if connections.returncode != 0 or time.monotonic() >= deadline:
+        if any(status not in (0, 1) for status in states) or time.monotonic() >= deadline:
             raise SystemExit("接続中または接続状態を確認できません。routerを更新していません")
         if not notified:
             print("会話の接続が空くまで待機します。実行中の接続は停止しません。", flush=True)
@@ -36,7 +37,48 @@ def wait_for_idle(timeout):
         time.sleep(min(5, max(0, deadline - time.monotonic())))
 
 
-def main():
+def replace_registration(path, payload, service, previous, active, verify):
+    """Restore both the registration and running service if startup/verification fails."""
+    changed = previous is None or plistlib.loads(previous) != payload
+    started = False
+    stopped = False
+    try:
+        if changed and active:
+            subprocess.run(["launchctl", "bootout", service], check=True)
+            stopped = True
+            wait_for_unload(service)
+        if changed:
+            atomic_write(path, plistlib.dumps(payload).decode("utf-8"))
+        if not active or changed:
+            # Mark before bootstrap: even a failed command may leave a registration.
+            started = True
+            subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=True)
+        verify()
+    except Exception:
+        if started:
+            subprocess.run(["launchctl", "bootout", service], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            wait_for_unload(service)
+        if changed:
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                atomic_write(path, previous.decode("utf-8"))
+        if stopped:
+            subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=True)
+        raise
+
+
+def wait_for_health(revision):
+    for _attempt in range(30):
+        try:
+            verify_service(8790, revision)
+            return
+        except (OSError, ValueError):
+            time.sleep(0.2)
+    raise ValueError("更新したrevisionと認証拒否を確認できません")
+
+
+def install():
     parser = argparse.ArgumentParser()
     parser.add_argument("--update-if-idle", action="store_true")
     parser.add_argument("--wait-idle", type=int, default=0)
@@ -53,7 +95,8 @@ def main():
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if not (root / "unified-model-catalog.json").exists():
         raise SystemExit("先にunified_config.py prepareを実行してください")
-    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs"]}
+    ensure_bridge_key(root)
+    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs"]}
     revision = hashlib.sha256(b"".join(modules.values())).hexdigest()
     runtime = root / "router-runtime" / revision
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -65,6 +108,8 @@ def main():
     agents = Path.home() / "Library/LaunchAgents"
     agents.mkdir(parents=True, exist_ok=True)
     path = agents / (label + ".plist")
+    if path.is_symlink():
+        raise SystemExit("リンクされた常駐設定は更新しません")
     payload = {
         "Label": label, "ProgramArguments": [node, str(runtime / "model-router.mjs")],
         "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 10,
@@ -73,6 +118,8 @@ def main():
         "StandardErrorPath": str(logs / "model-router.stderr.log"),
     }
     previous = path.read_bytes() if path.exists() else None
+    if previous:
+        payload["EnvironmentVariables"] = {**plistlib.loads(previous).get("EnvironmentVariables", {}), "CODEX_HOME": str(root)}
     replace = previous is not None and plistlib.loads(previous) != payload
     if replace:
         old = plistlib.loads(previous)
@@ -80,35 +127,21 @@ def main():
             raise SystemExit("既存の常駐設定が異なります。更新する場合は--update-if-idleを指定してください")
         wait_for_idle(arguments.wait_idle)
         atomic_write(path.with_name(path.name + ".bak." + str(time.time_ns())), previous.decode("utf-8"))
-        atomic_write(path, plistlib.dumps(payload).decode("utf-8"))
-    if not path.exists():
-        with path.open("xb") as output:
-            os.fchmod(output.fileno(), 0o600)
-            plistlib.dump(payload, output)
     service = f"gui/{os.getuid()}/{label}"
     active = subprocess.run(["launchctl", "print", service], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-    if replace and active:
-        subprocess.run(["launchctl", "bootout", service], check=True)
-        wait_for_unload(service)
-        active = False
-    if not active:
-        try:
-            subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=True)
-        except subprocess.CalledProcessError:
-            if replace:
-                atomic_write(path, previous.decode("utf-8"))
-                subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=False)
-            raise
-    for _attempt in range(30):
-        try:
-            with urlopen("http://127.0.0.1:8790/health", timeout=1) as response:
-                if response.status == 200:
-                    print("共通routerを起動しました。既存のCodex・OpenCodeブリッジは再起動していません。")
-                    return
-        except OSError:
-            pass
-        time.sleep(0.2)
-    raise SystemExit("routerの起動を確認できません。設定はまだ有効化していません")
+    if active and previous is None:
+        raise SystemExit("登録済みサービスの元定義がありません。上書き・停止しません")
+    replace_registration(path, payload, service, previous, active, lambda: wait_for_health(revision))
+    print("共通routerのrevisionと認証拒否を確認しました。Codex・OpenCodeブリッジは再起動していません。")
+
+
+def main():
+    import fcntl
+    root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+    descriptor = os.open(root / "router-service-update.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        install()
 
 
 if __name__ == "__main__":
