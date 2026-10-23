@@ -60,6 +60,15 @@ codex
 上記の独立した`codex-opencode`起動だけは公式Responses直結のままです。
 同一スレッドの提供元切替には統合routerを使ってください。
 
+## 文章要約でGPTとOpenCodeの履歴を共有する
+
+OSSの仕組みを既存bridge向けに分解した[導入仕様と設定コマンド](docs/portable-history.md)を追加しました。新規統合チャットでCodex標準の文章圧縮を使うための設定をプレビューできます。既存暗号化履歴の移行と画像413の修正は別工程です。
+
+```bash
+python3 scripts/portable_history.py        # 変更なしで確認
+python3 scripts/portable_history.py --apply
+```
+
 ## 同じチャットで GPT ↔ OpenCode を切り替える（統合モード）
 
 GPTは標準の圧縮を維持します。OpenCodeへの履歴引き継ぎに時間がかかるときは、Codex App/CLIへ接続ステータスを表示します。[表示・設定・検証手順](docs/handoff-status.md)。
