@@ -1,4 +1,5 @@
 import http from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { readFileSync } from "node:fs";
@@ -130,6 +131,55 @@ function envLimit(name, fallback) {
 }
 
 export const readOpenCodeKey = readOpenCodeApiKey;
+
+export async function fetchWithAvailabilityRetry(fetcher, url, options, onRetry = () => {}) {
+  const upstream = await fetcher(url, options);
+  if (![429, 502, 503].includes(upstream.status) || !upstream.body) return upstream;
+  const reader = upstream.clone().body.getReader();
+  const cancel = () => { reader.cancel().catch(() => {}); };
+  let expired = false;
+  const timer = setTimeout(() => { expired = true; cancel(); }, 1000);
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  let text = "";
+  try {
+    const chunks = [];
+    let bytes = 0;
+    for (;;) {
+      options.signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 8192) return upstream;
+      chunks.push(Buffer.from(value));
+    }
+    text = Buffer.concat(chunks).toString("utf8");
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    return upstream;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", cancel);
+    cancel();
+  }
+  options.signal?.throwIfAborted();
+  if (expired) return upstream;
+  let error;
+  try { error = JSON.parse(text).error; } catch { return upstream; }
+  if (error?.type !== "server_error" || error.message !== "Upstream request failed: Endpoint is unavailable.") return upstream;
+  const retryAfter = upstream.headers.get("retry-after");
+  let waitMs = 500;
+  if (retryAfter !== null) {
+    const seconds = /^\d+(?:\.\d+)?$/.test(retryAfter.trim()) ? Number(retryAfter) : NaN;
+    const requested = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
+    if (!Number.isFinite(requested) || requested > 2000) return upstream;
+    waitMs = Math.max(waitMs, requested);
+  }
+  await upstream.body.cancel();
+  await delay(waitMs, undefined, { signal: options.signal });
+  options.signal?.throwIfAborted();
+  onRetry();
+  return fetcher(url, options);
+}
 
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
   codexRoot = defaultCodexRoot(), authenticate = (request) => authenticateCodex(request, codexRoot),
@@ -427,7 +477,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       metric.stage = "upstream_headers";
       const upstreamStart = performance.now();
-      const upstream = await fetcher(destination.replace(/\/$/, "") + suffix, {
+      const send = route.provider === "opencode"
+        ? (url, options) => fetchWithAvailabilityRetry(fetcher, url, options, () => { metric.upstream_retries = 1; }) : fetcher;
+      const upstream = await send(destination.replace(/\/$/, "") + suffix, {
         method: "POST", headers, body: routed,
         signal: abort.signal, redirect: "manual",
       });

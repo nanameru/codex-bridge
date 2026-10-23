@@ -563,3 +563,15 @@ cases:
     test_file: test/test_portable_history.py
     issues: [45]
     notes: "19テストで設定preview/apply/restore、全33外部モデルとGPTの選択保持、破損/リンク/不正型/権限/競合/書込失敗/復元/秘密非出力を確認。実Codex＋模擬上流で開始モデル2種×ツール有無の4パターン、各4ターン/2回の文章圧縮と再起動resumeを確認。本人環境へ未適用、実推論未実施。"
+
+  - id: TC-051
+    title: "既知のOpenCode接続先障害のみ1回再試行する"
+    feature: "接続先の一時障害回復"
+    scenario: "利用枠429と区別し同一要求と認証を保持し最大1回復帰する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/upstream-retry.test.mjs
+    issues: [9, 63]
+    notes: "旧PR12の限定再試行を最新認証/要約/length復帰の実装へ統合。HTTPと取消・本文読取上限を検証。"

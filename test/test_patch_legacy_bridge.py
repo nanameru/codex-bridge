@@ -5,7 +5,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from patch_legacy_bridge import IMPORT, REPLACEMENTS, patched_source, prepare, main
+from patch_legacy_bridge import ERROR_HEADERS, IMPORT, REPLACEMENTS, patched_source, prepare, main
 from patch_legacy_bridge import GUARD_IMPORT
 
 
@@ -89,6 +89,13 @@ class LegacyPatchTests(unittest.TestCase):
                 prepare(target)
             self.assertEqual(target.read_text(), "unchanged")
             self.assertEqual(module.read_text(), "unrelated module")
+
+    def test_preserves_retry_after_when_adding_thread_guard(self):
+        original = 'import http from "node:http";\n' + "\n".join(old * count for old, _new, count in REPLACEMENTS)
+        original += "\n" + ERROR_HEADERS[0]
+        result = patched_source(original)
+        self.assertIn(ERROR_HEADERS[1], result)
+        self.assertEqual(patched_source(result), result)
 
 
 if __name__ == "__main__":

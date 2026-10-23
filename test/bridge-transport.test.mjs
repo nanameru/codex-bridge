@@ -27,6 +27,11 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     let text = "";
     for await (const chunk of request) text += chunk;
     calls.push({ body: JSON.parse(text), headers: request.headers });
+    if (calls.at(-1).body.model === "test-quota") {
+      response.writeHead(429, { "content-type": "application/json", "retry-after": "60" });
+      response.end(JSON.stringify({ error: { type: "rate_limit_exceeded" } }));
+      return;
+    }
     if (text.includes("UPSTREAM_PRIVATE_SENTINEL")) {
       response.writeHead(400, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "UPSTREAM_PRIVATE_SENTINEL" } }));
@@ -162,6 +167,12 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.equal(error.status, 400, await error.text());
   assert.doesNotMatch(logs, /PRIVATE_TEXT|dummy-test-token|UPSTREAM_PRIVATE_SENTINEL/);
   assert.deepEqual(await readdir(join(directory, "dumps")).catch(() => []), []);
+  const limited = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
+    headers: { "content-type": "application/json", "x-codex-bridge-auth": internalKey },
+    body: JSON.stringify({ model: "test-quota", input: "Hello", stream: false }) });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "60");
+  await limited.text();
 });
 
 test('thread guard preserves authentication and does not rate-limit another chat', { timeout:15000 },async context=>{

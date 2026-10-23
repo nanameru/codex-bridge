@@ -816,3 +816,34 @@ test('summary permanent error code reaches streamed UI without leaking upstream 
  const response=await send({model:'deepseek-test',stream:true,input:[{type:'compaction',encrypted_content:'opaque'}]});
  const text=await response.text();assert.match(text,/invalid_encrypted_content/);assert.doesNotMatch(text,/PRIVATE_SENTINEL/);assert.equal(calls,1);
 });
+
+test("only retries known OpenCode availability failures, preserving isolation and metrics", async (context) => {
+  const forwarded = [];
+  const metrics = [];
+  const { send } = await fixture(context, {
+    onMetric: (metric) => metrics.push(metric),
+    fetcher: async (url, options) => {
+      forwarded.push({ url, options });
+      if (forwarded.length === 2) return new Response("event: response.completed\ndata: {}\n\n", {
+        headers: { "content-type": "text/event-stream" },
+      });
+      return Response.json({ error: { type: "server_error", message: "Upstream request failed: Endpoint is unavailable." } }, { status: 429 });
+    },
+  });
+  const body = { model: "deepseek-test", input: "history", prompt_cache_key: "test-thread" };
+  const recovered = await send(body);
+  assert.equal(recovered.status, 200);
+  await recovered.text();
+  assert.equal(forwarded.length, 2);
+  assert.equal(forwarded[0].url, forwarded[1].url);
+  assert.equal(forwarded[0].options, forwarded[1].options);
+  assert.equal(forwarded[1].options.headers.authorization, undefined);
+  assert.equal(JSON.parse(forwarded[1].options.body).prompt_cache_key, body.prompt_cache_key);
+  const native = await send({ ...body, model: "gpt-test" });
+  assert.equal(native.status, 429);
+  await native.text();
+  assert.equal(forwarded.length, 3);
+  await new Promise((done) => setImmediate(done));
+  assert.equal(metrics[0].upstream_retries, 1);
+  assert.equal(metrics[1].upstream_retries, undefined);
+});

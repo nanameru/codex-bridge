@@ -108,7 +108,15 @@ def with_imports(source):
     return source.replace(anchor, IMPORT + "\n" + GUARD_IMPORT + "\n" + anchor, 1)
 
 
+ERROR_HEADERS = ('res.writeHead(attempt.upstream.status, { "content-type": "application/json" });',
+                 'res.writeHead(attempt.upstream.status, { "content-type": "application/json",\n'
+                 '            ...(attempt.upstream.headers.has("retry-after") ? { "retry-after": attempt.upstream.headers.get("retry-after") } : {}) });')
+
+
 def patched_source(source):
+    old_headers, new_headers = ERROR_HEADERS
+    if source.count(old_headers) == 1 and new_headers not in source:
+        source = source.replace(old_headers, new_headers)
     source = with_imports(source)
     for old, new, count in REPLACEMENTS:
         if source.count(new) == count:
