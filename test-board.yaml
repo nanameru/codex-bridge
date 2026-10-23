@@ -60,6 +60,17 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [25]
     notes: "413→要約→200、同一prefixキャッシュ、認証分離、予算内無呼出、巨大固定入力/未完了ツール/要約失敗の停止を検証。単一ターン・既存compaction・途中の追加指示の原文保持・並列ツール境界も検証。境界と指示保持はtest/compaction-handoff.test.mjs。"
+  - id: TC-050
+    title: "暴走ガード: 429をスレッド単位にしRetry-Afterを返す"
+    feature: "過負荷保護"
+    scenario: "1分あたりの通過数をスレッド別に数え、別チャットを巻き添えにせず、拒否した要求は数えない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/request-guard.mjs, src/codex-bridge.mjs, scripts/patch_legacy_bridge.py]
+    test_file: test/request-guard.test.mjs
+    issues: [29]
+    notes: "上限到達時の429とRetry-After、拒否の非計上、窓明けの再通過、識別子なしの集約、LRU上限、任意の全体上限を検証。実ブリッジHTTPはtest/bridge-transport.test.mjs、本番legacyはLEGACY_BRIDGE_SOURCEで同じテストを実行。"
   - id: TC-018
     title: "モデル切替と圧縮: ツール項目のIDを型に合わせる"
     feature: "双方向モデル切替"

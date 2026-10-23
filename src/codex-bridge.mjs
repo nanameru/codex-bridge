@@ -28,6 +28,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { reasoningOptions, upstreamSession } from "./upstream-options.mjs";
+import { createRequestGuard } from "./request-guard.mjs";
 
 const PORT = Number(process.env.PORT ?? 8788);
 const UPSTREAM_BASE = validateOpenCodeBase((process.env.UPSTREAM_BASE ?? "https://opencode.ai/inference/go/openai/v1").replace(/\/+$/, ""));
@@ -132,16 +133,15 @@ ${rows.map(([id, u]) => `<tr>
 }
 
 // ---- 暴走ガード -------------------------------------------------
-// 同一プロセスから短時間に大量リクエストが来たら止める。
+// 同一スレッドから短時間に大量リクエストが来たら止める。
 // 実APIで事故ると一瞬で課金が飛ぶため、既定で有効。
 const MAX_REQ_PER_MIN = Number(process.env.MAX_REQ_PER_MIN ?? 40);
-const recent = [];
-function guardTripped() {
-  const now = Date.now();
-  while (recent.length && now - recent[0] > 60_000) recent.shift();
-  recent.push(now);
-  return recent.length > MAX_REQ_PER_MIN;
-}
+// 0 は無効。多数スレッドの同時利用に備える場合だけ設定する。
+const MAX_REQ_PER_MIN_GLOBAL = Number(process.env.MAX_REQ_PER_MIN_GLOBAL ?? 0);
+const requestGuard = createRequestGuard({
+  maxPerThread: MAX_REQ_PER_MIN,
+  maxGlobal: Number.isFinite(MAX_REQ_PER_MIN_GLOBAL) ? MAX_REQ_PER_MIN_GLOBAL : 0,
+});
 
 // 本文保存は明示的なローカル診断時だけ。既定は無効。
 import { appendFileSync } from "node:fs";
@@ -274,20 +274,25 @@ const server = http.createServer(async (req, res) => {
 
     dump(body);
 
-    if (guardTripped()) {
-      log(`!! 暴走ガード作動（1分間に ${recent.length} 回）。429 を返します`);
-      res.writeHead(429, { "content-type": "application/json" });
+    const model = body.model || DEFAULT_MODEL;
+    const threadId = threadIdOf(body);
+    const guard = requestGuard.check(threadId);
+    if (!guard.allowed) {
+      const scope = guard.scope === "global" ? "全体" : `スレッド ${String(threadId).slice(0, 8)}`;
+      log(`!! 暴走ガード作動（${scope} / 1分間に ${guard.count} 回 / 上限 ${guard.limit}）。429 を返します`);
+      res.writeHead(429, {
+        "content-type": "application/json",
+        "retry-after": String(guard.retryAfterSeconds),
+      });
       res.end(JSON.stringify({
         error: {
           type: "rate_limit_exceeded",
-          message: `codex-bridge: 1分間に ${MAX_REQ_PER_MIN} 回を超えました。ループの可能性があるため停止しました。`,
+          message: `codex-bridge: ${guard.scope === "global" ? "全体で" : "このスレッドで"}1分間に ${guard.limit} 回を超えました。${guard.retryAfterSeconds} 秒後に再試行してください。`,
         },
       }));
       return;
     }
 
-    const model = body.model || DEFAULT_MODEL;
-    const threadId = threadIdOf(body);
     const effort = body.reasoning?.effort ?? "medium";
 
     // Effort を実際の挙動に反映する。

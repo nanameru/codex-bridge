@@ -163,3 +163,17 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.doesNotMatch(logs, /PRIVATE_TEXT|dummy-test-token|UPSTREAM_PRIVATE_SENTINEL/);
   assert.deepEqual(await readdir(join(directory, "dumps")).catch(() => []), []);
 });
+
+test('thread guard preserves authentication and does not rate-limit another chat', { timeout:15000 },async context=>{
+ const directory=await mkdtemp(join(tmpdir(),'bridge-thread-guard-'));
+ const key='a'.repeat(64);await writeFile(join(directory,'bridge-local-token'),key,{mode:0o600});
+ const mock=http.createServer(async(req,res)=>{for await(const chunk of req){};res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:'OK'},finish_reason:'stop'}]}));});
+ const upstreamPort=await listen(mock);const reservation=http.createServer();const port=await listen(reservation);await new Promise(r=>reservation.close(r));
+ const child=spawn(process.execPath,[join(root,'src/codex-bridge.mjs')],{env:{...process.env,HOME:directory,CODEX_HOME:directory,PORT:String(port),MAX_REQ_PER_MIN:'2',MAX_REQ_PER_MIN_GLOBAL:'0',OPENCODE_API_KEY:'dummy-test-token',UPSTREAM_BASE:`http://127.0.0.1:${upstreamPort}/v1`,CODEX_BRIDGE_TEST_UPSTREAM:'1',DISABLE_DUMP:'1',USAGE_HOST:''},stdio:['ignore','pipe','pipe']});
+ context.after(async()=>{if(child.exitCode===null){const done=once(child,'exit');child.kill();await done;}mock.closeAllConnections();await new Promise(r=>mock.close(r));await rm(directory,{recursive:true,force:true});});
+ await new Promise((resolve,reject)=>{let text='';const timer=setTimeout(()=>reject(new Error('startup timeout')),5000);child.stdout.on('data',b=>{text+=b;if(text.includes('codex-bridge listening')){clearTimeout(timer);resolve();}});child.once('exit',()=>{clearTimeout(timer);reject(new Error('bridge exited'));});});
+ const send=thread=>fetch(`http://127.0.0.1:${port}/v1/responses`,{method:'POST',headers:{'content-type':'application/json','x-codex-bridge-auth':key},body:JSON.stringify({model:'deepseek-v4.1-flash',prompt_cache_key:thread,input:'Hello',stream:false})});
+ for(let i=0;i<2;i++){const r=await send('A');assert.equal(r.status,200);await r.text();}
+ const rejected=await send('A');assert.equal(rejected.status,429);assert.ok(Number(rejected.headers.get('retry-after'))>0);await rejected.text();
+ const other=await send('B');assert.equal(other.status,200);await other.text();
+});
