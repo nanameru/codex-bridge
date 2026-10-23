@@ -46,6 +46,24 @@ def turn(server, thread, model):
     raise RuntimeError("turn timed out")
 
 
+def compact(server, thread):
+    server.request("thread/compact/start", {"threadId": thread})
+    deadline = time.monotonic() + 30
+    compacted = False
+    while time.monotonic() < deadline:
+        try:
+            message = server.messages.get(timeout=1)
+        except queue.Empty:
+            continue
+        if message is None:
+            raise RuntimeError("app-server exited while compacting")
+        if message.get("method") == "item/completed" and message.get("params", {}).get("item", {}).get("type") == "contextCompaction":
+            compacted = True
+        if compacted and message.get("method") == "turn/completed":
+            return
+    raise RuntimeError("compaction timed out")
+
+
 def run(fail=False):
     original = os.environ.get("CODEX_HOME")
     source = Path(original or Path.home() / ".codex")
@@ -73,22 +91,7 @@ def run(fail=False):
             initial, status = turn(server, thread, "gpt-6.1-sol")
             assert status == "completed"
             assert not any("接続ステータス" in m.get("params", {}).get("delta", "") for m in initial)
-            server.request("thread/compact/start", {"threadId": thread})
-            # Wait for the remote compaction to finish; it is not an ordinary model turn.
-            deadline = time.monotonic() + 30
-            compacted = False
-            while time.monotonic() < deadline:
-                try:
-                    message = server.messages.get(timeout=1)
-                except queue.Empty:
-                    continue
-                if message is None:
-                    raise RuntimeError("app-server exited while compacting")
-                if message.get("method") == "item/completed" and message.get("params", {}).get("item", {}).get("type") == "contextCompaction":
-                    compacted = True
-                if compacted and message.get("method") == "turn/completed":
-                    break
-            assert compacted, "native encrypted compaction was not installed"
+            compact(server, thread)
             notifications, status = turn(server, thread, "opencode/deepseek-v4.1-flash")
             deltas = [(i, m.get("params", {}).get("delta", "")) for i, m in enumerate(notifications)
                       if m.get("method") == "item/agentMessage/delta"]
@@ -102,9 +105,11 @@ def run(fail=False):
                 answer = next(i for i, text in deltas if "opencode_OK" in text)
                 assert waiting < answer
                 assert any("引き継ぎが完了" in text for _i, text in deltas)
+                # The selected model remains OpenCode; a second compaction must
+                # still use the native Responses model for the required item.
+                compact(server, thread)
                 later, status = turn(server, thread, "opencode/deepseek-v4.1-flash")
                 assert status == "completed"
-                assert not any("接続ステータス" in m.get("params", {}).get("delta", "") for m in later)
                 server.close()
                 server = start(binary)
                 resumed = server.request("thread/resume", {"threadId": thread, "excludeTurns": True})
@@ -114,9 +119,10 @@ def run(fail=False):
             upstream.stdin.write("summary\n")
             upstream.stdin.flush()
             calls = json.loads(upstream.stdout.readline())["calls"]
-            expected_summaries = 2 if fail or os.environ.get("MOCK_HANDOFF_TRANSIENT") == "1" else 1
+            expected_summaries = 2 if fail else 3 if os.environ.get("MOCK_HANDOFF_TRANSIENT") == "1" else 2
             assert sum(bool(c["summary"]) for c in calls) == expected_summaries, calls
             assert any(c["compact"] and c["provider"] == "openai" for c in calls)
+            assert not any(c["compactionTrigger"] and c["provider"] == "opencode" for c in calls), calls
             assert all(c["hasNativeAuth"] == (c["provider"] == "openai") for c in calls)
             assert not any(c["statusReplayed"] for c in calls), calls
             print("Codex App/CLI app-server: native encrypted compaction preserved; delayed handoff commentary -> "

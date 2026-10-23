@@ -11,8 +11,10 @@ const mock = (provider) => http.createServer(async (request, response) => {
   for await (const chunk of request) text += chunk;
   const body = JSON.parse(text);
   const summary = Boolean(body.instructions?.startsWith("Produce only"));
-  const compact = Boolean(request.url.endsWith("/compact") || body.input?.some((item) => item.type === "compaction_trigger"));
-  calls.push({ provider, summary, compact, hasNativeAuth: Boolean(request.headers.authorization),
+  const compactEndpoint = Boolean(request.url.endsWith("/compact"));
+  const compactionTrigger = Boolean(body.input?.some((item) => item.type === "compaction_trigger"));
+  const compact = compactEndpoint || (compactionTrigger && provider === "openai");
+  calls.push({ provider, summary, compact, compactEndpoint, compactionTrigger, hasNativeAuth: Boolean(request.headers.authorization),
     statusReplayed: JSON.stringify(body.input).includes(WAIT_TEXT), inputTypes: body.input?.map((item) => item.type) });
   if (summary) {
     await new Promise((resolve) => setTimeout(resolve, 160));

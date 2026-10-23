@@ -481,3 +481,15 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [55]
     notes: "固定の許可リストで原因を表示。未知の文字列や上流本文は表示/保存しない。test/handoff-app-e2e.pyとMOCK_HANDOFF_TRANSIENT=1でも実app-serverの復帰/2回停止を検証。初回実502の原因は未保存のため未確定。"
+
+  - id: TC-045
+    title: "DeepSeek選択中のremote compactionを安全なOpenAI経路で処理する"
+    feature: "remote compaction v2"
+    scenario: "compaction_triggerをChat変換せず必須itemを返す"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [57]
+    notes: "Codex 0.164.0のcompaction_trigger要求だけをnative summary modelへ振り分ける。通常はcompaction itemを1件返し、設定不足時は422で停止。実app-serverでDeepSeek選択中の圧縮後に同スレッドを続行。test/handoff-app-e2e.pyも参照。"

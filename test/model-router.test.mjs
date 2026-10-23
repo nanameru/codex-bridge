@@ -31,7 +31,9 @@ async function fixture(context, options = {}) {
   const upstream = (provider) => http.createServer(async (request, response) => {
     let text = "";
     for await (const chunk of request) text += chunk;
-    calls.push({ provider, headers: request.headers, body: JSON.parse(text), path: request.url });
+    const body = JSON.parse(text);
+    calls.push({ provider, headers: request.headers, body, path: request.url });
+    if (options.upstreamResponse && await options.upstreamResponse({ provider, request, response, body })) return;
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.write(`event: response.created\ndata: ${JSON.stringify({ provider })}\n\n`);
     response.end("event: response.completed\ndata: {}\n\n");
@@ -52,6 +54,38 @@ async function fixture(context, options = {}) {
   });
   return { calls, base, send };
 }
+
+test("remote compaction trigger uses the native model instead of Chat conversion", async context => {
+  const originalInput = [{ role: "user", content: "continue" }, { type: "compaction_trigger" }];
+  const { calls, send } = await fixture(context, { summaryModel: "gpt-test",
+    upstreamResponse: async ({ provider, response, body }) => {
+      if (provider !== "openai" || !body.input.some(item => item.type === "compaction_trigger")) return false;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write("event: response.output_item.done\ndata: " + JSON.stringify({ type: "response.output_item.done",
+        output_index: 0, item: { id: "cmp_test", type: "compaction", encrypted_content: "opaque-summary" } }) + "\n\n");
+      response.end("event: response.completed\ndata: " + JSON.stringify({ type: "response.completed",
+        response: { id: "resp_compact", status: "completed", output: [] } }) + "\n\n");
+      return true;
+    } });
+  const response = await send({ model: "opencode/deepseek-test", stream: true, input: originalInput });
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  assert.match(text, /opaque-summary/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].provider, "openai");
+  assert.equal(calls[0].path, "/v1/responses");
+  assert.equal(calls[0].body.model, "gpt-test");
+  assert.deepEqual(calls[0].body.input, originalInput);
+});
+
+test("remote compaction fails safely without a native summary model", async context => {
+  const { calls, send } = await fixture(context);
+  const response = await send({ model: "opencode/deepseek-test",
+    input: [{ role: "user", content: "continue" }, { type: "compaction_trigger" }] });
+  assert.equal(response.status, 422);
+  assert.match(await response.text(), /remote_compaction_model_required/);
+  assert.equal(calls.length, 0);
+});
 
 test("direct authentication uses API keys only and never extracts login credentials", (context) => {
   const home = mkdtempSync(join(tmpdir(), "direct-auth-"));

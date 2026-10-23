@@ -1,8 +1,8 @@
-# Issue #51 / #53 / #55: テスト全件と再実行方法
+# Issue #51 / #53 / #55 / #57: テスト全件と再実行方法
 
-最新のローカル実行はNode124件・Python81件、全205件成功。実API・app-server E2Eをこの件数に加算していない。
+最新のローカル実行はNode126件・Python81件、全207件成功。実API・app-server E2Eをこの件数に加算していない。
 
-- 正本: `test-board.yaml`（Issue #51にはTC-025/029〜039、#53にはTC-040〜042、#55にはTC-043〜044を紐付け）
+- 正本: `test-board.yaml`（Issue #51にはTC-025/029〜039、#53にはTC-040〜042、#55にはTC-043〜044、#57にはTC-045を紐付け）
 - 全オフラインケースの再生成: `python3 scripts/run_test_inventory.py --output test-results`
 - 生の結果: `test-results/node.tap` / `python.txt` / `inventory.json`
 - CI: Actionsの`case-results` artifactへケース別結果を14日保存
@@ -83,6 +83,8 @@
 | Node | test/local-security.test.mjs | a missing internal key never falls back to unauthenticated legacy forwarding | pass |
 | Node | test/local-security.test.mjs | expired owner JWTs and malformed credential files never authorize OpenCode | pass |
 | Node | test/local-security.test.mjs | legacy upstream is official-only and never follows redirects with credentials or history | pass |
+| Node | test/model-router.test.mjs | remote compaction trigger uses the native model instead of Chat conversion | pass |
+| Node | test/model-router.test.mjs | remote compaction fails safely without a native summary model | pass |
 | Node | test/model-router.test.mjs | direct authentication uses API keys only and never extracts login credentials | pass |
 | Node | test/model-router.test.mjs | official Responses bypasses conversion, GPT summaries and heuristic budget rejection | pass |
 | Node | test/model-router.test.mjs | direct Responses fails closed without OpenCode credentials and never falls back to GPT | pass |

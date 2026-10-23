@@ -263,6 +263,22 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.tools_bytes = Array.isArray(body.tools) ? Buffer.byteLength(JSON.stringify(body.tools)) : 0;
       metric.instructions_bytes = typeof body.instructions === "string" ? Buffer.byteLength(body.instructions) : 0;
       metric.input_bytes = Array.isArray(body.input) ? Buffer.byteLength(JSON.stringify(body.input)) : 0;
+      // Codex remote compaction v2 sends a normal Responses request ending in
+      // compaction_trigger and requires one compaction output item. The Chat
+      // conversion cannot produce that wire item, so use the native summary
+      // model for this request while the surrounding turn keeps its selection.
+      if (route.provider === "opencode" && !directResponses && path === "/v1/responses"
+          && Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger")) {
+        const summaryRoute = routes.get(summaryModel);
+        if (summaryRoute?.provider !== "openai") {
+          fail(response, 422, "remote_compaction_model_required", "remote compactionに使えるOpenAIモデルがカタログにありません");
+          return;
+        }
+        metric.requested_provider = route.provider;
+        metric.remote_compaction_fallback = "openai";
+        route = summaryRoute;
+        body = { ...body, model: summaryModel };
+      }
       if (route.provider === "opencode" && !directResponses && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
         return;
