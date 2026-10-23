@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { createRouter } from "../src/model-router.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -105,6 +106,18 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.notEqual(sessions[0], sessions[2]);
   assert.ok(sessions.every((session) => /^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(session)));
   assert.ok(calls.every((call) => call.headers["x-codex-bridge-auth"] === undefined));
+  // Exercise both real auth boundaries together, not just isolated header assertions.
+  await writeFile(join(directory, "auth.json"), JSON.stringify({ tokens: { access_token: "owner-test-token" } }), { mode: 0o600 });
+  const router = createRouter({ codexRoot: directory, bridgeBase: `http://127.0.0.1:${port}/v1`,
+    catalog: { models: [{ slug: "opencode/deepseek-v4.1-flash", router_provider: "opencode", router_model: "deepseek-v4.1-flash" }] } });
+  const routerPort = await listen(router);
+  context.after(async () => { router.closeAllConnections(); await new Promise((done) => router.close(done)); });
+  const routed = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, { method: "POST", headers: {
+    authorization: "Bearer owner-test-token", "content-type": "application/json",
+  }, body: JSON.stringify({ model: "opencode/deepseek-v4.1-flash", input: "Hello", stream: false }) });
+  assert.equal(routed.status, 200, await routed.text());
+  assert.equal(calls.at(-1).headers.authorization, "Bearer dummy-test-token");
+  assert.equal(calls.at(-1).headers["x-codex-bridge-auth"], undefined);
   const error = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST", headers: {
     "content-type": "application/json", "x-codex-bridge-auth": internalKey,
   }, body: JSON.stringify({ input: "UPSTREAM_PRIVATE_SENTINEL", stream: false }) });

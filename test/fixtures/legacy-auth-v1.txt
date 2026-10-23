@@ -45,4 +45,3 @@ function getToken(force = false) {
   }
   return { token: null, kind: "none" };
 }
-

@@ -105,7 +105,8 @@ class LocalOperationsTests(unittest.TestCase):
 
     def test_security_patch_is_idempotent_and_preserves_unknown_functionality(self):
         source = "\n".join(old for old, _new in patch_legacy_security.REPLACEMENTS)
-        auth = (Path(__file__).parent / "fixtures/legacy-auth-v1.txt").read_text()
+        # The legacy block has a blank separator before the following const statement.
+        auth = (Path(__file__).parent / "fixtures/legacy-auth-v1.txt").read_text() + "\n"
         source += "\n" + auth + "const log = () => {};"
         source += "\n// PRESERVE_REASONING_AND_TIMEOUTS"
         result = patch_legacy_security.patched_source(source)
