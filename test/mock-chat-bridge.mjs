@@ -14,7 +14,7 @@ const upstream=http.createServer(async(req,res)=>{
  const hasResult=outputs.length>0;
  const recovery=body.tool_choice==='none';
  metrics.push({recovery,label,tools:body.tools?.length??0,max_tokens:body.max_tokens});
- const poll=label.includes('POLL_TRIGGER'),loop=label.includes('LOOP_TRIGGER')||label.includes('LENGTH_LOOP'),mixed=label.includes('MIXED_LOOP'),truncated=label.includes('TRUNCATED');
+ const poll=label.includes('POLL_TRIGGER'),loop=label.includes('LOOP_TRIGGER')||label.includes('LENGTH_LOOP')||label.includes('EMPTY_LOOP'),mixed=label.includes('MIXED_LOOP'),truncated=label.includes('TRUNCATED');
  const shouldCall=!recovery&&(!hasResult||loop||mixed||(poll&&!outputs.at(-1).content.includes('done')));
  res.writeHead(200,{'content-type':'text/event-stream'});
  const emit=value=>res.write('data: '+JSON.stringify(value)+'\n\n');
@@ -22,7 +22,7 @@ const upstream=http.createServer(async(req,res)=>{
   emit({choices:[{index:0,delta:{role:'assistant',content:'Checking.',tool_calls:[{index:0,id:'call_'+metrics.length,type:'function',function:{name:'route_probe',arguments:JSON.stringify(mixed?{iteration:outputs.length}:{})}}]}}]});
   emit({choices:[{index:0,delta:{},finish_reason:truncated?'length':'tool_calls'}]});
  }else{
-  emit({choices:[{index:0,delta:{role:'assistant',content:'FINAL_OK: results received.'}}]});
+  emit({choices:[{index:0,delta:{role:'assistant',content:recovery&&label.includes('EMPTY_LOOP')&&metrics.filter(m=>m.label===label&&m.recovery).length===1?'':'FINAL_OK: results received.'}}]});
   emit({choices:[{index:0,delta:{},finish_reason:recovery&&label.includes('LENGTH_LOOP')&&body.max_tokens<=8192?'length':'stop'}]});
  }
  res.end('data: [DONE]\n\n');

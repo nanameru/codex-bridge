@@ -522,17 +522,21 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.recovery_output_limit = initialLimit;
         streams.push(answerOnlyStream(responseHeaders["content-type"], maxBytes, {
           diagnose: details => Object.assign(metric, details),
-          retry: retryLimit > initialLimit ? async () => {
+          retry: async reason => {
+            if (reason === "length" && retryLimit <= initialLimit) return null;
             abort.signal.throwIfAborted();
-            metric.recovery_length_retries = 1;
-            metric.recovery_retry_output_limit = retryLimit;
+            if (reason === "length") metric.recovery_length_retries = 1;
+            else metric.recovery_empty_retries = 1;
+            metric.recovery_retry_reason = reason;
+            const nextLimit = reason === "length" ? retryLimit : initialLimit;
+            metric.recovery_retry_output_limit = nextLimit;
             const retried = await fetcher(destination.replace(/\/$/, "") + suffix, {
-              method: "POST", headers, body: JSON.stringify({ ...routedObject, max_output_tokens: retryLimit }),
+              method: "POST", headers, body: JSON.stringify({ ...routedObject, max_output_tokens: nextLimit }),
               signal: abort.signal, redirect: "manual",
             });
             metric.recovery_retry_upstream_status = retried.status;
             return retried;
-          } : undefined,
+          },
         }));
       }
       if (route.provider === "opencode" && !directResponses && upstream.ok) {

@@ -70,3 +70,12 @@ test('assistant commentary, reasoning and calls form one message; results surviv
   assert.equal(messages[1].tool_calls[0].id,'call_1');assert.equal(messages[2].role,'tool');assert.equal(messages[2].tool_call_id,'call_1');
   assert.equal(messages[2].content,'BUILD_OK');assert.deepEqual(input,original);
 });
+
+test('empty and whitespace-only final answers have a machine-readable recovery reason in JSON and SSE',async()=>{
+ for(const text of ['', '  \n ']){
+  const json=chatToResponses({choices:[{message:{content:text,reasoning_content:'fixture'},finish_reason:'stop'}]},'test');
+  assert.equal(json.status,'failed');assert.equal(json.error.reason,'empty_output');
+  const output=await stream([frame({choices:[{delta:{content:text,reasoning_content:'fixture'}}]}),frame({choices:[{delta:{},finish_reason:'stop'}]})]);
+  assert.equal(output.at(-1).type,'response.failed');assert.equal(output.at(-1).response.error.reason,'empty_output');
+ }
+});

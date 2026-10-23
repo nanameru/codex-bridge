@@ -132,3 +132,29 @@ test('encrypted history expansion keeps the recovery instruction after recent us
  assert.equal(sent[0].input.at(-1).role,'developer');assert.match(sent[0].input.at(-1).content,/Tool execution is paused/);
  assert.ok(sent[0].input.findIndex(i=>i.role==='user'&&i.content==='check and answer')<sent[0].input.length-1);
 });
+
+test('empty recovery shares one retry budget with length and preserves explicit limits',async context=>{
+ for(const stream of [false,true])for(const mode of ['success','repeat-empty','then-length','tool','completed-empty','explicit-cap','overlapping-reasons','retry-unavailable']){
+  const calls=[],metrics=[];
+  const empty={status:'failed',output:[],error:{reason:'empty_output'}};
+  const wrap=value=>stream?new Response(`event: response.${value.status}\ndata: ${JSON.stringify({type:'response.'+value.status,response:value})}\n\n`,{headers:{'content-type':'text/event-stream'}}):Response.json(value);
+  const router=createRouter({authenticate:()=>true,bridgeKey:()=> 'test',catalog:{models:[{slug:'opencode/test',router_provider:'opencode'}]},onMetric:m=>metrics.push(m),fetcher:async(_url,options)=>{
+   calls.push(JSON.parse(options.body));
+   if(calls.length===1)return wrap(mode==='completed-empty'?{status:'completed',output:[]}:mode==='overlapping-reasons'?{...empty,incomplete_details:{reason:'max_output_tokens'}}:empty);
+   if(mode==='retry-unavailable')return Response.json({error:{type:'server_error',message:'Upstream request failed: Endpoint is unavailable.'}},{status:503});
+   if(mode==='repeat-empty')return wrap(empty);
+   if(mode==='then-length')return wrap({status:'failed',output:[],error:{reason:'max_output_tokens'}});
+   return wrap({status:'completed',output:mode==='tool'?[{type:'function_call',name:'unsafe',call_id:'unsafe'}]:[{type:'message',content:[{type:'output_text',text:'ANSWER'}]}]});
+  }});
+  router.listen(0,'127.0.0.1');await once(router,'listening');
+  try{
+   const response=await fetch(`http://127.0.0.1:${router.address().port}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test'},body:JSON.stringify({model:'opencode/test',tools:[{type:'function',name:'unsafe'}],input:history(3),stream,...(['explicit-cap','overlapping-reasons'].includes(mode)?{max_output_tokens:512}:{})})});
+   const text=await response.text();assert.equal(calls.length,2);
+   for(const c of calls){assert.deepEqual(c.tools,[]);assert.equal(c.tool_choice,'none');assert.equal(c.max_output_tokens,['explicit-cap','overlapping-reasons'].includes(mode)?512:8192);}
+   assert.deepEqual(calls[0].input,calls[1].input);
+   assert.doesNotMatch(text,/unsafe|function_call/);
+   if(['repeat-empty','then-length','tool','retry-unavailable'].includes(mode))assert.match(text,/failed/);else assert.match(text,/ANSWER/);
+   await new Promise(r=>setImmediate(r));assert.equal(metrics.at(-1).recovery_empty_retries,1);
+  }finally{router.closeAllConnections();await new Promise(r=>router.close(r));}
+ }
+});

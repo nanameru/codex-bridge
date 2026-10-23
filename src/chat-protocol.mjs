@@ -42,7 +42,7 @@ export function chatToResponses(chat, model) {
     const choice = primaryChoice(chat);
     if (chat.error) throw new ProtocolError('上流Chatがエラーを返しました。');
     validate(choice?.finish_reason, choice?.message?.tool_calls ?? []);
-    if (!choice.message?.content && !choice.message?.tool_calls?.length) throw new ProtocolError('Chat最終回答が空です。');
+    if (!choice.message?.content?.trim() && !choice.message?.tool_calls?.length) throw Object.assign(new ProtocolError('Chat最終回答が空です。'), { reason: 'empty_output' });
     optionalString(choice.message?.content); optionalString(choice.message?.reasoning_content);
     const usage = chat.usage ?? {};
     return { ...envelope, status: 'completed', output: items(choice.message ?? {}), usage: {
@@ -132,7 +132,7 @@ export async function pipeChatStream(upstream, response, model, threadId, option
     if (response.destroyed) return;
     const toolCalls = [...calls.entries()].sort((a,b) => a[0]-b[0]).map(([,call]) => call);
     validate(finish, toolCalls);
-    if (!text && !toolCalls.length) throw new ProtocolError('Chat最終回答が空です。');
+    if (!text.trim() && !toolCalls.length) throw Object.assign(new ProtocolError('Chat最終回答が空です。'), { reason: 'empty_output' });
     const output = [];
     if (reasoningItem) {
       const item = { ...reasoningItem.item, encrypted_content: encodeReasoning(reasoning) };
