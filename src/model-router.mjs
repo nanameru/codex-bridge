@@ -203,6 +203,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     throw new Error("受信上限は送信上限以上の正の整数で指定してください");
   }
   let routes = catalogRoutes(catalog);
+  const commitCatalog = candidate => {
+    const nextRoutes = catalogRoutes(candidate);
+    const models = candidate.models.map(({ router_provider, router_model, router_transport, ...model }) => model);
+    const serialized = JSON.stringify({ models });
+    if (Buffer.byteLength(serialized) > 1024 * 1024) throw new Error("catalog_too_large");
+    catalog = candidate; routes = nextRoutes;
+    return serialized;
+  };
   const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes });
   const bridge = new URL(bridgeBase);
   const direct = new URL(openCodeBase);
@@ -247,11 +255,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       try {
         const candidate = await catalogProvider.get(request.headers, version);
-        const nextRoutes = catalogRoutes(candidate);
-        const models = candidate.models.map(({ router_provider, router_model, router_transport, ...model }) => model);
-        const serialized = JSON.stringify({ models });
-        if (Buffer.byteLength(serialized) > 1024 * 1024) throw new Error("catalog_too_large");
-        catalog = candidate; routes = nextRoutes;
+        const serialized = commitCatalog(candidate);
         const etag = '"' + createHash("sha256").update(serialized).digest("hex") + '"';
         const headers = { "content-type": "application/json", "cache-control": "private, max-age=300", etag };
         if (request.headers["if-none-match"] === etag) { response.writeHead(304, headers); response.end(); }
@@ -335,6 +339,16 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       let route = nativeTool ? { provider: "openai" } : routes.get(body.model);
+      if (!route && catalogProvider && typeof body.model === "string"
+          && /^(?:opencode\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.model)) {
+        const version = typeof request.headers.version === "string" ? request.headers.version.split("-")[0] : undefined;
+        if (/^\d+\.\d+\.\d+$/.test(version ?? "")) {
+          try {
+            commitCatalog(await catalogProvider.get(request.headers, version));
+            route = routes.get(body.model);
+          } catch { /* Preserve the last working registry and reject unknown routes. */ }
+        }
+      }
       if (!route) {
         fail(response, 400, "unknown_model", "統合カタログにないモデルです。カタログを再生成してください");
         return;

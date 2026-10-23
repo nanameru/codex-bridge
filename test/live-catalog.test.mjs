@@ -158,3 +158,18 @@ test("native catalog preserves evolving metadata but removes prototype keys and 
  for (const name of ["__proto__", "constructor", "prototype", "router_transport"]) assert.equal(Object.hasOwn(result, name), false);
  assert.deepEqual(result.future_capability, { enabled: true }); assert.equal({}.polluted, undefined);
 });
+
+test("a cached client model can refresh a restarted router before model/list runs again", async context => {
+ const f = setup(); f.ids(["new"]); const forwarded = [];
+ const router = createRouter({ catalog: initial, catalogProvider: f.live, authenticate: () => true, bridgeKey: () => "INTERNAL",
+  fetcher: async (_url, init) => { forwarded.push(JSON.parse(init.body)); return Response.json({ status: "completed", output: [] }); } });
+ router.listen(0, "127.0.0.1"); await once(router, "listening");
+ context.after(() => { router.closeAllConnections(); router.close(); });
+ const base = "http://127.0.0.1:" + router.address().port;
+ const response = await fetch(base + "/v1/responses", { method: "POST", headers: { ...headers, version: "0.164.0" },
+  body: JSON.stringify({ model: "opencode/new", input: "continue" }) });
+ assert.equal(response.status, 200, await response.text()); assert.equal(forwarded[0].model, "new");
+ const missing = await fetch(base + "/v1/responses", { method: "POST", headers: { ...headers, version: "0.164.0" },
+  body: JSON.stringify({ model: "opencode/never-provided", input: "continue" }) });
+ assert.equal(missing.status, 400); await missing.text(); assert.equal(forwarded.length, 1);
+});
