@@ -60,6 +60,10 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     const secured = spawnSync("python3", [join(root, "scripts/patch_legacy_security.py"), script, "--apply"], { encoding: "utf8" });
     assert.equal(secured.status, 0, secured.stderr);
   }
+  if (process.env.LEGACY_BRIDGE_SOURCE) {
+    const patched = spawnSync("python3", [join(root, "scripts/patch_chat_protocol.py"), script, "--apply"], { encoding: "utf8" });
+    assert.equal(patched.status, 0, patched.stderr);
+  }
   const child = spawn(process.execPath, [script], { env: { ...process.env, HOME: directory, CODEX_HOME: directory, PORT: String(port),
     OPENCODE_API_KEY: "dummy-test-token", UPSTREAM_BASE: `http://127.0.0.1:${mockPort}/v1`,
     CODEX_BRIDGE_TEST_UPSTREAM: "1",

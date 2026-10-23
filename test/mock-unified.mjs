@@ -31,7 +31,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
     inputTypes: body.input?.map((item) => item.type), previousResponse: Boolean(body.previous_response_id),
     reasoningProviders: body.input?.filter((item) => item.type === "reasoning").map((item) => item.encrypted_content?.startsWith("cxb1:") ? "opencode" : "openai"),
     hasNativeAuth: Boolean(request.headers.authorization) && request.headers.authorization !== "Bearer mock-opencode-key",
-    toolsCount: body.tools?.length ?? 0, toolsBytes: Buffer.byteLength(JSON.stringify(body.tools ?? [])),
+    toolChoice: body.tool_choice, toolsCount: body.tools?.length ?? 0, toolsBytes: Buffer.byteLength(JSON.stringify(body.tools ?? [])),
     toolTypes: body.tools?.map((tool) => tool.type) ?? [],
     requestBytes: Buffer.byteLength(text),
     codeModeOutput: hasToolOutput && JSON.stringify(current).includes("CODE_MODE_OK") });
@@ -58,7 +58,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
     response.end();
     return;
   }
-  if (toolMode && (!hasToolOutput || (process.env.MOCK_TOOL_LOOP === "1" && JSON.stringify(body.input?.[lastUser]).includes("LOOP_TRIGGER")))) {
+  if (toolMode && body.tool_choice !== "none" && (!hasToolOutput || (process.env.MOCK_TOOL_LOOP === "1" && JSON.stringify(body.input?.[lastUser]).includes("LOOP_TRIGGER")))) {
     const call = { id: "fc_" + calls.length, type: "function_call", call_id: "call_" + calls.length,
       name: "route_probe", arguments: "{}", status: "completed" };
     if (provider === "openai") emit("response.output_item.done", { output_index: 0, item: reasoning });

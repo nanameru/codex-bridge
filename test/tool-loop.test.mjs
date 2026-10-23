@@ -1,66 +1,58 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import test from 'node:test';
+import { Readable } from 'node:stream';
 import { createRouter } from '../src/model-router.mjs';
-import { repeatedToolCycle } from '../src/tool-adapter.mjs';
-
-function history(count, custom = false) {
-  return [{ role: 'user', content: '確認して回答して' }, ...Array.from({ length: count }, (_, i) => [
-    { type: 'message', role: 'assistant', content: '確認します' },
-    custom ? { type: 'custom_tool_call', name: 'exec', call_id: 'c' + i, input: 'tail log' }
-      : { type: 'function_call', name: 'exec', call_id: 'c' + i, arguments: '{"cmd":"tail log","cwd":"/tmp"}' },
-    { type: custom ? 'custom_tool_call_output' : 'function_call_output', call_id: 'c' + i, output: 'log changed ' + i },
+import { toolRecoveryPlan, answerOnlyStream } from '../src/tool-recovery.mjs';
+function history(count, result = ()=>'BUILD_OK', name = ()=>'exec', args = ()=>'{}') {
+  return [{role:'user',content:'check and answer'},...Array.from({length:count},(_,i)=>[
+    {type:'function_call',call_id:'call_'+i,name:name(i),arguments:args(i)},
+    {type:'function_call_output',call_id:'call_'+i,output:result(i)},
   ]).flat()];
 }
 
-test('six identical completed cycles stop even when logs and call IDs change', () => {
-  assert.equal(repeatedToolCycle(history(5)), 0);
-  assert.equal(repeatedToolCycle(history(6)), 6);
-  assert.equal(repeatedToolCycle(history(12, true)), 12);
+test('repeated completed results recover, while deliberate polling and changing results can exceed six calls',()=>{
+  assert.equal(toolRecoveryPlan(history(2)),null);
+  assert.equal(toolRecoveryPlan(history(3)).reason,'repeated_completed_result');
+  for(const output of ['{"status":"pending"}','Process running with session ID 1','PENDING']) assert.equal(toolRecoveryPlan(history(8,()=>output)),null);
+  assert.equal(toolRecoveryPlan(history(8,i=>'progress '+i)),null);
+  assert.equal(toolRecoveryPlan(history(8,()=> 'same',()=> 'write_stdin')),null);
 });
 
-test('new user, changed arguments and unfinished calls do not trip the guard', () => {
-  assert.equal(repeatedToolCycle([...history(8), { role: 'user', content: 'もう一度確認して' }]), 0);
-  const changed = history(6);
-  changed.at(-2).arguments = '{"cmd":"different command"}';
-  assert.equal(repeatedToolCycle(changed), 0);
-  const unfinished = history(6).slice(0, -1);
-  assert.equal(repeatedToolCycle(unfinished), 0);
-  const incomplete = history(6);
-  incomplete.at(-1).call_id = 'unmatched';
-  assert.equal(repeatedToolCycle(incomplete), 0);
+test('changing tools/arguments and waiting loops have a finite turn budget, new users reset it',()=>{
+  const input=history(64,i=>'result '+i,i=>'tool_'+i,i=>JSON.stringify({i}));
+  assert.equal(toolRecoveryPlan(input).reason,'turn_tool_budget');
+  assert.equal(toolRecoveryPlan(history(64,()=> 'pending',()=> 'wait')).reason,'turn_tool_budget');
+  assert.equal(toolRecoveryPlan([...input,{role:'user',content:'continue'}]),null);
+  assert.equal(toolRecoveryPlan(history(4).slice(0,-1)),null);
+  assert.equal(toolRecoveryPlan(history(4).slice(1)),null);
 });
 
-test('a parallel batch is one cycle; key order does not affect argument identity', () => {
-  const parallel = [{ role: 'user', content: 'parallel' },
-    ...Array.from({ length: 8 }, (_, i) => ({ type: 'function_call', name: 'exec', call_id: 'p' + i, arguments: '{}' })),
-    ...Array.from({ length: 8 }, (_, i) => ({ type: 'function_call_output', call_id: 'p' + i, output: 'OK' }))];
-  assert.equal(repeatedToolCycle(parallel), 0);
-  const reordered = history(6);
-  reordered.at(-2).arguments = '{ "cwd": "/tmp", "cmd": "tail log" }';
-  assert.equal(repeatedToolCycle(reordered), 6);
+test('parallel calls count as one round and a normal operation is never rewritten',()=>{
+  const input=[{role:'user',content:'parallel'},...Array.from({length:8},(_,i)=>({type:'function_call',name:'exec',call_id:'c'+i,arguments:'{}'})),
+    ...Array.from({length:8},(_,i)=>({type:'function_call_output',call_id:'c'+i,output:'OK'}))];
+  assert.equal(toolRecoveryPlan(input),null);
 });
 
-test('router rejects the next generation before any upstream call; native and new user remain usable', async (context) => {
-  let calls = 0;
-  const router = createRouter({ authenticate: () => true, bridgeKey: () => 'test',
-    catalog: { models: [{ slug: 'opencode/test', router_provider: 'opencode' }, { slug: 'gpt-test', router_provider: 'openai' }] },
-    fetcher: async () => { calls++; return Response.json({ status: 'completed', output: [] }); } });
-  router.listen(0, '127.0.0.1');
-  await once(router, 'listening');
-  context.after(async () => { router.closeAllConnections(); await new Promise(r => router.close(r)); });
-  const input = history(6);
-  const original = structuredClone(input);
-  const send = (model, input) => fetch(`http://127.0.0.1:${router.address().port}/v1/responses`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer test' }, body: JSON.stringify({ model, input, stream: true }) });
-  const rejected = await send('opencode/test', input);
-  assert.equal(rejected.status, 422);
-  const error = await rejected.json();
-  assert.equal(error.error.type, 'repeated_tool_loop');
-  assert.match(error.error.message, /6回/);
-  assert.equal(calls, 0);
-  assert.deepEqual(input, original);
-  assert.equal((await send('opencode/test', [...input, { role: 'user', content: '回答して' }])).status, 200);
-  assert.equal((await send('gpt-test', input)).status, 200);
-  assert.equal(calls, 2);
+test('router requests a single tool-free answer preserving results and native requests',async context=>{
+  const calls=[];
+  const router=createRouter({authenticate:()=>true,bridgeKey:()=> 'test',catalog:{models:[{slug:'opencode/test',router_provider:'opencode'},{slug:'gpt-test',router_provider:'openai'}]},
+    fetcher:async (_url,options)=>{calls.push(JSON.parse(options.body));return Response.json({status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'BUILD_OK'}]}]});}});
+  router.listen(0,'127.0.0.1');await once(router,'listening');
+  context.after(async()=>{router.closeAllConnections();await new Promise(r=>router.close(r));});
+  const input=history(3),original=structuredClone(input);
+  const send=model=>fetch(`http://127.0.0.1:${router.address().port}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test'},body:JSON.stringify({model,input})});
+  const recovered=await send('opencode/test');assert.equal(recovered.status,200);assert.match(await recovered.text(),/BUILD_OK/);
+  assert.equal(calls[0].tool_choice,'none');assert.deepEqual(calls[0].tools,[]);assert.deepEqual(calls[0].input.slice(0,-1),original);
+  assert.equal(calls[0].input.at(-1).role,'developer');assert.deepEqual(input,original);
+  await (await send('gpt-test')).text();assert.equal(calls[1].tool_choice,undefined);
+});
+
+test('provider ignoring tool_choice cannot dispatch tools during recovery',async()=>{
+  for(const type of ['application/json','text/event-stream']){
+    const payload={type:'response.completed',response:{status:'completed',output:[{type:'function_call',name:'unsafe',call_id:'new'}]}};
+    const text=type==='application/json'?JSON.stringify(payload.response):`event: response.completed\ndata: ${JSON.stringify(payload)}\n\n`;
+    const chunks=[];for await(const chunk of Readable.from([Buffer.from(text)]).pipe(answerOnlyStream(type,4096)))chunks.push(chunk);
+    const result=Buffer.concat(chunks).toString();assert.match(result,/invalid_prompt/);assert.doesNotMatch(result,/unsafe|function_call/);
+  }
 });

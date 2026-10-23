@@ -7,8 +7,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
-import { repeatedToolCycle, normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
+import { normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
+import { toolRecoveryPlan, recoverWithAnswer, answerOnlyStream } from "./tool-recovery.mjs";
 import { HandoffStatus, failHandoffStatus, isHandoffStatusItem } from "./handoff-status.mjs";
 import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
 
@@ -19,7 +20,8 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./tool-adapter.mjs", import.meta.url)))
   .update(readFileSync(new URL("./compaction-handoff.mjs", import.meta.url)))
   .update(readFileSync(new URL("./local-security.mjs", import.meta.url)))
-  .update(readFileSync(new URL("./handoff-status.mjs", import.meta.url))).digest("hex");
+  .update(readFileSync(new URL("./handoff-status.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./tool-recovery.mjs", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
 export function catalogRoutes(catalog) {
@@ -111,7 +113,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
-  summaryModel = "gpt-6.1-sol", onMetric = () => {}, handoffStatusDelayMs = 1000,
+  summaryModel = "gpt-6.1-sol", onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
@@ -251,14 +253,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 422, "history_required", "参照IDだけでは履歴を引き継げません。展開した履歴が必要です");
         return;
       }
-      // Inspect the original current turn before compaction can hide repeated calls.
-      const repeatedCycles = route.provider === "opencode" && !nativeTool ? repeatedToolCycle(body.input) : 0;
-      if (repeatedCycles) {
-        metric.stage = "tool_loop_guard";
-        metric.repeated_tool_cycles = repeatedCycles;
-        fail(response, 422, "repeated_tool_loop",
-          `同じツール実行が同一ターンで${repeatedCycles}回繰り返されたため停止しました。履歴は保持しています。新しいメッセージで、既存の結果から回答するよう指示してください。`);
-        return;
+      const recovery = route.provider === "opencode" && !nativeTool ? toolRecoveryPlan(body.input, toolRecoveryOptions) : null;
+      if (recovery) {
+        metric.tool_recovery = recovery.reason;
+        metric.tool_recovery_rounds = recovery.rounds;
+        body = recoverWithAnswer(body);
       }
       const headers = { "content-type": "application/json", accept: nativeTool ? "application/json" : "text/event-stream, application/json" };
       if (route.provider === "opencode" && !directResponses) {
@@ -423,6 +422,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       } });
       const customNames = new Set((nativeTool ? [] : body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
       const streams = [Readable.fromWeb(upstream.body), meter];
+      if (recovery && upstream.ok) streams.push(answerOnlyStream(responseHeaders["content-type"], maxBytes));
       if (route.provider === "opencode" && !directResponses && upstream.ok) {
         streams.push(toolResponseStream(customNames, responseHeaders["content-type"], maxBytes));
       } else if (route.provider === "opencode" && directResponses && upstream.ok) {

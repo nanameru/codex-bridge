@@ -35,7 +35,7 @@ def turn(server, thread, text):
             assert message['params']['tool'] == 'route_probe'
             count += 1
             server.send({'id': message['id'], 'result': {'success': True,
-                         'contentItems': [{'type': 'inputText', 'text': f'LOG_RESULT_{count}'}]}})
+                         'contentItems': [{'type': 'inputText', 'text': 'LOG_RESULT_DONE'}]}})
             assert count <= 6, 'loop guard failed to stop before seventh execution'
         if message.get('method') == 'turn/completed' and message.get('params', {}).get('turn', {}).get('id') == identifier:
             return message['params']['turn'], count
@@ -72,15 +72,15 @@ def run():
             normal, count = turn(server, thread, 'Check once then answer')
             assert normal['status'] == 'completed' and count == 1, (normal, count)
             stopped, count = turn(server, thread, 'LOOP_TRIGGER')
-            assert stopped['status'] == 'failed' and count == 6, (stopped, count)
-            assert '同じツール実行が同一ターンで6回' in stopped['error']['message'], stopped
+            assert stopped['status'] == 'completed' and count == 3, (stopped, count)
             recovered, count = turn(server, thread, 'Check once then answer using existing results')
             assert recovered['status'] == 'completed' and count == 1, (recovered, count)
             upstream.stdin.write('summary\n')
             upstream.stdin.flush()
             calls = json.loads(upstream.stdout.readline())['calls']
-            assert len(calls) == 10, 'unexpected retries: ' + str(len(calls))
-            print('Real app-server: normal tool result -> answer; loop stopped after 6 calls without retries; new user recovers same thread; 10 upstream requests.')
+            assert len(calls) == 8, 'unexpected retries: ' + str(len(calls))
+            assert sum(call.get('toolChoice') == 'none' for call in calls) == 1
+            print('Real app-server: normal -> answer; 3 repeated completed results -> tool-free answer; same thread continues; 8 requests.')
         finally:
             if server:
                 server.close()

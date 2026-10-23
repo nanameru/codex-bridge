@@ -1,5 +1,4 @@
 import { Transform } from "node:stream";
-import { createHash } from "node:crypto";
 
 // Item IDs describe the wire type; call_id identifies the tool execution and
 // must survive provider switches unchanged. Also repairs already-saved history.
@@ -239,41 +238,4 @@ export function toolResponseStream(customNames, contentType, maxBytes) {
       } catch (error) { callback(error); }
     },
   });
-}
-
-// Count completed batches since the last user message. Content is never logged
-// or cached globally. Log output naturally changes, so match tool inputs only.
-// A batch of parallel calls counts once, not once per call.
-export function repeatedToolCycle(input, limit = 6) {
-  if (!Array.isArray(input)) return 0;
-  const start = input.findLastIndex((item) => item.role === "user");
-  if (start < 0) return 0; // No reliable current-turn boundary (e.g. compacted history).
-  const pending = new Map();
-  let signatures = [];
-  let last;
-  let repeats = 0;
-  const stable = (value) => Array.isArray(value) ? value.map(stable)
-    : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])])) : value;
-  for (const item of input.slice(start + 1)) {
-    if (["function_call", "custom_tool_call"].includes(item.type)) {
-      if (!item.call_id || pending.has(item.call_id)) return 0;
-      let args = item.type === "custom_tool_call" ? item.input : item.arguments;
-      if (item.type === "function_call") {
-        try { args = stable(JSON.parse(args)); } catch { /* Match invalid arguments literally. */ }
-      }
-      signatures.push(createHash("sha256").update(JSON.stringify([item.type, item.name, args])).digest("hex"));
-      pending.set(item.call_id, true);
-    } else if (["function_call_output", "custom_tool_call_output"].includes(item.type)) {
-      if (!pending.delete(item.call_id)) { repeats = 0; last = undefined; signatures = []; pending.clear(); continue; }
-      if (!pending.size) {
-        const fingerprint = signatures.join(":");
-        repeats = fingerprint === last ? repeats + 1 : 1;
-        last = fingerprint;
-        signatures = [];
-      }
-    } else if (item.type === "compaction") {
-      repeats = 0; last = undefined; pending.clear(); signatures = [];
-    }
-  }
-  return !pending.size && repeats >= limit ? repeats : 0;
 }

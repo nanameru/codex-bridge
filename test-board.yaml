@@ -294,11 +294,34 @@ cases:
   - id: TC-029
     title: "同一ツールの反復停止と追加要約通知"
     feature: "ツール反復保護"
-    scenario: "同一ターンの6連続実行を停止し、新しい発言で復帰する"
+    scenario: "同一完了結果の反復から回答し、ポーリングと有限予算を検証する"
     status: done
     priority: high
     type: regression
-    source: [src/tool-adapter.mjs, src/model-router.mjs, src/handoff-status.mjs]
+    source: [src/tool-recovery.mjs, src/model-router.mjs, src/handoff-status.mjs]
     test_file: test/tool-loop.test.mjs
-    issues: [49]
-    notes: "動的な結果・call_id変更・引数順序・並列一式・未完了・新規発言・GPT経路を検証。test/tool-loop-app-e2e.pyで実app-serverの停止/非再試行/同一スレッド復帰を検証。追加要約文言はtest/handoff-status.test.mjs。"
+    issues: [49, 51]
+    notes: "動的な結果・call_id変更・引数順序・並列一式・未完了・新規発言・GPT経路を検証。test/tool-loop-app-e2e.pyで実app-serverの回答復帰を検証。#51で6回停止を置換、64回の有限予算とポーリング除外を追加。追加要約文言はtest/handoff-status.test.mjs。"
+
+  - id: TC-030
+    title: "Chat変換の正常終端と履歴の一意性"
+    feature: "Chatプロトコル"
+    scenario: "打切りのツールを実行せず、重複思考を1回にする"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, scripts/patch_chat_protocol.py, src/codex-bridge.mjs]
+    test_file: test/chat-protocol.test.mjs
+    issues: [51]
+    notes: "JSON/SSE・length/EOF・不正引数・phase・UTF8・思考重複・call_idを検証。test/chat-bridge-app-e2e.pyで実Codex→router→実Chat bridge→模擬APIの27要求を確認。"
+  - id: TC-031
+    title: "稼働後の実モデルで通常応答と回答復帰を検証する"
+    feature: "実API検証"
+    scenario: "GLM通常ツール1回とGLM/HY4の回答復帰"
+    status: doing
+    priority: high
+    type: integration
+    source: [src/chat-protocol.mjs, src/model-router.mjs, src/tool-recovery.mjs]
+    test_file: test/live-tool-recovery.mjs
+    issues: [51]
+    notes: "RUN_LIVE_MODELS=1で明示実行。合成入力のみ、最大4要求/各1024token/60秒。通常CIは実APIを呼ばない。"
