@@ -457,3 +457,27 @@ cases:
     test_file: test/bridge-transport.test.mjs
     issues: [53]
     notes: "実API課金・顧客画像送信なし。schema/指示/認証/本文非保存の既存試験も継続。"
+
+  - id: TC-043
+    title: "要約の一時障害だけを1回再試行し最大2試行で止める"
+    feature: "履歴引き継ぎ502復帰"
+    scenario: "一時失敗から成功・連続失敗・キャンセル・失敗cache禁止"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [55]
+    notes: "server_error/rate_limit_exceeded、HTTP408/500/502/503/504を最大1回再試行。HTTP400/401/403/429・暗号化不正・不明コードは再試行しない。キャンセル中の追加要求なし。"
+
+  - id: TC-044
+    title: "要約失敗の安全な原因コードが画面とログへ届く"
+    feature: "履歴引き継ぎ502診断"
+    scenario: "永久障害の表示・一時復帰の試行回数・秘匿本文の非出力"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [55]
+    notes: "固定の許可リストで原因を表示。未知の文字列や上流本文は表示/保存しない。test/handoff-app-e2e.pyとMOCK_HANDOFF_TRANSIENT=1でも実app-serverの復帰/2回停止を検証。初回実502の原因は未保存のため未確定。"

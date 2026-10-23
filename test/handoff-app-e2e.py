@@ -114,13 +114,14 @@ def run(fail=False):
             upstream.stdin.write("summary\n")
             upstream.stdin.flush()
             calls = json.loads(upstream.stdout.readline())["calls"]
-            assert sum(bool(c["summary"]) for c in calls) == 1, calls
+            expected_summaries = 2 if fail or os.environ.get("MOCK_HANDOFF_TRANSIENT") == "1" else 1
+            assert sum(bool(c["summary"]) for c in calls) == expected_summaries, calls
             assert any(c["compact"] and c["provider"] == "openai" for c in calls)
             assert all(c["hasNativeAuth"] == (c["provider"] == "openai") for c in calls)
             assert not any(c["statusReplayed"] for c in calls), calls
             print("Codex App/CLI app-server: native encrypted compaction preserved; delayed handoff commentary -> "
                   + ("failure, no OpenCode request" if fail else "answer; cache hit hidden; resume succeeds")
-                  + "; auth isolated; bridge status not replayed")
+                  + f"; summary attempts={expected_summaries}; auth isolated; bridge status not replayed")
         finally:
             if server:
                 server.close()

@@ -557,7 +557,7 @@ test("a failed or insufficient budget summary never forwards oversized context o
     const response = await send({ model: "deepseek-test", input });
     assert.equal(response.status, kind === "still-large" ? 413 : 502, kind);
     await response.text();
-    assert.equal(calls, 1);
+    assert.equal(calls, kind === "http-error" ? 2 : 1);
     assert.equal(input[0].content.length, 10000);
   }
 });
@@ -722,7 +722,7 @@ test("default history handoff stops every route on summary failure", async (cont
     fetcher: async (url) => { calls.push(url); return new Response("unavailable", { status: 503 }); } });
   const response = await send({ model: "direct-test", input: [{ type: "compaction", encrypted_content: "saved" }] });
   assert.equal(response.status, 502);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("image budget counts structured user and parallel tool images without charging Base64 as text", async context => {
@@ -758,4 +758,27 @@ test("image token reservation does not bypass the raw request byte limit", async
  const {send,calls}=await fixture(context,{maxBytes:2048,opencodeHardLimitTokens:20000});
  const response=await send({model:'deepseek-test',input:[{role:'user',content:[{type:'input_image',image_url:'data:image/png;base64,'+'A'.repeat(3000)}]}]});
  assert.equal(response.status,413);await response.text();assert.equal(calls.length,0);
+});
+
+test('summary failure codes and bounded retry metadata reach router diagnostics',async context=>{
+ const metrics=[];let calls=0;
+ const {send}=await fixture(context,{summaryModel:'gpt-test',onMetric:m=>metrics.push(m),fetcher:async()=>{
+  calls++;
+  if(calls===1)return Response.json({status:'failed',error:{code:'server_error',message:'PRIVATE_SENTINEL'},output:[]});
+  return Response.json({status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:calls===2?'handoff':'answer'}]}]});
+ }});
+ const response=await send({model:'deepseek-test',input:[{type:'compaction',encrypted_content:'opaque'},{role:'user',content:'latest'}]});
+ assert.equal(response.status,200);assert.match(await response.text(),/answer/);
+ assert.equal(calls,3);assert.equal(metrics[0].summary_attempts,2);assert.equal(metrics[0].summary_error_code,'server_error');
+ assert.equal(metrics[0].summary_upstream_status,200);assert.equal(metrics[0].summary_retrying,false);
+ assert.doesNotMatch(JSON.stringify(metrics),/PRIVATE_SENTINEL|opaque/);
+});
+
+test('summary permanent error code reaches streamed UI without leaking upstream text',async context=>{
+ let calls=0;
+ const {send}=await fixture(context,{summaryModel:'gpt-test',handoffStatusDelayMs:0,fetcher:async()=>{
+  calls++;return new Response('data: '+JSON.stringify({type:'response.failed',response:{status:'failed',error:{code:'invalid_encrypted_content',message:'PRIVATE_SENTINEL'}}})+'\n\n',{headers:{'content-type':'text/event-stream'}});
+ }});
+ const response=await send({model:'deepseek-test',stream:true,input:[{type:'compaction',encrypted_content:'opaque'}]});
+ const text=await response.text();assert.match(text,/invalid_encrypted_content/);assert.doesNotMatch(text,/PRIVATE_SENTINEL/);assert.equal(calls,1);
 });

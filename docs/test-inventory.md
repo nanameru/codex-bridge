@@ -1,8 +1,8 @@
-# Issue #51 / #53: テスト全件と再実行方法
+# Issue #51 / #53 / #55: テスト全件と再実行方法
 
-最新のローカル実行はNode118件・Python81件、全199件成功。実API・app-server E2Eをこの件数に加算していない。
+最新のローカル実行はNode124件・Python81件、全205件成功。実API・app-server E2Eをこの件数に加算していない。
 
-- 正本: `test-board.yaml`（Issue #51にはTC-025/029〜039、#53にはTC-040〜042を紐付け）
+- 正本: `test-board.yaml`（Issue #51にはTC-025/029〜039、#53にはTC-040〜042、#55にはTC-043〜044を紐付け）
 - 全オフラインケースの再生成: `python3 scripts/run_test_inventory.py --output test-results`
 - 生の結果: `test-results/node.tap` / `python.txt` / `inventory.json`
 - CI: Actionsの`case-results` artifactへケース別結果を14日保存
@@ -55,6 +55,10 @@
 | Node | test/compaction-handoff.test.mjs | does not cache requests lacking a usable thread ID | pass |
 | Node | test/compaction-handoff.test.mjs | handles cancellation during synchronous fetch setup before waiter registration | pass |
 | Node | test/compaction-handoff.test.mjs | aborts generation when all waiters leave and never caches its result | pass |
+| Node | test/compaction-handoff.test.mjs | temporary summary response.failed recovers once and caches only the completed retry | pass |
+| Node | test/compaction-handoff.test.mjs | permanent and unknown summary errors expose only safe codes without retrying | pass |
+| Node | test/compaction-handoff.test.mjs | summary transient failures stop at two attempts and keep failure metadata | pass |
+| Node | test/compaction-handoff.test.mjs | cancelling during summary retry wait prevents a second upstream request | pass |
 | Node | test/context-input.test.mjs | removes only adjacent identical instruction messages without trimming conversation or tool history | pass |
 | Node | test/handoff-status.test.mjs | App/CLI commentary arrives while summary is pending; response IDs, indexes and sequences remain consistent | pass |
 | Node | test/handoff-status.test.mjs | cache hits, immediate handoffs and native requests do not inject status | pass |
@@ -119,6 +123,8 @@
 | Node | test/model-router.test.mjs | image budget counts structured user and parallel tool images without charging Base64 as text | pass |
 | Node | test/model-router.test.mjs | image budget never discounts Base64 in plain text, schemas or malformed image sources | pass |
 | Node | test/model-router.test.mjs | image token reservation does not bypass the raw request byte limit | pass |
+| Node | test/model-router.test.mjs | summary failure codes and bounded retry metadata reach router diagnostics | pass |
+| Node | test/model-router.test.mjs | summary permanent error code reaches streamed UI without leaking upstream text | pass |
 | Node | test/protocol-edge.test.mjs | EDGE-01 null and malformed choices return non-retry failure without throwing | pass |
 | Node | test/protocol-edge.test.mjs | EDGE-02 choice one cannot dispatch a tool when choice zero is the answer | pass |
 | Node | test/protocol-edge.test.mjs | EDGE-03 changing a streamed call ID and malformed delta types cannot complete a tool | pass |

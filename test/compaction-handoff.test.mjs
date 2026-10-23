@@ -126,8 +126,8 @@ test("deduplicates concurrent summaries and a cancelled waiter does not cancel a
 
 test("isolates threads, credentials and changed history; failed summaries are retried", async () => {
   let calls = 0;
-  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 10000,
-    fetcher: async () => { calls++; return calls === 1 ? new Response("", { status: 503 }) : completed(); } });
+  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 10000, retryDelayMs: 0,
+    fetcher: async () => { calls++; return calls <= 2 ? new Response("", { status: 503 }) : completed(); } });
   await assert.rejects(expand(body, options()));
   await expand(body, options());
   await expand(body, { ...options(), threadId: "other" });
@@ -135,7 +135,7 @@ test("isolates threads, credentials and changed history; failed summaries are re
   const changed = structuredClone(body);
   changed.input[1].encrypted_content = "different";
   await expand(changed, options());
-  assert.equal(calls, 5);
+  assert.equal(calls, 6);
 });
 
 test("does not cache requests lacking a usable thread ID", async () => {
@@ -170,4 +170,60 @@ test("aborts generation when all waiters leave and never caches its result", asy
   await assert.rejects(pending, { name: "AbortError" });
   await expand(body, options());
   assert.equal(calls, 2);
+});
+
+test('temporary summary response.failed recovers once and caches only the completed retry',async()=>{
+ let calls=0;const diagnostics=[];
+ const expand=compactionHandoff({model:'gpt-test',maxBytes:10000,retryDelayMs:0,fetcher:async()=>{
+  if(++calls===1)return new Response('data: '+JSON.stringify({type:'response.failed',response:{status:'failed',error:{code:'server_error',message:'PRIVATE_SENTINEL'}}})+'\n\n',{headers:{'content-type':'text/event-stream'}});
+  return completed();
+ }});
+ const original=structuredClone(body);
+ await expand(body,{...options(),diagnose:d=>diagnostics.push(d)});
+ await expand(body,options());
+ assert.equal(calls,2);assert.deepEqual(body,original);
+ assert.ok(diagnostics.some(d=>d.summary_error_code==='server_error'&&d.summary_attempts===1));
+ assert.doesNotMatch(JSON.stringify(diagnostics),/PRIVATE_SENTINEL/);
+});
+
+test('permanent and unknown summary errors expose only safe codes without retrying',async()=>{
+ for(const code of ['invalid_encrypted_content','invalid_prompt','PRIVATE_SENTINEL']){
+  let calls=0;
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:10000,retryDelayMs:0,fetcher:async()=>{
+   calls++;return Response.json({status:'failed',error:{code,message:'PRIVATE_SENTINEL'},output:[]});
+  }});
+  await assert.rejects(expand(body,options()),error=>{
+   assert.equal(error.upstreamCode,code==='PRIVATE_SENTINEL'?'unknown_error':code);
+   assert.doesNotMatch(error.message,/PRIVATE_SENTINEL/);return true;
+  });assert.equal(calls,1);
+ }
+ for(const status of [400,401,403,429]){
+  let calls=0;
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:10000,retryDelayMs:0,fetcher:async()=>{
+   calls++;return new Response('PRIVATE_SENTINEL',{status});
+  }});
+  await assert.rejects(expand(body,options()),error=>{
+   assert.equal(error.upstreamStatus,status);assert.doesNotMatch(error.message,/PRIVATE_SENTINEL/);return true;
+  });assert.equal(calls,1);
+ }
+});
+
+test('summary transient failures stop at two attempts and keep failure metadata',async()=>{
+ let calls=0;
+ const expand=compactionHandoff({model:'gpt-test',maxBytes:10000,retryDelayMs:0,fetcher:async()=>{
+  calls++;return new Response('',{status:503});
+ }});
+ await assert.rejects(expand(body,options()),error=>{
+  assert.equal(error.upstreamStatus,503);assert.equal(error.attempts,2);return true;
+ });assert.equal(calls,2);
+});
+
+test('cancelling during summary retry wait prevents a second upstream request',async()=>{
+ let calls=0;const abort=new AbortController();
+ const expand=compactionHandoff({model:'gpt-test',maxBytes:10000,retryDelayMs:1000,fetcher:async()=>{
+  calls++;return new Response('',{status:503});
+ }});
+ await assert.rejects(expand(body,{...options(),signal:abort.signal,diagnose:d=>{
+  if(d.summary_retrying)abort.abort();
+ }}),{name:'AbortError'});assert.equal(calls,1);
 });

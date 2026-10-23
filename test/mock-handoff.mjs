@@ -21,6 +21,12 @@ const mock = (provider) => http.createServer(async (request, response) => {
       response.end('{"error":{"message":"private upstream error"}}');
       return;
     }
+    if (process.env.MOCK_HANDOFF_TRANSIENT === "1" && calls.filter(call => call.summary).length === 1) {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end('event: response.failed\ndata: ' + JSON.stringify({ type: "response.failed",
+        response: { status: "failed", error: { code: "server_error", message: "private upstream error" } } }) + '\n\n');
+      return;
+    }
   }
   const id = "resp_mock_" + calls.length;
   const item = compact ? { id: "cmp_mock", type: "compaction", encrypted_content: "mock-native-compaction" }

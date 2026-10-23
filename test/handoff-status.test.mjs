@@ -140,7 +140,7 @@ test("a failed handoff sends a terminal failure after status without dropping hi
   assert.match(stream.at(-1).response.error.message, /compaction_handoff_failed/);
   assert.equal(stream.at(-1).response.error.code, "invalid_prompt");
   assert.doesNotMatch(text, /PRIVATE/);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(requestBody.input[0].encrypted_content, "native-private-history");
 });
 
