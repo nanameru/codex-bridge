@@ -96,3 +96,16 @@ OpenCode Chat向けの画像入力では、Codexの`detail: original`を`high`�
 回答復帰時の空文字・空白だけの回答・reasoningのみの応答は`empty_output`で区別する。上限を維持し、同じ履歴・モデル・tools=[]/noneで1回だけ再生成する。lengthと空応答の再生成予算は合計1回であり、2回目の失敗を正常完了と偽らない。回復メトリクスに終端状態と理由を保存する。利用者の`interrupted`は空応答と区別し、自動的に作業を再開しない。
 
 空の回答に出力上限の付帯情報もある場合はempty_outputを優先し、利用者の小さい上限を超えずに再生成する。再生成先の接続障害に対してavailability再試行を入れ子にしない。追加生成の要求は最大1回で、再度の失敗は記録して停止する。
+
+## 履歴要約の未完了からの回復
+
+履歴要約では、空の要約・SSE終端の欠落・出力上限による未完了を区別し、既存の一時障害と合計して最大2回の生成で回復を試みる。要約専用の出力予算は8192 tokens、出力上限で未完了だった場合のみ2回目を16384 tokensにする。元の指示・最新の依頼・実行中のツール交換は保持し、要約生成のtoolsは空にする。
+
+正常完了した文章だけをキャッシュ・転送する。拒否、不正形式、ツール実行項目、64KiBを超える要約は転送せず停止する。再試行も失敗した場合は元の履歴を保持して理由を表示する。要約の意味的な完全性や上流サービスの無障害を保証するものではない。
+
+ログには固定の`summary_error_code`、`summary_response_status`、`summary_output_limit`、`summary_output_bytes`と試行回数を記録し、要約本文や未知のエラー理由は記録しない。
+
+```bash
+MOCK_HANDOFF_RESULT=incomplete python3 test/handoff-app-e2e.py
+MOCK_HANDOFF_RESULT=empty python3 test/handoff-app-e2e.py
+```

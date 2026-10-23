@@ -599,3 +599,15 @@ cases:
     test_file: test/tool-loop.test.mjs
     issues: [65]
     notes: "Chat protocolのSSE/JSON回帰、2回目の空/length/不正ツール、明示512tokenを検証。実app-server+実Chat bridge+模擬上流37要求で空応答後の完了と追加ツール0を確認。実モデルでの同一会話再送は未確認。"
+
+  - id: TC-054
+    title: "履歴要約の空応答・未完了・終端欠落を分類して有限回復する"
+    feature: "履歴要約の安全な回復"
+    scenario: "JSON/SSE、出力予算8192/16384、拒否・不正形式・取消・再失敗・キャッシュ"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [67]
+    notes: "修正前の汎用エラーを再現。20単体テスト、全265件成功。実app-server+模擬上流で空要約/上限未完了から各1回の再生成、OpenCode応答、再圧縮、resumeを確認。既存OAuthの短い合成入力でmax_output_tokens受付と正常終端を確認。障害会話そのものの実上流再送は未実施。"
