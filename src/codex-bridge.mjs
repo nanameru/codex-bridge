@@ -20,6 +20,7 @@
  *   LOG_LEVEL            debug | info | error（既定 info）
  */
 
+import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.mjs";
 import http from "node:http";
 import { guardBridgeRequest, validateOpenCodeBase, fetchOpenCode, readOpenCodeApiKey } from "./local-security.mjs";
 import { randomUUID } from "node:crypto";
@@ -27,6 +28,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { reasoningOptions, upstreamSession } from "./upstream-options.mjs";
+import { createRequestGuard } from "./request-guard.mjs";
 
 const PORT = Number(process.env.PORT ?? 8788);
 const UPSTREAM_BASE = validateOpenCodeBase((process.env.UPSTREAM_BASE ?? "https://opencode.ai/inference/go/openai/v1").replace(/\/+$/, ""));
@@ -131,16 +133,15 @@ ${rows.map(([id, u]) => `<tr>
 }
 
 // ---- 暴走ガード -------------------------------------------------
-// 同一プロセスから短時間に大量リクエストが来たら止める。
+// 同一スレッドから短時間に大量リクエストが来たら止める。
 // 実APIで事故ると一瞬で課金が飛ぶため、既定で有効。
 const MAX_REQ_PER_MIN = Number(process.env.MAX_REQ_PER_MIN ?? 40);
-const recent = [];
-function guardTripped() {
-  const now = Date.now();
-  while (recent.length && now - recent[0] > 60_000) recent.shift();
-  recent.push(now);
-  return recent.length > MAX_REQ_PER_MIN;
-}
+// 0 は無効。多数スレッドの同時利用に備える場合だけ設定する。
+const MAX_REQ_PER_MIN_GLOBAL = Number(process.env.MAX_REQ_PER_MIN_GLOBAL ?? 0);
+const requestGuard = createRequestGuard({
+  maxPerThread: MAX_REQ_PER_MIN,
+  maxGlobal: Number.isFinite(MAX_REQ_PER_MIN_GLOBAL) ? MAX_REQ_PER_MIN_GLOBAL : 0,
+});
 
 // 本文保存は明示的なローカル診断時だけ。既定は無効。
 import { appendFileSync } from "node:fs";
@@ -160,80 +161,7 @@ function dump(body) {
 
 /** Responses API の input → chat/completions の messages */
 function toChatMessages(body) {
-  const sys = [];
-  if (body.instructions) sys.push({ role: "system", content: body.instructions });
-
-  const msgs = [...sys];
-  const input = body.input;
-
-  if (typeof input === "string") {
-    msgs.push({ role: "user", content: input });
-    return msgs;
-  }
-
-  const pendingToolCalls = [];
-  const flushTools = () => {
-    if (pendingToolCalls.length) {
-      msgs.push({ role: "assistant", content: null, tool_calls: pendingToolCalls.splice(0) });
-    }
-  };
-
-  for (const item of input ?? []) {
-    switch (item.type) {
-      case "message":
-      case undefined: {
-        flushTools();
-        const role = item.role === "developer" ? "system" : item.role ?? "user";
-        if (Array.isArray(item.content)) {
-          const parts = [];
-          for (const c of item.content) {
-            if (c.type === "input_image" || c.image_url) {
-              const url = typeof c.image_url === "string" ? c.image_url : c.image_url?.url ?? c.data_url;
-              if (url) parts.push({ type: "image_url", image_url: { url } });
-            } else if (c.text || c.refusal) {
-              parts.push({ type: "text", text: c.text ?? c.refusal });
-            }
-          }
-          const hasImage = parts.some((x) => x.type === "image_url");
-          if (hasImage) {
-            // 画像があるときはマルチモーダル形式で送る
-            const txt = parts.filter((x) => x.type === "text").map((x) => x.text).join("\n");
-            msgs.push({
-              role,
-              content: [...(txt ? [{ type: "text", text: txt }] : []),
-                        ...parts.filter((x) => x.type === "image_url")],
-            });
-          } else {
-            msgs.push({ role, content: parts.map((x) => x.text).filter(Boolean).join("\n") });
-          }
-        } else {
-          msgs.push({ role, content: String(item.content ?? "") });
-        }
-        break;
-      }
-      case "function_call": {
-        pendingToolCalls.push({
-          id: item.call_id ?? item.id,
-          type: "function",
-          function: { name: item.name, arguments: item.arguments ?? "{}" },
-        });
-        break;
-      }
-      case "function_call_output": {
-        flushTools();
-        msgs.push({
-          role: "tool",
-          tool_call_id: item.call_id,
-          content: typeof item.output === "string" ? item.output : JSON.stringify(item.output),
-        });
-        break;
-      }
-      default:
-        dbg("未対応の input item:", item.type);
-    }
-  }
-  flushTools();
-  return msgs;
+  return chatMessages(body, reasoningOptions(body.model ?? DEFAULT_MODEL, body.reasoning?.effort).thinking?.type === "enabled");
 }
 
 /** Responses API の tools → chat/completions の tools */
@@ -258,53 +186,7 @@ function toChatTools(body) {
 
 /** chat/completions のレスポンス → Responses API のレスポンス */
 function toResponsesPayload(chat, model) {
-  const choice = chat.choices?.[0];
-  const msg = choice?.message ?? {};
-  const output = [];
-
-  if (msg.content) {
-    output.push({
-      type: "message",
-      id: `msg_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
-      status: "completed",
-      role: "assistant",
-      content: [{ type: "output_text", text: msg.content, annotations: [] }],
-    });
-  }
-  for (const tc of msg.tool_calls ?? []) {
-    output.push({
-      type: "function_call",
-      id: `fc_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
-      status: "completed",
-      call_id: tc.id,
-      name: tc.function?.name ?? "",
-      arguments: tc.function?.arguments ?? "{}",
-    });
-  }
-  if (output.length === 0) {
-    output.push({
-      type: "message",
-      id: `msg_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
-      status: "completed",
-      role: "assistant",
-      content: [{ type: "output_text", text: "", annotations: [] }],
-    });
-  }
-
-  const u = chat.usage ?? {};
-  return {
-    id: `resp_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
-    object: "response",
-    created_at: Math.floor(Date.now() / 1000),
-    status: "completed",
-    model,
-    output,
-    usage: {
-      input_tokens: u.prompt_tokens ?? 0,
-      output_tokens: u.completion_tokens ?? 0,
-      total_tokens: u.total_tokens ?? 0,
-    },
-  };
+  return chatToResponses(chat, model);
 }
 
 // ------------------------------------------------------------ SSE
@@ -315,152 +197,7 @@ function sse(res, event, data) {
 
 /** chat/completions の stream を Responses API のイベント列に変換する */
 async function pipeStream(upstreamRes, res, model, threadId) {
-  res.writeHead(200, {
-    "content-type": "text/event-stream",
-    "cache-control": "no-cache",
-    connection: "keep-alive",
-  });
-
-  const respId = `resp_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  const msgId = `msg_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  const createdAt = Math.floor(Date.now() / 1000);
-
-  sse(res, "response.created", {
-    type: "response.created",
-    response: { id: respId, object: "response", created_at: createdAt, status: "in_progress", model, output: [] },
-  });
-  sse(res, "response.in_progress", {
-    type: "response.in_progress",
-    response: { id: respId, object: "response", created_at: createdAt, status: "in_progress", model, output: [] },
-  });
-
-  let textIdx = 0;
-  let textStarted = false;
-  let fullText = "";
-  let lastUsage = null;
-  const toolCalls = new Map(); // index -> {id,name,args}
-  const decoder = new TextDecoder();
-  let buf = "";
-
-  const startText = () => {
-    if (textStarted) return;
-    textStarted = true;
-    sse(res, "response.output_item.added", {
-      type: "response.output_item.added",
-      output_index: textIdx,
-      item: { type: "message", id: msgId, status: "in_progress", role: "assistant", content: [] },
-    });
-    sse(res, "response.content_part.added", {
-      type: "response.content_part.added",
-      item_id: msgId,
-      output_index: textIdx,
-      content_index: 0,
-      part: { type: "output_text", text: "", annotations: [] },
-    });
-  };
-
-  const reader = upstreamRes.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-
-    let nl;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (payload === "[DONE]") continue;
-
-      let chunk;
-      try {
-        chunk = JSON.parse(payload);
-      } catch {
-        continue;
-      }
-      if (chunk.usage) lastUsage = chunk.usage;
-      const delta = chunk.choices?.[0]?.delta;
-      if (!delta) continue;
-
-      if (typeof delta.content === "string" && delta.content.length > 0) {
-        startText();
-        fullText += delta.content;
-        sse(res, "response.output_text.delta", {
-          type: "response.output_text.delta",
-          item_id: msgId,
-          output_index: textIdx,
-          content_index: 0,
-          delta: delta.content,
-        });
-      }
-
-      for (const tc of delta.tool_calls ?? []) {
-        const i = tc.index ?? 0;
-        const cur = toolCalls.get(i) ?? { id: "", name: "", args: "" };
-        if (tc.id) cur.id = tc.id;
-        if (tc.function?.name) cur.name += tc.function.name;
-        if (tc.function?.arguments) cur.args += tc.function.arguments;
-        toolCalls.set(i, cur);
-      }
-    }
-  }
-
-  // 本文を閉じる
-  const output = [];
-  const msgItem = {
-    type: "message",
-    id: msgId,
-    status: "completed",
-    role: "assistant",
-    content: [{ type: "output_text", text: fullText, annotations: [] }],
-  };
-  if (textStarted) {
-    sse(res, "response.output_text.done", {
-      type: "response.output_text.done",
-      item_id: msgId,
-      output_index: textIdx,
-      content_index: 0,
-      text: fullText,
-    });
-    sse(res, "response.content_part.done", {
-      type: "response.content_part.done",
-      item_id: msgId,
-      output_index: textIdx,
-      content_index: 0,
-      part: { type: "output_text", text: fullText, annotations: [] },
-    });
-    sse(res, "response.output_item.done", {
-      type: "response.output_item.done",
-      output_index: textIdx,
-      item: msgItem,
-    });
-    output.push(msgItem);
-  }
-  if (!textStarted && toolCalls.size === 0) {
-    output.push(msgItem);
-  }
-
-  // ツール呼び出しを閉じる
-  let idx = textIdx + 1;
-  for (const [i, tc] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
-    const itemId = `fc_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-    const item = {
-      type: "function_call", id: itemId, status: "completed",
-      call_id: tc.id || `call_${i}`, name: tc.name, arguments: tc.args || "{}",
-    };
-    sse(res, "response.output_item.added", { type: "response.output_item.added", output_index: idx, item });
-    sse(res, "response.output_item.done", { type: "response.output_item.done", output_index: idx, item });
-    output.push(item);
-    idx++;
-  }
-
-  if (lastUsage) recordUsage(threadId, model, lastUsage.prompt_tokens ?? 0, lastUsage.completion_tokens ?? 0);
-  sse(res, "response.completed", {
-    type: "response.completed",
-    response: { id: respId, object: "response", created_at: createdAt, status: "completed", model, output },
-  });
-  res.end();
+  return pipeChatStream(upstreamRes, res, model, threadId, { recordUsage });
 }
 
 // ------------------------------------------------------------ HTTP
@@ -537,20 +274,25 @@ const server = http.createServer(async (req, res) => {
 
     dump(body);
 
-    if (guardTripped()) {
-      log(`!! 暴走ガード作動（1分間に ${recent.length} 回）。429 を返します`);
-      res.writeHead(429, { "content-type": "application/json" });
+    const model = body.model || DEFAULT_MODEL;
+    const threadId = threadIdOf(body);
+    const guard = requestGuard.check(threadId);
+    if (!guard.allowed) {
+      const scope = guard.scope === "global" ? "全体" : `スレッド ${String(threadId).slice(0, 8)}`;
+      log(`!! 暴走ガード作動（${scope} / 1分間に ${guard.count} 回 / 上限 ${guard.limit}）。429 を返します`);
+      res.writeHead(429, {
+        "content-type": "application/json",
+        "retry-after": String(guard.retryAfterSeconds),
+      });
       res.end(JSON.stringify({
         error: {
           type: "rate_limit_exceeded",
-          message: `codex-bridge: 1分間に ${MAX_REQ_PER_MIN} 回を超えました。ループの可能性があるため停止しました。`,
+          message: `codex-bridge: ${guard.scope === "global" ? "全体で" : "このスレッドで"}1分間に ${guard.limit} 回を超えました。${guard.retryAfterSeconds} 秒後に再試行してください。`,
         },
       }));
       return;
     }
 
-    const model = body.model || DEFAULT_MODEL;
-    const threadId = threadIdOf(body);
     const effort = body.reasoning?.effort ?? "medium";
 
     // Effort を実際の挙動に反映する。
@@ -561,7 +303,7 @@ const server = http.createServer(async (req, res) => {
       minimal: "可能な限り短く答える。",
       low: "簡潔に、速さを優先して答える。",
       medium: "",
-      high: "答える前に必ず手順を確認し、見落としがないか検証する。",
+      high: "",
     };
     const EFFORT_TEMP = { none: 0.7, minimal: 0.7, low: 0.6, medium: 0.4, high: 0.2 };
     const hint = EFFORT_HINT[effort] ?? "";
@@ -660,7 +402,8 @@ const server = http.createServer(async (req, res) => {
     if (!upstream.ok) {
       const t = await upstream.text();
       log("upstream", upstream.status);
-      res.writeHead(upstream.status, { "content-type": "application/json" });
+      res.writeHead(upstream.status, { "content-type": "application/json",
+        ...(upstream.headers.has("retry-after") ? { "retry-after": upstream.headers.get("retry-after") } : {}) });
       res.end(t);
       return;
     }

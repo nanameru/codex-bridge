@@ -13,6 +13,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
   for await (const chunk of request) text += chunk;
   const body = JSON.parse(text);
   const lastUser = body.input?.findLastIndex((item) => item.role === "user") ?? -1;
+  const probeRequested = JSON.stringify(body.input?.[lastUser]?.content ?? "").includes("Call route_probe, then reply OK.");
   const current = body.input?.slice(lastUser + 1) ?? [];
   const hasToolOutput = current.some((item) => ["function_call_output", "custom_tool_call_output"].includes(item.type));
   if (toolMode && process.env.MOCK_DIRECT_RESPONSES !== "1" && provider === "opencode" && hasToolOutput) {
@@ -31,7 +32,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
     inputTypes: body.input?.map((item) => item.type), previousResponse: Boolean(body.previous_response_id),
     reasoningProviders: body.input?.filter((item) => item.type === "reasoning").map((item) => item.encrypted_content?.startsWith("cxb1:") ? "opencode" : "openai"),
     hasNativeAuth: Boolean(request.headers.authorization) && request.headers.authorization !== "Bearer mock-opencode-key",
-    toolsCount: body.tools?.length ?? 0, toolsBytes: Buffer.byteLength(JSON.stringify(body.tools ?? [])),
+    toolChoice: body.tool_choice, toolsCount: body.tools?.length ?? 0, toolsBytes: Buffer.byteLength(JSON.stringify(body.tools ?? [])),
     toolTypes: body.tools?.map((tool) => tool.type) ?? [],
     requestBytes: Buffer.byteLength(text),
     codeModeOutput: hasToolOutput && JSON.stringify(current).includes("CODE_MODE_OK") });
@@ -58,7 +59,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
     response.end();
     return;
   }
-  if (toolMode && !hasToolOutput) {
+  if (toolMode && body.tool_choice !== "none" && ((!hasToolOutput && probeRequested) || (process.env.MOCK_TOOL_LOOP === "1" && JSON.stringify(body.input?.[lastUser]).includes("LOOP_TRIGGER")))) {
     const call = { id: "fc_" + calls.length, type: "function_call", call_id: "call_" + calls.length,
       name: "route_probe", arguments: "{}", status: "completed" };
     if (provider === "openai") emit("response.output_item.done", { output_index: 0, item: reasoning });
@@ -95,6 +96,7 @@ const bridge = mock("opencode");
 const bridgeBase = await bind(bridge);
 const router = createRouter({ catalog, nativeBase: await bind(native), bridgeBase, openCodeBase: bridgeBase,
   openCodeKey: () => "mock-opencode-key", bridgeKey: () => "mock-internal-key", allowTestOrigins: true,
+  allowDirectResponses: process.env.MOCK_DIRECT_RESPONSES === "1",
   authenticate: (request) => authenticateCodex(request) || (process.env.MOCK_DIRECT_RESPONSES === "1"
     && request.headers.authorization === "Bearer mock-opencode-key") });
 const url = await bind(router);

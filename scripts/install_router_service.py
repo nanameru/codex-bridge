@@ -80,7 +80,9 @@ def wait_for_health(revision):
 
 def install():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--update-if-idle", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--update-if-idle", action="store_true")
+    mode.add_argument("--update-now", action="store_true", help="本人の明示指定で通信中でも今更新します")
     parser.add_argument("--wait-idle", type=int, default=0)
     arguments = parser.parse_args()
     if not 0 <= arguments.wait_idle <= 1800:
@@ -96,7 +98,7 @@ def install():
     if not (root / "unified-model-catalog.json").exists():
         raise SystemExit("先にunified_config.py prepareを実行してください")
     ensure_bridge_key(root)
-    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs"]}
+    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs"]}
     revision = hashlib.sha256(b"".join(modules.values())).hexdigest()
     runtime = root / "router-runtime" / revision
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -123,9 +125,12 @@ def install():
     replace = previous is not None and plistlib.loads(previous) != payload
     if replace:
         old = plistlib.loads(previous)
-        if not arguments.update_if_idle or old.get("Label") != label or old.get("EnvironmentVariables", {}).get("CODEX_HOME") != str(root):
+        if not (arguments.update_if_idle or arguments.update_now) or old.get("Label") != label or old.get("EnvironmentVariables", {}).get("CODEX_HOME") != str(root):
             raise SystemExit("既存の常駐設定が異なります。更新する場合は--update-if-idleを指定してください")
-        wait_for_idle(arguments.wait_idle)
+        if arguments.update_now:
+            print("今すぐrouterを更新します。通信中の要求は切断されることがあります。Codex本体は再起動しません。", flush=True)
+        else:
+            wait_for_idle(arguments.wait_idle)
         atomic_write(path.with_name(path.name + ".bak." + str(time.time_ns())), previous.decode("utf-8"))
     service = f"gui/{os.getuid()}/{label}"
     active = subprocess.run(["launchctl", "print", service], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0

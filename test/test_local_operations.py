@@ -112,6 +112,11 @@ class LocalOperationsTests(unittest.TestCase):
         result = patch_legacy_security.patched_source(source)
         self.assertIn("PRESERVE_REASONING_AND_TIMEOUTS", result)
         self.assertEqual(patch_legacy_security.patched_source(result), result)
+        with_chat_import = result.replace('import http from "node:http";',
+            'import { chatMessages } from "./chat-protocol.mjs";\nimport http from "node:http";')
+        self.assertEqual(patch_legacy_security.patched_source(with_chat_import), with_chat_import)
+        with self.assertRaises(ValueError):
+            patch_legacy_security.patched_source(with_chat_import.replace(patch_legacy_security.IMPORT, ''))
         self.assertNotIn("readOAuthToken", result)
         self.assertNotIn("sqlite3", result)
         for old, _new in patch_legacy_security.REPLACEMENTS:

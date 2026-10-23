@@ -3,7 +3,7 @@ import http from "node:http";
 import { once } from "node:events";
 import test from "node:test";
 import * as zlib from "node:zlib";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { catalogRoutes, createRouter, estimateInputTokens, readOpenCodeKey, routedBody } from "../src/model-router.mjs";
@@ -31,7 +31,9 @@ async function fixture(context, options = {}) {
   const upstream = (provider) => http.createServer(async (request, response) => {
     let text = "";
     for await (const chunk of request) text += chunk;
-    calls.push({ provider, headers: request.headers, body: JSON.parse(text), path: request.url });
+    const body = JSON.parse(text);
+    calls.push({ provider, headers: request.headers, body, path: request.url });
+    if (options.upstreamResponse && await options.upstreamResponse({ provider, request, response, body })) return;
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.write(`event: response.created\ndata: ${JSON.stringify({ provider })}\n\n`);
     response.end("event: response.completed\ndata: {}\n\n");
@@ -41,7 +43,7 @@ async function fixture(context, options = {}) {
   const nativeBase = await listen(native);
   const bridgeBase = await listen(bridge);
   const router = createRouter({ catalog, nativeBase, bridgeBase, openCodeBase: bridgeBase,
-    openCodeKey: () => "fake-opencode-key", allowTestOrigins: true,
+    openCodeKey: () => "fake-opencode-key", allowTestOrigins: true, allowDirectResponses: true,
     authenticate: () => true, bridgeKey: () => "test-internal-key", ...options });
   const base = await listen(router);
   context.after(async () => { await close(router); await close(native); await close(bridge); });
@@ -52,6 +54,38 @@ async function fixture(context, options = {}) {
   });
   return { calls, base, send };
 }
+
+test("remote compaction trigger uses the native model instead of Chat conversion", async context => {
+  const originalInput = [{ role: "user", content: "continue" }, { type: "compaction_trigger" }];
+  const { calls, send } = await fixture(context, { summaryModel: "gpt-test",
+    upstreamResponse: async ({ provider, response, body }) => {
+      if (provider !== "openai" || !body.input.some(item => item.type === "compaction_trigger")) return false;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write("event: response.output_item.done\ndata: " + JSON.stringify({ type: "response.output_item.done",
+        output_index: 0, item: { id: "cmp_test", type: "compaction", encrypted_content: "opaque-summary" } }) + "\n\n");
+      response.end("event: response.completed\ndata: " + JSON.stringify({ type: "response.completed",
+        response: { id: "resp_compact", status: "completed", output: [] } }) + "\n\n");
+      return true;
+    } });
+  const response = await send({ model: "opencode/deepseek-test", stream: true, input: originalInput });
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  assert.match(text, /opaque-summary/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].provider, "openai");
+  assert.equal(calls[0].path, "/v1/responses");
+  assert.equal(calls[0].body.model, "gpt-test");
+  assert.deepEqual(calls[0].body.input, originalInput);
+});
+
+test("remote compaction fails safely without a native summary model", async context => {
+  const { calls, send } = await fixture(context);
+  const response = await send({ model: "opencode/deepseek-test",
+    input: [{ role: "user", content: "continue" }, { type: "compaction_trigger" }] });
+  assert.equal(response.status, 422);
+  assert.match(await response.text(), /remote_compaction_model_required/);
+  assert.equal(calls.length, 0);
+});
 
 test("direct authentication uses API keys only and never extracts login credentials", (context) => {
   const home = mkdtempSync(join(tmpdir(), "direct-auth-"));
@@ -557,7 +591,7 @@ test("a failed or insufficient budget summary never forwards oversized context o
     const response = await send({ model: "deepseek-test", input });
     assert.equal(response.status, kind === "still-large" ? 413 : 502, kind);
     await response.text();
-    assert.equal(calls, 1);
+    assert.equal(calls, kind === "http-error" ? 2 : 1);
     assert.equal(input[0].content.length, 10000);
   }
 });
@@ -672,4 +706,144 @@ test("streams first output before completion even with metrics enabled", async (
     while (!(await reader.read()).done) {}
   }
   assert.equal(metrics[0].outcome, "complete");
+});
+
+// Exercise the production default against every bundled model, including old direct markers.
+test("all OpenCode models share history handoff after switching or resuming", async (context) => {
+  const models = JSON.parse(readFileSync(new URL("../src/models.json", import.meta.url))).models;
+  const allCatalog = { models: [catalog.models[0], ...models.map(({ id }) => ({
+    slug: "opencode/" + id, router_provider: "opencode", router_model: id, router_transport: "responses",
+  }))] };
+  const calls = [];
+  const input = [{ type: "compaction", encrypted_content: "saved-native-history" },
+    { role: "user", content: "resumed request" },
+    { type: "custom_tool_call", id: "ctc_probe", call_id: "probe", name: "exec", input: "read file" },
+    { type: "custom_tool_call_output", call_id: "probe", output: "saved tool result" }];
+  const before = structuredClone(input);
+  const { send, base } = await fixture(context, { catalog: allCatalog, allowDirectResponses: false,
+    summaryModel: "gpt-test", fetcher: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push({ body, headers: options.headers });
+      return Response.json({ status: "completed", output: [{ type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "prior requirements and next actions" }] }] });
+    } });
+  const health = await (await fetch(base.replace(/\/v1$/, "") + "/health")).json();
+  assert.equal(health.history_transport, "chat");
+  assert.deepEqual(health.direct_models, []);
+  for (const { id } of models) {
+    const start = calls.length;
+    const response = await send({ model: "opencode/" + id, input, prompt_cache_key: "resumed-" + id,
+      tools: [{ type: "custom", name: "exec" }] });
+    assert.equal(response.status, 200, id + ": " + await response.text());
+    assert.equal(calls.length - start, 2, id);
+    const forwarded = calls.at(-1);
+    assert.equal(forwarded.body.model, id);
+    assert.equal(forwarded.body.prompt_cache_key, "resumed-" + id);
+    assert.equal(forwarded.headers.authorization, undefined);
+    assert.equal(forwarded.headers["x-codex-bridge-auth"], "test-internal-key");
+    assert.equal(forwarded.body.tools[0].type, "function");
+    assert.equal(forwarded.body.input.at(-2).call_id, "probe");
+    assert.equal(forwarded.body.input.at(-1).output, "saved tool result");
+    assert.match(JSON.stringify(forwarded.body.input), /prior requirements and next actions/);
+    assert.doesNotMatch(JSON.stringify(forwarded.body.input), /saved-native-history/);
+  }
+  assert.deepEqual(input, before);
+});
+
+test("default history handoff stops every route on summary failure", async (context) => {
+  const calls = [];
+  const { send } = await fixture(context, { allowDirectResponses: false, summaryModel: "gpt-test",
+    fetcher: async (url) => { calls.push(url); return new Response("unavailable", { status: 503 }); } });
+  const response = await send({ model: "direct-test", input: [{ type: "compaction", encrypted_content: "saved" }] });
+  assert.equal(response.status, 502);
+  assert.equal(calls.length, 2);
+});
+
+test("image budget counts structured user and parallel tool images without charging Base64 as text", async context => {
+  const image = 'data:image/png;base64,' + 'A'.repeat(3 * 1024 * 1024);
+  const tools = [{type:'function',name:'view_image',parameters:{type:'object'}}];
+  const input = [{role:'user',content:[{type:'input_text',text:'Inspect screenshots'}, {type:'input_image',image_url:image}]},
+    {type:'function_call',call_id:'a',name:'view_image',arguments:'{}'},
+    {type:'function_call',call_id:'b',name:'view_image',arguments:'{}'},
+    {type:'function_call_output',call_id:'a',output:[{type:'input_image',image_url:image}]},
+    {type:'function_call_output',call_id:'b',output:[{type:'input_image',image_url:image}]},
+    {role:'user',content:'Continue'}];
+  const original=structuredClone(input);
+  const {send,calls}=await fixture(context,{opencodeHardLimitTokens:100000,opencodeSoftLimitTokens:90000});
+  const response=await send({model:'deepseek-test',input,tools});
+  assert.equal(response.status,200,await response.text());
+  assert.equal(calls.length,1);assert.deepEqual(calls[0].body.input,input);
+  assert.deepEqual(input,original);assert.deepEqual(calls[0].body.tools,tools);
+  assert.ok(estimateInputTokens({input})>=3*8192);
+  assert.equal(estimateInputTokens(JSON.stringify({input})),estimateInputTokens({input}));
+});
+
+test("image budget never discounts Base64 in plain text, schemas or malformed image sources",()=>{
+  const image='data:image/png;base64,'+'A'.repeat(40000);
+  for(const body of [
+    {input:[{role:'user',content:image}]},
+    {input:[{role:'user',content:[{type:'input_text',text:image}]}]},
+    {tools:[{type:'function',name:'f',parameters:{type:'object',description:image}}]},
+    {input:[{role:'user',content:[{type:'input_image',image_url:'data:image/png;base64,'+'!'.repeat(40000)}]}]},
+  ]) assert.ok(estimateInputTokens(body)>10000);
+});
+
+test("image token reservation does not bypass the raw request byte limit", async context=>{
+ const {send,calls}=await fixture(context,{maxBytes:2048,opencodeHardLimitTokens:20000});
+ const response=await send({model:'deepseek-test',input:[{role:'user',content:[{type:'input_image',image_url:'data:image/png;base64,'+'A'.repeat(3000)}]}]});
+ assert.equal(response.status,413);await response.text();assert.equal(calls.length,0);
+});
+
+test('summary failure codes and bounded retry metadata reach router diagnostics',async context=>{
+ const metrics=[];let calls=0;
+ const {send}=await fixture(context,{summaryModel:'gpt-test',onMetric:m=>metrics.push(m),fetcher:async()=>{
+  calls++;
+  if(calls===1)return Response.json({status:'failed',error:{code:'server_error',message:'PRIVATE_SENTINEL'},output:[]});
+  return Response.json({status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:calls===2?'handoff':'answer'}]}]});
+ }});
+ const response=await send({model:'deepseek-test',input:[{type:'compaction',encrypted_content:'opaque'},{role:'user',content:'latest'}]});
+ assert.equal(response.status,200);assert.match(await response.text(),/answer/);
+ assert.equal(calls,3);assert.equal(metrics[0].summary_attempts,2);assert.equal(metrics[0].summary_error_code,'server_error');
+ assert.equal(metrics[0].summary_upstream_status,200);assert.equal(metrics[0].summary_retrying,false);
+ assert.doesNotMatch(JSON.stringify(metrics),/PRIVATE_SENTINEL|opaque/);
+});
+
+test('summary permanent error code reaches streamed UI without leaking upstream text',async context=>{
+ let calls=0;
+ const {send}=await fixture(context,{summaryModel:'gpt-test',handoffStatusDelayMs:0,fetcher:async()=>{
+  calls++;return new Response('data: '+JSON.stringify({type:'response.failed',response:{status:'failed',error:{code:'invalid_encrypted_content',message:'PRIVATE_SENTINEL'}}})+'\n\n',{headers:{'content-type':'text/event-stream'}});
+ }});
+ const response=await send({model:'deepseek-test',stream:true,input:[{type:'compaction',encrypted_content:'opaque'}]});
+ const text=await response.text();assert.match(text,/invalid_encrypted_content/);assert.doesNotMatch(text,/PRIVATE_SENTINEL/);assert.equal(calls,1);
+});
+
+test("only retries known OpenCode availability failures, preserving isolation and metrics", async (context) => {
+  const forwarded = [];
+  const metrics = [];
+  const { send } = await fixture(context, {
+    onMetric: (metric) => metrics.push(metric),
+    fetcher: async (url, options) => {
+      forwarded.push({ url, options });
+      if (forwarded.length === 2) return new Response("event: response.completed\ndata: {}\n\n", {
+        headers: { "content-type": "text/event-stream" },
+      });
+      return Response.json({ error: { type: "server_error", message: "Upstream request failed: Endpoint is unavailable." } }, { status: 429 });
+    },
+  });
+  const body = { model: "deepseek-test", input: "history", prompt_cache_key: "test-thread" };
+  const recovered = await send(body);
+  assert.equal(recovered.status, 200);
+  await recovered.text();
+  assert.equal(forwarded.length, 2);
+  assert.equal(forwarded[0].url, forwarded[1].url);
+  assert.equal(forwarded[0].options, forwarded[1].options);
+  assert.equal(forwarded[1].options.headers.authorization, undefined);
+  assert.equal(JSON.parse(forwarded[1].options.body).prompt_cache_key, body.prompt_cache_key);
+  const native = await send({ ...body, model: "gpt-test" });
+  assert.equal(native.status, 429);
+  await native.text();
+  assert.equal(forwarded.length, 3);
+  await new Promise((done) => setImmediate(done));
+  assert.equal(metrics[0].upstream_retries, 1);
+  assert.equal(metrics[1].upstream_retries, undefined);
 });

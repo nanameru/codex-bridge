@@ -1,4 +1,5 @@
 import http from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { readFileSync } from "node:fs";
@@ -9,6 +10,8 @@ import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
+import { toolRecoveryPlan, recoverWithAnswer, answerOnlyStream } from "./tool-recovery.mjs";
+import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFailure } from "./handoff-status.mjs";
 import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
@@ -17,7 +20,9 @@ const NATIVE_TOOL_PATHS = new Set(["/v1/images/generations", "/v1/images/edits",
 const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.meta.url)))
   .update(readFileSync(new URL("./tool-adapter.mjs", import.meta.url)))
   .update(readFileSync(new URL("./compaction-handoff.mjs", import.meta.url)))
-  .update(readFileSync(new URL("./local-security.mjs", import.meta.url))).digest("hex");
+  .update(readFileSync(new URL("./local-security.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./handoff-status.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./tool-recovery.mjs", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
 export function catalogRoutes(catalog) {
@@ -46,6 +51,7 @@ export function routedBody(body, route, maxBytes) {
   if (route.provider === "opencode" && route.transport === "responses") return result;
   if (Array.isArray(body.input)) {
     result.input = body.input.filter((item) => {
+      if (isHandoffStatusItem(item)) return false;
       if (item.type !== "reasoning") return true;
       const bridgeReasoning = typeof item.encrypted_content === "string" && item.encrypted_content.startsWith("cxb1:");
       return route.provider === "opencode" ? bridgeReasoning : !bridgeReasoning;
@@ -56,6 +62,7 @@ export function routedBody(body, route, maxBytes) {
 
 function fail(response, status, code, message) {
   if (response.headersSent) {
+    if (failHandoffStatus(response, status, code, message)) return;
     response.destroy();
     return;
   }
@@ -65,14 +72,37 @@ function fail(response, status, code, message) {
 }
 
 export function estimateInputTokens(value) {
-  const bytes = Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
+  // Binary image transfer bytes are not text tokens. Only discount typed image
+  // parts at wire-defined locations, never arbitrary strings or tool schemas.
+  // 8192 is a conservative reservation, not a universal/model-exact tokenizer.
+  let body = value;
+  if (typeof value === "string") {
+    try { body = JSON.parse(value); } catch { /* Plain strings remain text. */ }
+  }
+  let imageTokens = 0;
+  const parts = content => Array.isArray(content) ? content.map(part => {
+    if (part?.type !== "input_image") return part;
+    const source = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+    if (typeof source !== "string" || !(/^https?:\/\//.test(source)
+        || /^data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=\r\n]+$/.test(source))) return part;
+    imageTokens += 8192;
+    return { ...part, image_url: "[image token reservation]" };
+  }) : content;
+  if (body && typeof body === "object" && Array.isArray(body.input)) {
+    body = { ...body, input: body.input.map(item => {
+      if ([undefined, "message"].includes(item.type) && item.role === "user") return { ...item, content: parts(item.content) };
+      if (["function_call_output", "custom_tool_call_output"].includes(item.type)) return { ...item, output: parts(item.output) };
+      return item;
+    }) };
+  }
+  const bytes = Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
   let ascii = 0;
   let nonAscii = 0;
   for (const byte of bytes) {
     if (byte < 0x80) ascii += 1;
     else nonAscii += 1;
   }
-  return Math.ceil(ascii / 4 + nonAscii / 2);
+  return Math.ceil(ascii / 4 + nonAscii / 2) + imageTokens;
 }
 
 function budgetHandoffPlan(body, route, maxBytes, threshold) {
@@ -102,12 +132,61 @@ function envLimit(name, fallback) {
 
 export const readOpenCodeKey = readOpenCodeApiKey;
 
+export async function fetchWithAvailabilityRetry(fetcher, url, options, onRetry = () => {}) {
+  const upstream = await fetcher(url, options);
+  if (![429, 502, 503].includes(upstream.status) || !upstream.body) return upstream;
+  const reader = upstream.clone().body.getReader();
+  const cancel = () => { reader.cancel().catch(() => {}); };
+  let expired = false;
+  const timer = setTimeout(() => { expired = true; cancel(); }, 1000);
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  let text = "";
+  try {
+    const chunks = [];
+    let bytes = 0;
+    for (;;) {
+      options.signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 8192) return upstream;
+      chunks.push(Buffer.from(value));
+    }
+    text = Buffer.concat(chunks).toString("utf8");
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    return upstream;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", cancel);
+    cancel();
+  }
+  options.signal?.throwIfAborted();
+  if (expired) return upstream;
+  let error;
+  try { error = JSON.parse(text).error; } catch { return upstream; }
+  if (error?.type !== "server_error" || error.message !== "Upstream request failed: Endpoint is unavailable.") return upstream;
+  const retryAfter = upstream.headers.get("retry-after");
+  let waitMs = 500;
+  if (retryAfter !== null) {
+    const seconds = /^\d+(?:\.\d+)?$/.test(retryAfter.trim()) ? Number(retryAfter) : NaN;
+    const requested = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
+    if (!Number.isFinite(requested) || requested > 2000) return upstream;
+    waitMs = Math.max(waitMs, requested);
+  }
+  await upstream.body.cancel();
+  await delay(waitMs, undefined, { signal: options.signal });
+  options.signal?.throwIfAborted();
+  onRetry();
+  return fetcher(url, options);
+}
+
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
   codexRoot = defaultCodexRoot(), authenticate = (request) => authenticateCodex(request, codexRoot),
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
-  nativeBase, allowTestOrigins = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
-  summaryModel = "gpt-6.1-sol", onMetric = () => {},
+  nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
+  summaryModel = "gpt-6.1-sol", onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
@@ -138,8 +217,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     if (request.method === "GET" && path === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
+        history_transport: allowDirectResponses ? "model" : "chat",
         direct_header: "x-codex-bridge-direct",
-        direct_models: catalog.models.filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
+        direct_models: (allowDirectResponses ? catalog.models : []).filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
         model_ids: catalog.models.map((model) => model.slug) }));
       return;
     }
@@ -170,6 +250,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     const timer = setTimeout(() => abort.abort(), timeoutMs);
     response.on("close", () => { if (!response.writableEnded) abort.abort(); });
     request.on("aborted", () => abort.abort());
+    let handoffStatus;
     const started = performance.now();
     const metric = { event: "router_request", request_id: randomUUID(), path,
       summary_cache: "unused", summary_ms: 0, stage: "input", received_bytes: 0, response_bytes: 0 };
@@ -219,7 +300,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 400, "unknown_model", "統合カタログにないモデルです。カタログを再生成してください");
         return;
       }
-      if (route.provider === "opencode" && route.transport === "responses" && request.headers["x-codex-bridge-direct"] !== "1") {
+      if (route.provider === "opencode" && route.transport === "responses"
+          && (!allowDirectResponses || request.headers["x-codex-bridge-direct"] !== "1")) {
         route = { ...route, transport: "chat" };
       }
       metric.provider = route.provider;
@@ -231,6 +313,22 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.tools_bytes = Array.isArray(body.tools) ? Buffer.byteLength(JSON.stringify(body.tools)) : 0;
       metric.instructions_bytes = typeof body.instructions === "string" ? Buffer.byteLength(body.instructions) : 0;
       metric.input_bytes = Array.isArray(body.input) ? Buffer.byteLength(JSON.stringify(body.input)) : 0;
+      // Codex remote compaction v2 sends a normal Responses request ending in
+      // compaction_trigger and requires one compaction output item. The Chat
+      // conversion cannot produce that wire item, so use the native summary
+      // model for this request while the surrounding turn keeps its selection.
+      if (route.provider === "opencode" && !directResponses && path === "/v1/responses"
+          && Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger")) {
+        const summaryRoute = routes.get(summaryModel);
+        if (summaryRoute?.provider !== "openai") {
+          fail(response, 422, "remote_compaction_model_required", "remote compactionに使えるOpenAIモデルがカタログにありません");
+          return;
+        }
+        metric.requested_provider = route.provider;
+        metric.remote_compaction_fallback = "openai";
+        route = summaryRoute;
+        body = { ...body, model: summaryModel };
+      }
       if (route.provider === "opencode" && !directResponses && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
         return;
@@ -243,6 +341,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           && body.input.some((item) => item.type === "item_reference")) {
         fail(response, 422, "history_required", "参照IDだけでは履歴を引き継げません。展開した履歴が必要です");
         return;
+      }
+      const requestedOutputLimit = body.max_output_tokens;
+      const recovery = route.provider === "opencode" && !nativeTool ? toolRecoveryPlan(body.input, toolRecoveryOptions) : null;
+      if (recovery) {
+        metric.tool_recovery = recovery.reason;
+        metric.tool_recovery_rounds = recovery.rounds;
+        body = recoverWithAnswer(body);
       }
       const headers = { "content-type": "application/json", accept: nativeTool ? "application/json" : "text/event-stream, application/json" };
       if (route.provider === "opencode" && !directResponses) {
@@ -284,7 +389,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       for (const name of ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "user-agent"]) {
         if (typeof request.headers[name] === "string") summaryHeaders[name] = request.headers[name];
       }
+      handoffStatus = new HandoffStatus(response, { model: body.model,
+        enabled: body.stream === true && route.provider === "opencode" && !directResponses, delayMs: handoffStatusDelayMs });
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
+        diagnose: details => Object.assign(metric, details),
         threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id };
       let compactionExpanded = false;
       if (route.provider === "opencode" && !directResponses && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
@@ -304,7 +412,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           if (extend) metric.budget_compaction_extended = true;
           if (extend && plan.preserveRecentUsers) metric.budget_intra_turn = true;
           body = await expandCompaction(body, { ...handoffOptions, ...(extend ? plan : {}),
-            observe: ({ cache }) => { metric.summary_cache = cache; } });
+            observe: ({ cache }) => { metric.summary_cache = cache; handoffStatus.observe(cache, extend ? "budget" : "handoff"); } });
           compactionExpanded = true;
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
       }
@@ -332,7 +440,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
               const summaryStart = performance.now();
               try {
                 body = await expandCompaction(body, { ...handoffOptions, ...plan,
-                  observe: ({ cache }) => { metric.budget_summary_cache = cache; } });
+                  observe: ({ cache }) => { metric.budget_summary_cache = cache; handoffStatus.observe(cache, "budget"); } });
               } finally { metric.budget_summary_ms = Math.round(performance.now() - summaryStart); }
               routedObject = routedBody(body, route, maxBytes);
               routed = JSON.stringify(routedObject);
@@ -347,6 +455,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 413, "request_too_large", "変換後の入力が大きすぎます");
         return;
       }
+      handoffStatus.ready();
       metric.forwarded_bytes = Buffer.byteLength(routed);
       metric.forwarded_tools_bytes = Array.isArray(routedObject.tools)
         ? Buffer.byteLength(JSON.stringify(routedObject.tools)) : 0;
@@ -368,7 +477,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       metric.stage = "upstream_headers";
       const upstreamStart = performance.now();
-      const upstream = await fetcher(destination.replace(/\/$/, "") + suffix, {
+      const send = route.provider === "opencode"
+        ? (url, options) => fetchWithAvailabilityRetry(fetcher, url, options, () => { metric.upstream_retries = 1; }) : fetcher;
+      const upstream = await send(destination.replace(/\/$/, "") + suffix, {
         method: "POST", headers, body: routed,
         signal: abort.signal, redirect: "manual",
       });
@@ -383,11 +494,17 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 502, "empty_upstream", "転送先から応答がありません");
         return;
       }
+      if (handoffStatus.started && !upstream.ok) {
+        const detail = await readUpstreamFailure(upstream);
+        Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
+        fail(response, upstream.status, "upstream_error", `履歴の準備後、OpenCodeが要求を拒否しました（理由: ${detail.code}、種別: ${detail.type}、詳細取得: ${detail.read}）`);
+        return;
+      }
       const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store" };
       for (const name of ["retry-after", "x-request-id", "x-codex-imagegen-request-id"]) {
         if (upstream.headers.has(name)) responseHeaders[name] = upstream.headers.get(name);
       }
-      response.writeHead(upstream.status, responseHeaders);
+      if (!handoffStatus.started) response.writeHead(upstream.status, responseHeaders);
       metric.stage = "upstream_stream";
       const streamStart = performance.now();
       const meter = new Transform({ transform(chunk, _encoding, callback) {
@@ -398,15 +515,33 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         callback(null, chunk);
       } });
       const customNames = new Set((nativeTool ? [] : body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
-      if (route.provider === "opencode" && !directResponses && upstream.ok) {
-        await pipeline(Readable.fromWeb(upstream.body), meter, toolResponseStream(customNames, responseHeaders["content-type"], maxBytes),
-          response, { signal: abort.signal });
-      } else if (route.provider === "opencode" && directResponses && upstream.ok) {
-        await pipeline(Readable.fromWeb(upstream.body), meter, normalizeResponseStream(responseHeaders["content-type"], maxBytes),
-          response, { signal: abort.signal });
-      } else {
-        await pipeline(Readable.fromWeb(upstream.body), meter, response, { signal: abort.signal });
+      const streams = [Readable.fromWeb(upstream.body), meter];
+      if (recovery && upstream.ok) {
+        const retryLimit = Math.min(requestedOutputLimit ?? 16384, 16384);
+        const initialLimit = body.max_output_tokens;
+        metric.recovery_output_limit = initialLimit;
+        streams.push(answerOnlyStream(responseHeaders["content-type"], maxBytes, {
+          diagnose: details => Object.assign(metric, details),
+          retry: retryLimit > initialLimit ? async () => {
+            abort.signal.throwIfAborted();
+            metric.recovery_length_retries = 1;
+            metric.recovery_retry_output_limit = retryLimit;
+            const retried = await fetcher(destination.replace(/\/$/, "") + suffix, {
+              method: "POST", headers, body: JSON.stringify({ ...routedObject, max_output_tokens: retryLimit }),
+              signal: abort.signal, redirect: "manual",
+            });
+            metric.recovery_retry_upstream_status = retried.status;
+            return retried;
+          } : undefined,
+        }));
       }
+      if (route.provider === "opencode" && !directResponses && upstream.ok) {
+        streams.push(toolResponseStream(customNames, responseHeaders["content-type"], maxBytes));
+      } else if (route.provider === "opencode" && directResponses && upstream.ok) {
+        streams.push(normalizeResponseStream(responseHeaders["content-type"], maxBytes));
+      }
+      if (handoffStatus.started) streams.push(handoffStatus.stream(responseHeaders["content-type"], maxBytes));
+      await pipeline(...streams, response, { signal: abort.signal });
       metric.upstream_stream_ms = Math.round(performance.now() - streamStart);
       metric.stage = "complete";
     } catch (error) {
@@ -414,6 +549,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         error instanceof HandoffError ? "compaction_handoff_failed" : "upstream_error",
         error instanceof HandoffError ? error.message : "転送先への接続に失敗しました");
     } finally {
+      handoffStatus?.dispose();
       clearTimeout(timer);
       metric.total_ms = Math.round(performance.now() - started);
       metric.status = response.statusCode;

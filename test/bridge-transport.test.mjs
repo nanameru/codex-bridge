@@ -27,6 +27,11 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     let text = "";
     for await (const chunk of request) text += chunk;
     calls.push({ body: JSON.parse(text), headers: request.headers });
+    if (calls.at(-1).body.model === "test-quota") {
+      response.writeHead(429, { "content-type": "application/json", "retry-after": "60" });
+      response.end(JSON.stringify({ error: { type: "rate_limit_exceeded" } }));
+      return;
+    }
     if (text.includes("UPSTREAM_PRIVATE_SENTINEL")) {
       response.writeHead(400, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "UPSTREAM_PRIVATE_SENTINEL" } }));
@@ -59,6 +64,10 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     }
     const secured = spawnSync("python3", [join(root, "scripts/patch_legacy_security.py"), script, "--apply"], { encoding: "utf8" });
     assert.equal(secured.status, 0, secured.stderr);
+  }
+  if (process.env.LEGACY_BRIDGE_SOURCE) {
+    const patched = spawnSync("python3", [join(root, "scripts/patch_chat_protocol.py"), script, "--apply"], { encoding: "utf8" });
+    assert.equal(patched.status, 0, patched.stderr);
   }
   const child = spawn(process.execPath, [script], { env: { ...process.env, HOME: directory, CODEX_HOME: directory, PORT: String(port),
     OPENCODE_API_KEY: "dummy-test-token", UPSTREAM_BASE: `http://127.0.0.1:${mockPort}/v1`,
@@ -118,10 +127,64 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.equal(routed.status, 200, await routed.text());
   assert.equal(calls.at(-1).headers.authorization, "Bearer dummy-test-token");
   assert.equal(calls.at(-1).headers["x-codex-bridge-auth"], undefined);
+  // Verify an already-executed Codex custom tool remains a tool result at
+  // the actual Chat boundary, not a fresh instruction or another tool call.
+  const roundtrip = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, { method: "POST", headers: {
+    authorization: "Bearer owner-test-token", "content-type": "application/json",
+  }, body: JSON.stringify({ model: "opencode/deepseek-v4.1-flash", stream: false,
+    tools: [{ type: "custom", name: "exec" }], input: [
+      { role: "user", content: "Check then answer" },
+      { type: "custom_tool_call", id: "ctc_saved", call_id: "saved-call", name: "exec", input: "printf CHECK" },
+      { type: "custom_tool_call_output", call_id: "saved-call", output: "CHECK_RESULT" },
+    ] }) });
+  assert.equal(roundtrip.status, 200, await roundtrip.text());
+  const messages = calls.at(-1).body.messages;
+  const results = messages.filter(message => message.role === "tool");
+  assert.deepEqual(results, [{ role: "tool", tool_call_id: "saved-call", content: "CHECK_RESULT" }]);
+  const toolCalls = messages.flatMap(message => message.tool_calls ?? []);
+  assert.deepEqual(toolCalls, [{ id: "saved-call", type: "function", function: { name: "exec", arguments: '{"input":"printf CHECK"}' } }]);
+  // Large view_image results must survive both real adapters as image blocks,
+  // rather than crossing the token guard as serialized Base64 text.
+  const image = "data:image/png;base64," + "A".repeat(3 * 1024 * 1024);
+  const multimodal = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, { method: "POST", headers: {
+    authorization: "Bearer owner-test-token", "content-type": "application/json",
+  }, body: JSON.stringify({ model: "opencode/deepseek-v4.1-flash", stream: false, input: [
+    {role:"user",content:"Inspect screenshots"},
+    ...["image-a","image-b"].map(call_id=>({type:"function_call",call_id,name:"view_image",arguments:"{}"})),
+    ...["image-b","image-a"].map(call_id=>({type:"function_call_output",call_id,output:[{type:"input_image",image_url:image}]})),
+    {role:"user",content:"Continue"},
+  ] }) });
+  assert.equal(multimodal.status, 200, await multimodal.text());
+  const imageMessages = calls.at(-1).body.messages;
+  assert.deepEqual(imageMessages.filter(m=>m.role==="tool").map(m=>m.tool_call_id), ["image-b","image-a"]);
+  assert.ok(imageMessages.filter(m=>m.role==="tool").every(m=>!m.content.includes("base64")));
+  const imageParts = imageMessages.flatMap(m=>Array.isArray(m.content)?m.content:[]).filter(p=>p.type==="image_url");
+  assert.equal(imageParts.length, 2);
+  assert.ok(imageParts.every(p=>p.image_url.url===image));
   const error = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST", headers: {
     "content-type": "application/json", "x-codex-bridge-auth": internalKey,
   }, body: JSON.stringify({ input: "UPSTREAM_PRIVATE_SENTINEL", stream: false }) });
   assert.equal(error.status, 400, await error.text());
   assert.doesNotMatch(logs, /PRIVATE_TEXT|dummy-test-token|UPSTREAM_PRIVATE_SENTINEL/);
   assert.deepEqual(await readdir(join(directory, "dumps")).catch(() => []), []);
+  const limited = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
+    headers: { "content-type": "application/json", "x-codex-bridge-auth": internalKey },
+    body: JSON.stringify({ model: "test-quota", input: "Hello", stream: false }) });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "60");
+  await limited.text();
+});
+
+test('thread guard preserves authentication and does not rate-limit another chat', { timeout:15000 },async context=>{
+ const directory=await mkdtemp(join(tmpdir(),'bridge-thread-guard-'));
+ const key='a'.repeat(64);await writeFile(join(directory,'bridge-local-token'),key,{mode:0o600});
+ const mock=http.createServer(async(req,res)=>{for await(const chunk of req){};res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:'OK'},finish_reason:'stop'}]}));});
+ const upstreamPort=await listen(mock);const reservation=http.createServer();const port=await listen(reservation);await new Promise(r=>reservation.close(r));
+ const child=spawn(process.execPath,[join(root,'src/codex-bridge.mjs')],{env:{...process.env,HOME:directory,CODEX_HOME:directory,PORT:String(port),MAX_REQ_PER_MIN:'2',MAX_REQ_PER_MIN_GLOBAL:'0',OPENCODE_API_KEY:'dummy-test-token',UPSTREAM_BASE:`http://127.0.0.1:${upstreamPort}/v1`,CODEX_BRIDGE_TEST_UPSTREAM:'1',DISABLE_DUMP:'1',USAGE_HOST:''},stdio:['ignore','pipe','pipe']});
+ context.after(async()=>{if(child.exitCode===null){const done=once(child,'exit');child.kill();await done;}mock.closeAllConnections();await new Promise(r=>mock.close(r));await rm(directory,{recursive:true,force:true});});
+ await new Promise((resolve,reject)=>{let text='';const timer=setTimeout(()=>reject(new Error('startup timeout')),5000);child.stdout.on('data',b=>{text+=b;if(text.includes('codex-bridge listening')){clearTimeout(timer);resolve();}});child.once('exit',()=>{clearTimeout(timer);reject(new Error('bridge exited'));});});
+ const send=thread=>fetch(`http://127.0.0.1:${port}/v1/responses`,{method:'POST',headers:{'content-type':'application/json','x-codex-bridge-auth':key},body:JSON.stringify({model:'deepseek-v4.1-flash',prompt_cache_key:thread,input:'Hello',stream:false})});
+ for(let i=0;i<2;i++){const r=await send('A');assert.equal(r.status,200);await r.text();}
+ const rejected=await send('A');assert.equal(rejected.status,429);assert.ok(Number(rejected.headers.get('retry-after'))>0);await rejected.text();
+ const other=await send('B');assert.equal(other.status,200);await other.text();
 });

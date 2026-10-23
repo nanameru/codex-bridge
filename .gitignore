@@ -12,3 +12,5 @@ __pycache__/
 /router-service-update.lock
 /router-runtime/
 /log/
+
+/test-results/

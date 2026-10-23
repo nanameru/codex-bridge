@@ -1,7 +1,20 @@
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { isHandoffStatusItem } from "./handoff-status.mjs";
 import { normalizeToolCallId } from "./tool-adapter.mjs";
 
 export class HandoffError extends Error {}
+
+const SAFE_FAILURE_CODES = new Set(["server_error", "rate_limit_exceeded", "invalid_prompt", "invalid_request_error",
+  "invalid_encrypted_content", "context_length_exceeded", "insufficient_quota", "invalid_image", "invalid_image_format",
+  "invalid_base64_image", "invalid_image_url", "image_too_large", "failed_to_download_image", "content_filter"]);
+function summaryFailure(code, status, stage, attempts) {
+  const safeCode = SAFE_FAILURE_CODES.has(code) ? code : "unknown_error";
+  const error = new HandoffError(`OpenAIの引き継ぎ要約に失敗しました（${safeCode}、HTTP ${status}、試行${attempts}回）。履歴は保持しています。`);
+  Object.assign(error, { upstreamCode: safeCode, upstreamStatus: status, failureStage: stage, attempts,
+    retryable: safeCode === "server_error" || safeCode === "rate_limit_exceeded" || (stage === "http" && [408,500,502,503,504].includes(status)) });
+  return error;
+}
 
 // Keep the two most recent user turns (or the latest when there are only two).
 // A user may steer while a tool is running, so a user message alone is not
@@ -54,11 +67,11 @@ export function preservedHandoffPrefix(input, prefixEnd, preserveRecentUsers = f
   return input.slice(0, prefixEnd).filter((item) => ["system", "developer"].includes(item.role) || recentUsers.has(item));
 }
 
-export function compactionHandoff({ fetcher, model, maxBytes }) {
+export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 1000 }) {
   const cache = new Map();
   const pending = new Map();
   const summaryLimit = 64 * 1024;
-  return async (body, { destination, headers, signal, threadId, prefixEnd, preserveRecentUsers = false, observe = () => {} }) => {
+  return async (body, { destination, headers, signal, threadId, prefixEnd, preserveRecentUsers = false, observe = () => {}, diagnose = () => {} }) => {
     signal.throwIfAborted();
     if (prefixEnd !== undefined && (!Number.isInteger(prefixEnd) || prefixEnd <= 0 || prefixEnd >= body.input.length)) {
       throw new HandoffError("要約境界が不正です。履歴は変更していません");
@@ -69,7 +82,7 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
     if (prefix.some((item) => item.type === "compaction" && typeof item.encrypted_content !== "string")) {
       throw new HandoffError("圧縮履歴の形式が不正です。元の会話を保持したまま停止しました");
     }
-    const input = prefix.filter((item) => !["system", "developer"].includes(item.role)
+    const input = prefix.filter((item) => !isHandoffStatusItem(item) && !["system", "developer"].includes(item.role)
       && (item.type !== "reasoning" || !item.encrypted_content?.startsWith("cxb1:"))).map(normalizeToolCallId);
     const fingerprint = createHash("sha256").update(destination).update("\0").update(model).update("\0")
       .update(headers.authorization ?? "")
@@ -82,7 +95,8 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
       observe({ cache: job ? "shared" : "miss" });
       if (!job) {
         job = { key: key ?? Symbol(), controller: new AbortController(), waiters: 0 };
-        const generate = async (signal) => {
+        const report = details => { try { diagnose(details); } catch { /* Diagnostics must not affect the request. */ } };
+        const generateOnce = async (signal, attempt) => {
           let responseKind = "unknown";
           try {
             const summaryInput = [...input, { role: "user", content: [{ type: "input_text", text:
@@ -98,7 +112,7 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
             });
             if (!response.ok || !response.body) {
               await response.body?.cancel();
-              throw new HandoffError(`この会話の圧縮履歴をOpenAIで要約できませんでした（HTTP ${response.status}）。他の会話やモデル設定は変更していません`);
+              throw summaryFailure(null, response.status, "http", attempt);
             }
             const chunks = [];
             let size = 0;
@@ -133,7 +147,8 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
             let completed;
             if (terminalEvent) {
               responseKind = "sse";
-              if (terminalEvent.type !== "response.completed") throw new HandoffError("引き継ぎ要約に失敗しました。履歴を破棄せず停止しました");
+              if (terminalEvent.type !== "response.completed") throw summaryFailure(terminalEvent.response?.error?.code ?? terminalEvent.error?.code ?? terminalEvent.code,
+                response.status, "event", attempt);
               completed = terminalEvent.response;
             } else if (response.headers.get("content-type")?.includes("text/event-stream") || /^(event:|data:|:)/.test(text.trimStart())) {
               responseKind = "sse";
@@ -145,7 +160,8 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
                   .map((line) => line.slice(5).trimStart()).join("\n").trim();
                 if (!data || data === "[DONE]") continue;
                 const value = JSON.parse(data);
-                if (value.type === "response.failed" || value.type === "error") throw new HandoffError("引き継ぎ要約に失敗しました。履歴を破棄せず停止しました");
+                if (value.type === "response.failed" || value.type === "error") throw summaryFailure(value.response?.error?.code ?? value.error?.code ?? value.code,
+                  response.status, "event", attempt);
                 if (value.type === "response.completed") completed = value.response;
               }
             } else {
@@ -153,6 +169,7 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
               if (responseKind !== "json") throw new HandoffError("OpenAIから要約用のJSON/SSE応答を受信できませんでした。履歴は保持しています");
               completed = JSON.parse(text);
             }
+            if (completed?.status === "failed") throw summaryFailure(completed.error?.code, response.status, "json", attempt);
             summary = completed?.status === "completed" ? completed.output?.filter((item) => item.type === "message")
               .flatMap((item) => item.content ?? []).filter((part) => part.type === "output_text")
               .map((part) => part.text).join("\n") : null;
@@ -170,6 +187,25 @@ export function compactionHandoff({ fetcher, model, maxBytes }) {
             cache.set(key, summary);
           }
           return summary;
+        };
+        const generate = async signal => {
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            signal.throwIfAborted();
+            try {
+              const result = await generateOnce(signal, attempt);
+              report({ summary_attempts: attempt, summary_retrying: false });
+              return result;
+            } catch (error) {
+              if (signal.aborted) throw signal.reason;
+              const retry = error.retryable === true && attempt < 2;
+              report({ summary_attempts: attempt, summary_retrying: retry,
+                summary_error_code: error.upstreamCode ?? "unknown_error",
+                ...(error.upstreamStatus !== undefined ? { summary_upstream_status: error.upstreamStatus } : {}),
+                ...(error.failureStage ? { summary_failure_stage: error.failureStage } : {}) });
+              if (!retry) throw error;
+              await delay(Math.min(5000, Math.max(0, retryDelayMs)), undefined, { signal });
+            }
+          }
         };
         if (pending.size >= 64) throw new HandoffError("引き継ぎ要約が混雑しています。しばらくして再試行してください");
         job.promise = generate(job.controller.signal).finally(() => {

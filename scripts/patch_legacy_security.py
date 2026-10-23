@@ -35,7 +35,11 @@ REPLACEMENTS = [
 
 def patched_source(source):
     if IMPORT in source:
-        if all(source.count(new) == 1 for _, new in REPLACEMENTS) and source.count(AUTH_REPLACEMENT) == 1:
+        # Other managed patches may insert imports before node:http. Verify
+        # the security import itself, not incidental adjacency to that import.
+        if (source.count(IMPORT) == 1
+                and all(source.count(new) == 1 for _, new in REPLACEMENTS[1:])
+                and source.count(AUTH_REPLACEMENT) == 1):
             return source
         raise ValueError("部分的なセキュリティ更新です。変更しません")
     for old, new in REPLACEMENTS:

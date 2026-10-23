@@ -60,6 +60,17 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [25]
     notes: "413→要約→200、同一prefixキャッシュ、認証分離、予算内無呼出、巨大固定入力/未完了ツール/要約失敗の停止を検証。単一ターン・既存compaction・途中の追加指示の原文保持・並列ツール境界も検証。境界と指示保持はtest/compaction-handoff.test.mjs。"
+  - id: TC-050
+    title: "暴走ガード: 429をスレッド単位にしRetry-Afterを返す"
+    feature: "過負荷保護"
+    scenario: "1分あたりの通過数をスレッド別に数え、別チャットを巻き添えにせず、拒否した要求は数えない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/request-guard.mjs, src/codex-bridge.mjs, scripts/patch_legacy_bridge.py]
+    test_file: test/request-guard.test.mjs
+    issues: [29]
+    notes: "上限到達時の429とRetry-After、拒否の非計上、窓明けの再通過、識別子なしの集約、LRU上限、任意の全体上限を検証。実ブリッジHTTPはtest/bridge-transport.test.mjs、本番legacyはLEGACY_BRIDGE_SOURCEで同じテストを実行。"
   - id: TC-018
     title: "モデル切替と圧縮: ツール項目のIDを型に合わせる"
     feature: "双方向モデル切替"
@@ -266,5 +277,313 @@ cases:
     type: security
     source: [src/local-security.mjs, src/model-router.mjs, src/codex-bridge.mjs, scripts/secure_local.py, scripts/install_router_service.py, scripts/patch_legacy_security.py]
     test_file: test/local-security.test.mjs
-    issues: [41]
+    issues: [41, 51]
     notes: "任意Bearer・不正Host/Origin・危険な認証ファイル・期限切れを拒否。内部鍵/本人認証/APIキーの分離、OpenCode公式origin・リダイレクト拒否を検証。test/test_local_operations.pyで更新復元・冪等性・非課金診断・秘密非出力・個別アイドル待機を確認。旧8788実ソースの一時コピーでも模擬上流により拒否・正常接続・本文非保存を検証。ローカル両サービスへ適用しdoctor全項目true、再適用成功。実推論テストは未実施。"
+  - id: TC-026
+    title: "全モデルの履歴引き継ぎ: 旧直結設定でも全モデルで圧縮履歴を引き継ぐ"
+    feature: "全モデルの履歴引き継ぎ"
+    scenario: "旧直結設定でも全モデルで圧縮履歴を引き継ぐ"
+    status: done
+    priority: medium
+    type: regression
+    source: [src/model-router.mjs, scripts/unified_config.py]
+    test_file: test/model-router.test.mjs
+    issues: [43]
+    notes: "全33モデルの圧縮履歴・ツール結果・会話ID・旧直結マーカー・要約失敗を模擬上流で検証。Python設定テストも全33モデルを確認。実APIへの課金検証は未実施。"
+  - id: TC-028
+    title: "引き継ぎ状態表示: AppとCLIへ待機・完了・失敗を伝える"
+    feature: "引き継ぎ状態表示"
+    scenario: "標準圧縮から外部モデルへ切り替える待ち時間を表示し、cache hitでは省略する"
+    status: done
+    priority: high
+    type: integration
+    source: [src/handoff-status.mjs, src/model-router.mjs, src/compaction-handoff.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [47]
+    notes: "SSE整合・分割UTF-8・JSON・ツール・認証分離・429・失敗・timeout・cancel・共有要求を検証。実Codex app-serverでnative圧縮からの待機/完了通知、cache、resume、失敗停止、上流非送信を確認。Appの実描画/実API推論は未検証。"
+
+  - id: TC-029
+    title: "同一ツールの反復停止と追加要約通知"
+    feature: "ツール反復保護"
+    scenario: "同一完了結果の反復から回答し、ポーリングと有限予算を検証する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-recovery.mjs, src/model-router.mjs, src/handoff-status.mjs]
+    test_file: test/tool-loop.test.mjs
+    issues: [49, 51]
+    notes: "動的な結果・call_id変更・引数順序・並列一式・未完了・新規発言・GPT経路を検証。test/tool-loop-app-e2e.pyで実app-serverの回答復帰を検証。#51で6回停止を置換、64回の有限予算とポーリング除外を追加。追加要約文言はtest/handoff-status.test.mjs。"
+
+  - id: TC-030
+    title: "Chat変換の正常終端と履歴の一意性"
+    feature: "Chatプロトコル"
+    scenario: "打切りのツールを実行せず、重複思考を1回にする"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, scripts/patch_chat_protocol.py, src/codex-bridge.mjs]
+    test_file: test/chat-protocol.test.mjs
+    issues: [51]
+    notes: "JSON/SSE・length/EOF・不正引数・phase・UTF8・思考重複・call_idを検証。test/chat-bridge-app-e2e.pyで実Codex→router→実Chat bridge→模擬APIの27要求を確認。"
+  - id: TC-031
+    title: "稼働後の実モデルで通常応答と回答復帰を検証する"
+    feature: "実API検証"
+    scenario: "GLM通常ツール1回とGLM/HY4の回答復帰"
+    status: todo
+    priority: high
+    type: integration
+    source: [src/chat-protocol.mjs, src/model-router.mjs, src/tool-recovery.mjs]
+    test_file: test/live-tool-recovery.mjs
+    issues: [51]
+    notes: "実APIは明示opt-in、合成入力のみ。前回4要求成功。今回4要求ではGLMの3要求成功、HY4はcompleted・ツール無しだが結果文字列照合失敗。追加HY4の1要求は成功したが初回失敗本文がなく原因未確定。未解明事項が残るためdoneにしない。通常CIは実APIを呼ばない。"
+
+  - id: TC-032
+    title: "入力の型不正を非再試行エラーへ変換する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-01"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-01。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-033
+    title: "choice 0以外のツールを実行しない"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-02"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-02。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-034
+    title: "ツールID変更とdelta型不正を拒否する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-03"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-03。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-035
+    title: "使用量記録の障害が正常完了を壊さない"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-04"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-04。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-036
+    title: "回答復帰で組み込みツールと引数deltaを拒否する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-05"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-05。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-037
+    title: "空回答と矛盾する終端を拒否する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-06"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-06。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-038
+    title: "並列ツールの逆順結果を保持する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-07"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-07。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-039
+    title: "重複終端と不正UTF8を拒否する"
+    feature: "Chat異常系の追加検証"
+    scenario: "EDGE-08"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-recovery.mjs]
+    test_file: test/protocol-edge.test.mjs
+    issues: [51]
+    notes: "EDGE-08。Nodeテスト・ケース別TAPとinventory.jsonに実行結果を記録。"
+
+  - id: TC-040
+    title: "画像Base64を文章トークンと混同せず転送容量制限を維持する"
+    feature: "画像の413誤拒否"
+    scenario: "構造化画像と通常文字列を区別する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [53]
+    notes: "画像を改変・削除せず1枚8192の保守的予約で見積もる。通常テキスト/schema内Base64・不正画像は減算しない。raw bytes上限は別途維持。正確な課金tokenizerではない。"
+
+  - id: TC-041
+    title: "画像のツール結果を文字列化せず並列結果の後へ送る"
+    feature: "ツール画像のChat変換"
+    scenario: "逆順並列結果・混在・未完了・通常文字列"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs]
+    test_file: test/image-tool-results.test.mjs
+    issues: [53]
+    notes: "tool_call_idと本文を保持し、全並列結果の後にラベル付き画像をuser画像ブロックとして渡す。通常文字列をJSON解析し直さない。"
+
+  - id: TC-042
+    title: "大きな画像結果が実routerと実bridgeを画像のまま通る"
+    feature: "画像の413誤拒否"
+    scenario: "実repo/legacy変換から模擬Chat上流へ3MB画像2枚を送る"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/chat-protocol.mjs]
+    test_file: test/bridge-transport.test.mjs
+    issues: [53]
+    notes: "実API課金・顧客画像送信なし。schema/指示/認証/本文非保存の既存試験も継続。"
+
+  - id: TC-043
+    title: "要約の一時障害だけを1回再試行し最大2試行で止める"
+    feature: "履歴引き継ぎ502復帰"
+    scenario: "一時失敗から成功・連続失敗・キャンセル・失敗cache禁止"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [55]
+    notes: "server_error/rate_limit_exceeded、HTTP408/500/502/503/504を最大1回再試行。HTTP400/401/403/429・暗号化不正・不明コードは再試行しない。キャンセル中の追加要求なし。"
+
+  - id: TC-044
+    title: "要約失敗の安全な原因コードが画面とログへ届く"
+    feature: "履歴引き継ぎ502診断"
+    scenario: "永久障害の表示・一時復帰の試行回数・秘匿本文の非出力"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [55]
+    notes: "固定の許可リストで原因を表示。未知の文字列や上流本文は表示/保存しない。test/handoff-app-e2e.pyとMOCK_HANDOFF_TRANSIENT=1でも実app-serverの復帰/2回停止を検証。初回実502の原因は未保存のため未確定。"
+
+  - id: TC-045
+    title: "DeepSeek選択中のremote compactionを安全なOpenAI経路で処理する"
+    feature: "remote compaction v2"
+    scenario: "compaction_triggerをChat変換せず必須itemを返す"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [57]
+    notes: "Codex 0.164.0のcompaction_trigger要求だけをnative summary modelへ振り分ける。通常はcompaction itemを1件返し、設定不足時は422で停止。実app-serverでDeepSeek選択中の圧縮後に同スレッドを続行。test/handoff-app-e2e.pyも参照。"
+
+  - id: TC-046
+    title: "履歴変換・入力削減・共有待機を区別して表示する"
+    feature: "履歴処理ステータス"
+    scenario: "各処理に応じた開始と完了、キャッシュhit非表示、App共通SSE"
+    status: done
+    priority: high
+    type: regression
+    source: [src/handoff-status.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [59]
+    notes: "Node回帰および実Codex app-server+模擬上流で成功・失敗・resumeを確認。実App描画と実モデル品質は別検証。"
+
+  - id: TC-047
+    title: "上流400の安全な理由を終端通知とメトリクスに残す"
+    feature: "上流エラー診断"
+    scenario: "code/type許可リスト・message固定分類・16KiB/1秒制限・機密混入"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/handoff-status.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [59]
+    notes: "400/429、機密が混入した未知コード、不正JSON、巨大本文、無応答で安全な失敗を検証。生の本文は出力しない。"
+
+  - id: TC-048
+    title: "画像detail originalをOpenCode対応のhighへ変換する"
+    feature: "画像入力互換"
+    scenario: "ユーザー画像・並列ツール画像・ネスト画像URL・既存品質指定の保持"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs]
+    test_file: test/image-tool-results.test.mjs
+    issues: [59]
+    notes: "修正前original転送を再現し、high変換と画像データ・履歴の非変更を検証。通常GPT経路はこの変換を通らない。"
+
+  - id: TC-049
+    title: "回答復帰のlength打ち切りをツールなしで1回だけ再生成する"
+    feature: "有限の回答復帰"
+    scenario: "8192/16384予算・明示上限・SSE/JSON・再失敗・ツール拒否・キャンセル"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-recovery.mjs, src/model-router.mjs, src/chat-protocol.mjs]
+    test_file: test/tool-loop.test.mjs
+    issues: [61]
+    notes: "基準commitで失敗を再現。実app-serverと実Chat bridge+模擬上流でlength後の再生成が完了しツール追加なしを検証。実上流での再発は未検証。"
+  - id: TC-027
+    title: "可搬な文章圧縮: 設定の適用と復元で原本と他設定を保護する"
+    feature: "可搬な文章圧縮"
+    scenario: "新規会話で標準local compactionを使い、GPTとOpenCodeでresumeする"
+    status: done
+    priority: high
+    type: integration
+    source: [scripts/portable_history.py, test/codex-portable-e2e.py]
+    test_file: test/test_portable_history.py
+    issues: [45]
+    notes: "19テストで設定preview/apply/restore、全33外部モデルとGPTの選択保持、破損/リンク/不正型/権限/競合/書込失敗/復元/秘密非出力を確認。実Codex＋模擬上流で開始モデル2種×ツール有無の4パターン、各4ターン/2回の文章圧縮と再起動resumeを確認。本人環境へ未適用、実推論未実施。"
+
+  - id: TC-051
+    title: "既知のOpenCode接続先障害のみ1回再試行する"
+    feature: "接続先の一時障害回復"
+    scenario: "利用枠429と区別し同一要求と認証を保持し最大1回復帰する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/upstream-retry.test.mjs
+    issues: [9, 63]
+    notes: "旧PR12の限定再試行を最新認証/要約/length復帰の実装へ統合。HTTPと取消・本文読取上限を検証。"
+
+  - id: TC-052
+    title: "thinking履歴の互換マーカーと推論項目の往復を最新中継で保持する"
+    feature: "thinking履歴互換"
+    scenario: "assistantとtool統合・thinking無効時の非付与・JSON/SSE往復"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/codex-bridge.mjs]
+    test_file: test/bridge-reasoning.test.mjs
+    issues: [27, 63]
+    notes: "旧PR28の4つのHTTPシナリオを本人認証と厳密終端へ移植。obsoleteな旧変換コードは戻さず最新の共有helperで確認。"
