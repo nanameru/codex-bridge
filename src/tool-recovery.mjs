@@ -51,7 +51,7 @@ export function recoverWithAnswer(body) {
       + 'Do not call or simulate more tools. State completed work, remaining work and uncertainty honestly. If observation is still pending, report that status. '
       + 'Keep the report concise, around 1500 characters. Do not repeat promises to check. Never claim an unfinished task succeeded. Reply in the user\'s language.' }] };
 }
-// Recovery allows one bounded length retry. A provider ignoring tools=[]/none cannot
+// Recovery allows one bounded retry for length or empty output. A provider ignoring tools=[]/none cannot
 // dispatch a tool. Buffer only this exceptional response until validation.
 export function answerOnlyStream(contentType, maxBytes, { retry, diagnose = () => {} } = {}) {
   let bytes = 0, chunks = [];
@@ -92,11 +92,12 @@ export function answerOnlyStream(contentType, maxBytes, { retry, diagnose = () =
           if (result?.status !== terminals[0].type.slice('response.'.length)) throw new Error('status');
         } else result = frames[0];
         if (!result || !['completed','failed','incomplete'].includes(result.status)) throw new Error('terminal');
-        if (result.status === 'completed' && !hasAnswer(result.output)) throw new Error('empty answer');
+        const empty = result.error?.reason === 'empty_output' || (result.status === 'completed' && !hasAnswer(result.output));
         const length = result.error?.reason === 'max_output_tokens' || result.incomplete_details?.reason === 'max_output_tokens';
-        diagnose({ recovery_response_status: result.status, ...(length ? { recovery_finish_reason: 'length' } : {}) });
-        if (result.status !== 'completed' && length && retry) {
-          const upstream = await retry();
+        diagnose({ recovery_response_status: empty ? 'failed' : result.status, ...(length ? { recovery_finish_reason: 'length' } : empty ? { recovery_finish_reason: 'empty_output' } : {}) });
+        if ((length || empty) && retry) {
+          const upstream = await retry(length ? 'length' : 'empty_output');
+          if (!upstream) { if (empty && result.status === 'completed') throw new Error('empty answer'); return text; }
           if (!upstream.ok || !upstream.body) { await upstream.body?.cancel(); throw new Error('retry upstream'); }
           const retryType = upstream.headers.get('content-type') ?? 'application/json';
           if (retryType.includes('text/event-stream') !== isSse) { await upstream.body.cancel(); throw new Error('retry format'); }
@@ -105,7 +106,7 @@ export function answerOnlyStream(contentType, maxBytes, { retry, diagnose = () =
           await pipeline(Readable.fromWeb(upstream.body), answerOnlyStream(retryType, maxBytes, { diagnose }),
             new Writable({ write(chunk, _encoding, done) { recovered.push(chunk); done(); } }));
           text = Buffer.concat(recovered).toString('utf8');
-        }
+        } else if (empty && result.status === 'completed') throw new Error('empty answer');
       } catch {
         diagnose({ recovery_response_status: 'failed' });
         text = isSse ? `event: response.failed\ndata: ${JSON.stringify(failure)}\n\n` : JSON.stringify(failure.response);

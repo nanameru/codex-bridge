@@ -587,3 +587,15 @@ cases:
     test_file: test/bridge-reasoning.test.mjs
     issues: [27, 63]
     notes: "旧PR28の4つのHTTPシナリオを本人認証と厳密終端へ移植。obsoleteな旧変換コードは戻さず最新の共有helperで確認。"
+
+  - id: TC-053
+    title: "回答復帰の空応答をツールなしで最大1回再生成する"
+    feature: "空応答の安全な回復"
+    scenario: "空/空白/reasoning-only、lengthと共有する1回予算、明示上限の保持"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/model-router.mjs, src/tool-recovery.mjs]
+    test_file: test/tool-loop.test.mjs
+    issues: [65]
+    notes: "Chat protocolのSSE/JSON回帰、2回目の空/length/不正ツール、明示512tokenを検証。実app-server+実Chat bridge+模擬上流37要求で空応答後の完了と追加ツール0を確認。実モデルでの同一会話再送は未確認。"
