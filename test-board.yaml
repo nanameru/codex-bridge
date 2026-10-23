@@ -493,3 +493,39 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [57]
     notes: "Codex 0.164.0のcompaction_trigger要求だけをnative summary modelへ振り分ける。通常はcompaction itemを1件返し、設定不足時は422で停止。実app-serverでDeepSeek選択中の圧縮後に同スレッドを続行。test/handoff-app-e2e.pyも参照。"
+
+  - id: TC-046
+    title: "履歴変換・入力削減・共有待機を区別して表示する"
+    feature: "履歴処理ステータス"
+    scenario: "各処理に応じた開始と完了、キャッシュhit非表示、App共通SSE"
+    status: done
+    priority: high
+    type: regression
+    source: [src/handoff-status.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [59]
+    notes: "Node回帰および実Codex app-server+模擬上流で成功・失敗・resumeを確認。実App描画と実モデル品質は別検証。"
+
+  - id: TC-047
+    title: "上流400の安全な理由を終端通知とメトリクスに残す"
+    feature: "上流エラー診断"
+    scenario: "code/type許可リスト・message固定分類・16KiB/1秒制限・機密混入"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/handoff-status.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [59]
+    notes: "400/429、機密が混入した未知コード、不正JSON、巨大本文、無応答で安全な失敗を検証。生の本文は出力しない。"
+
+  - id: TC-048
+    title: "画像detail originalをOpenCode対応のhighへ変換する"
+    feature: "画像入力互換"
+    scenario: "ユーザー画像・並列ツール画像・ネスト画像URL・既存品質指定の保持"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs]
+    test_file: test/image-tool-results.test.mjs
+    issues: [59]
+    notes: "修正前original転送を再現し、high変換と画像データ・履歴の非変更を検証。通常GPT経路はこの変換を通らない。"

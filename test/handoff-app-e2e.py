@@ -95,16 +95,16 @@ def run(fail=False):
             notifications, status = turn(server, thread, "opencode/deepseek-v4.1-flash")
             deltas = [(i, m.get("params", {}).get("delta", "")) for i, m in enumerate(notifications)
                       if m.get("method") == "item/agentMessage/delta"]
-            assert any("会話履歴を引き継いでいます" in text for _i, text in deltas), [m.get("method") for m in notifications]
+            assert any("選択中のモデルで使える形式に変換しています" in text for _i, text in deltas), [m.get("method") for m in notifications]
             if fail:
                 assert status == "failed", status
                 assert not any("opencode_OK" in text for _i, text in deltas)
             else:
                 assert status == "completed", status
-                waiting = next(i for i, text in deltas if "引き継いでいます" in text)
+                waiting = next(i for i, text in deltas if "形式に変換しています" in text)
                 answer = next(i for i, text in deltas if "opencode_OK" in text)
                 assert waiting < answer
-                assert any("引き継ぎが完了" in text for _i, text in deltas)
+                assert any("履歴の変換が完了" in text for _i, text in deltas)
                 # The selected model remains OpenCode; a second compaction must
                 # still use the native Responses model for the required item.
                 compact(server, thread)

@@ -197,7 +197,9 @@ export function chatMessages(body, thinkingEnabled = false) {
     const parts = value.flatMap(part => {
       if (part.type === 'input_image' || part.image_url) {
         const url = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url ?? part.data_url;
-        const detail = part.detail ?? part.image_url?.detail;
+        const requestedDetail = part.detail ?? part.image_url?.detail;
+        // Codex Responses supports original; OpenCode Chat accepts auto/low/high.
+        const detail = requestedDetail === 'original' ? 'high' : requestedDetail;
         return url ? [{ type: 'image_url', image_url: { url, ...(detail ? { detail } : {}) } }] : [];
       }
       return part.text || part.refusal ? [{ type: 'text', text: part.text ?? part.refusal }] : [];

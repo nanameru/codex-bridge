@@ -3,7 +3,7 @@ import http from "node:http";
 import { once } from "node:events";
 import test from "node:test";
 import { createRouter, routedBody } from "../src/model-router.mjs";
-import { HandoffStatus, WAIT_TEXT, BUDGET_TEXT, isHandoffStatusItem } from "../src/handoff-status.mjs";
+import { HandoffStatus, WAIT_TEXT, BUDGET_TEXT, isHandoffStatusItem, readUpstreamFailure } from "../src/handoff-status.mjs";
 
 const catalog = { models: [
   { slug: "gpt-test", router_provider: "openai" },
@@ -61,6 +61,7 @@ async function fixture(context, options = {}) {
         if (options.failSummary) return new Response("PRIVATE upstream error", { status: 503 });
         return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "PORTABLE SUMMARY" }] }] });
       }
+      if (options.upstreamError) return Response.json(options.upstreamError, { status: 400 });
       if (options.failUpstream) return new Response("PRIVATE upstream error", { status: 429 });
       if (options.jsonUpstream) return Response.json({ id: "resp_json", status: "completed", output: [
         { id: "msg_json", type: "message", role: "assistant", content: [{ type: "output_text", text: "ANSWER" }] }] });
@@ -103,7 +104,7 @@ test("App/CLI commentary arrives while summary is pending; response IDs, indexes
   assert.equal(done.response.output.length, 2);
   assert.ok(isHandoffStatusItem(done.response.output[0]));
   assert.equal(done.response.output[1].id, "msg_upstream");
-  assert.match(done.response.output[0].content[0].text, /引き継ぎが完了/);
+  assert.match(done.response.output[0].content[0].text, /履歴の変換が完了/);
   assert.equal(stream.find((e) => e.type === "response.output_item.done" && e.item.id === "msg_upstream").output_index, 1);
   assert.equal(calls[1].headers.authorization, undefined);
   assert.doesNotMatch(JSON.stringify(calls[1].body), /native-private-history/);
@@ -173,6 +174,7 @@ test("shared waiters receive independent statuses and one summary", { timeout: 5
   const responses = await Promise.all([send(), send()]);
   const first = await Promise.all(responses.map(prefix));
   assert.equal(calls.length, 1);
+  assert.ok(first.some(x => x.text.includes("別の要求で進行中")));
   gate.resolve();
   const streams = await Promise.all(first.map(async (x) => events(x.text + await remainder(x.reader))));
   assert.notEqual(streams[0][0].response.id, streams[1][0].response.id);
@@ -259,5 +261,52 @@ test("router chooses budget notification for both new summaries and extended com
     assert.doesNotMatch(text, /切り替えるため/);
     assert.equal(calls.filter(c => c.body.instructions?.startsWith("Produce only")).length, 1);
     assert.equal(calls.at(-1).body.input.at(-1).content, "latest");
+  }
+});
+
+
+test("upstream 400 retains safe diagnostics in terminal SSE and metrics, excluding echoed secrets", async context => {
+  const metrics = [];
+  const { gate, send } = await fixture(context, { upstreamError: { error: {
+    code: "invalid_image", type: "invalid_request_error", message: "PRIVATE Bearer sk-secret user text",
+  } }, router: { onMetric: metric => metrics.push(metric) } });
+  const early = await prefix(await send()); gate.resolve();
+  const text = early.text + await remainder(early.reader);
+  assert.equal(events(text).at(-1).type, "response.failed");
+  assert.match(text, /invalid_image/);
+  assert.match(text, /invalid_request_error/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(metrics.at(-1).upstream_error_code, "invalid_image");
+  assert.doesNotMatch(text + JSON.stringify(metrics), /PRIVATE|sk-secret|user text/);
+});
+
+test("diagnostics bound reading and omit unknown fields even when secret-like", async () => {
+  for (const [body, expected] of [
+    ['not JSON PRIVATE', 'invalid_json'],
+    [JSON.stringify({error:{code:'sk-secret',type:'user-private',message:'PRIVATE'}}), 'parsed'],
+    ['x'.repeat(20000), 'too_large'],
+  ]) {
+    const detail = await readUpstreamFailure(new Response(body));
+    assert.equal(detail.read, expected);
+    assert.equal(detail.code, 'unknown_error');
+    assert.doesNotMatch(JSON.stringify(detail), /PRIVATE|sk-secret|user-private/);
+  }
+  let cancelled = false;
+  const detail = await readUpstreamFailure(new Response(new ReadableStream({ cancel() { cancelled = true; } })), { timeoutMs: 10 });
+  assert.equal(detail.read, 'timeout');
+  assert.equal(cancelled, true);
+});
+
+
+test("message-only upstream failures produce fixed reason categories without echoing messages", async () => {
+  for (const [message, expected] of [
+    ['Maximum context length reached: PRIVATE', 'context_length_exceeded'],
+    ['Invalid image: sk-secret', 'invalid_image'],
+    ['tool_call_id mismatch PRIVATE', 'invalid_tool_history'],
+    ['Unknown private failure sk-secret', 'unknown_error'],
+  ]) {
+    const detail = await readUpstreamFailure(Response.json({ error: { message } }));
+    assert.equal(detail.code, expected);
+    assert.doesNotMatch(JSON.stringify(detail), /PRIVATE|sk-secret/);
   }
 });

@@ -13,7 +13,7 @@ test('parallel tool image outputs stay images after all tool results, not JSON B
  assert.ok(messages.filter(m=>m.role==='tool').every(m=>!m.content.includes('base64')));
  assert.ok(messages[2].content.includes('result b'));assert.ok(messages[3].content.includes('result a'));
  const images=messages.at(-1).content.filter(p=>p.type==='image_url');
- assert.equal(images.length,2);assert.equal(images[0].image_url.url,image);assert.equal(images[0].image_url.detail,'original');
+ assert.equal(images.length,2);assert.equal(images[0].image_url.url,image);assert.equal(images[0].image_url.detail,'high');
 });
 
 test('text-only and JSON-string tool results are not reinterpreted as images',()=>{
@@ -31,4 +31,19 @@ test('tool image results retain call association for mixed text and image parall
  assert.deepEqual(messages.map(m=>m.role),['assistant','tool','tool','user']);
  assert.ok(messages.at(-1).content.some(p=>p.text==='Tool result a:'));
  assert.throws(()=>chatMessages({input:input.slice(0,-1)}),/未完了/);
+});
+
+test('Codex original image detail is converted to high for OpenCode, with other details and input intact',()=>{
+ const image='data:image/png;base64,aGVsbG8=';
+ for (const detail of ['original','auto','low','high',undefined]) {
+  for (const nested of [false,true]) {
+   const part=nested?{type:'input_image',image_url:{url:image,...(detail?{detail}:{})}}:{type:'input_image',image_url:image,...(detail?{detail}:{})};
+   const body={input:[{role:'user',content:[part]}]};
+   const before=structuredClone(body);
+   const converted=chatMessages(body,false)[0].content[0].image_url;
+   assert.equal(converted.url,image);
+   assert.equal(converted.detail,detail==='original'?'high':detail);
+   assert.deepEqual(body,before);
+  }
+ }
 });

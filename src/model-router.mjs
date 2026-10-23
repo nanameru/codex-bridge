@@ -10,7 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 import { toolRecoveryPlan, recoverWithAnswer, answerOnlyStream } from "./tool-recovery.mjs";
-import { HandoffStatus, failHandoffStatus, isHandoffStatusItem } from "./handoff-status.mjs";
+import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFailure } from "./handoff-status.mjs";
 import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
@@ -442,8 +442,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       if (handoffStatus.started && !upstream.ok) {
-        await upstream.body.cancel();
-        fail(response, upstream.status, "upstream_error", "履歴の引き継ぎ後、OpenCodeからエラーが返されました");
+        const detail = await readUpstreamFailure(upstream);
+        Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
+        fail(response, upstream.status, "upstream_error", `履歴の準備後、OpenCodeが要求を拒否しました（理由: ${detail.code}、種別: ${detail.type}、詳細取得: ${detail.read}）`);
         return;
       }
       const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store" };
