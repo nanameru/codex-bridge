@@ -449,7 +449,7 @@ node sync-models.mjs    # models.dev から最新情報を取得（画像対応�
 node make-catalog.mjs   # Codex 用カタログと /v1/models 用JSONを生成
 ```
 
-モデルが追加されたら `sync-models.mjs` → `make-catalog.mjs` の順で実行すれば追従します。
+上記は固定カタログを手動生成する場合の手順です。新モデルへの自動追従には、[動的モデルカタログ](docs/live-catalog.md)を使います。OpenCode Go自身の提供モデルAPIを正本として取得し、Codexのモデル一覧と中継ルートを無停止で更新します。
 
 ---
 
