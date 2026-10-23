@@ -62,6 +62,9 @@ test("actual bridge sends model controls and stable conversation sessions to moc
       const patched = spawnSync("python3", [join(root, "scripts/patch_legacy_bridge.py"), script, "--apply"], { encoding: "utf8" });
       assert.equal(patched.status, 0, patched.stderr);
     }
+    // Existing imports do not prove all legacy upgrades (e.g. Retry-After) are installed.
+    const upgraded = spawnSync("python3", [join(root, "scripts/patch_legacy_bridge.py"), script, "--apply"], { encoding: "utf8" });
+    assert.equal(upgraded.status, 0, upgraded.stderr);
     const secured = spawnSync("python3", [join(root, "scripts/patch_legacy_security.py"), script, "--apply"], { encoding: "utf8" });
     assert.equal(secured.status, 0, secured.stderr);
   }
