@@ -345,3 +345,41 @@ test('completed items never bypass terminal status, item validation, or authorit
   assert.doesNotMatch(JSON.stringify(diagnostics),/PRIVATE|unsafe/);
  }
 });
+
+test('pre-response connection timeouts recover once within the shared summary attempt budget', async () => {
+ for (const cause of [{code:'ETIMEDOUT'}, {code:'UND_ERR_CONNECT_TIMEOUT'}, {errors:[{code:'EHOSTUNREACH'},{code:'ETIMEDOUT'}]}]) {
+  let calls=0;const diagnostics=[];
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
+   if(++calls===1)throw new TypeError('PRIVATE HOST',{cause});return completed();
+  }});
+  const result=await expand(body,{...options(),diagnose:d=>diagnostics.push(d)});
+  assert.equal(calls,2);assert.ok(JSON.stringify(result).length>0);
+  assert.ok(diagnostics.some(d=>d.summary_error_code==='summary_connect_timeout'&&d.summary_retrying));
+  assert.doesNotMatch(JSON.stringify(diagnostics),/PRIVATE|EHOSTUNREACH/);
+ }
+});
+
+test('two connection timeouts stop without HTTP status or poisoned cache', async () => {
+ let calls=0;
+ const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
+  if(++calls<=2)throw new TypeError('PRIVATE HOST',{cause:{code:'ETIMEDOUT'}});return completed();
+ }});
+ await assert.rejects(expand(body,options()),e=>{
+  assert.equal(e.attempts,2);assert.equal(e.upstreamCode,'summary_connect_timeout');
+  assert.equal(e.upstreamStatus,undefined);assert.doesNotMatch(e.message,/PRIVATE|HTTP undefined|HTTP 0/);return true;
+ });
+ await expand(body,options());assert.equal(calls,3);
+});
+
+test('connection recovery never retries cancellation, unknown transport errors or failures after HTTP headers', async () => {
+ for(const scenario of ['cancel','unknown','headers']){
+  let calls=0;const abort=new AbortController();
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:1000,fetcher:async()=>{
+   calls++;
+   if(scenario==='headers')return new Response(new ReadableStream({start(c){c.error(new TypeError('PRIVATE',{cause:{code:'ETIMEDOUT'}}));}}));
+   throw new TypeError('PRIVATE',{cause:{code:scenario==='unknown'?'PRIVATE_CODE':'ETIMEDOUT'}});
+  }});
+  await assert.rejects(expand(body,{...options(),signal:abort.signal,diagnose:d=>{if(scenario==='cancel'&&d.summary_retrying)abort.abort();}}));
+  assert.equal(calls,1,scenario);
+ }
+});

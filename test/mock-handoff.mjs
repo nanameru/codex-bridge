@@ -7,6 +7,7 @@ import { createLiveCatalog } from "../src/live-catalog.mjs";
 
 const catalog = JSON.parse(readFileSync(process.env.CODEX_HOME + "/unified-model-catalog.json"));
 const calls = [];
+let connectFailures = 0;
 const mock = (provider) => http.createServer(async (request, response) => {
   let text = "";
   for await (const chunk of request) text += chunk;
@@ -81,12 +82,18 @@ const catalogProvider = process.env.MOCK_LIVE_CATALOG === "1" ? createLiveCatalo
   },
 }) : undefined;
 const router = createRouter({ catalog, nativeBase: await bind(native), bridgeBase: await bind(bridge),
-  allowTestOrigins: true, bridgeKey: () => "fake-internal-key", handoffStatusDelayMs: 20, catalogProvider });
+  allowTestOrigins: true, bridgeKey: () => "fake-internal-key", handoffStatusDelayMs: 20, catalogProvider,
+  fetcher: async (url, init) => {
+    if (process.env.MOCK_HANDOFF_CONNECT_TIMEOUT === "1" && !connectFailures && JSON.parse(init.body).instructions?.startsWith("Produce only")) {
+      connectFailures++; throw new TypeError("fake connection timeout", { cause: { code: "ETIMEDOUT" } });
+    }
+    return fetch(url, init);
+  } });
 const url = await bind(router);
 process.stdout.write(JSON.stringify({ url }) + "\n");
 process.stdin.on("data", data => {
   if (data.toString().trim() === "advance") { advanced = true; process.stdout.write('{"advanced":true}\n'); }
-  else process.stdout.write(JSON.stringify({ calls }) + "\n");
+  else process.stdout.write(JSON.stringify({ calls, connectFailures }) + "\n");
 });
 process.stdin.on("end", () => {
   for (const server of [router, native, bridge]) { server.closeAllConnections(); server.close(); }
