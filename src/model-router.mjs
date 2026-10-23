@@ -105,20 +105,21 @@ export function estimateInputTokens(value) {
   return Math.ceil(ascii / 4 + nonAscii / 2) + imageTokens;
 }
 
-function budgetHandoffPlan(body, route, maxBytes, threshold) {
+function budgetHandoffPlan(body, route, maxBytes, threshold, forwardLimit = maxBytes) {
   const measure = (prefixEnd, preserveRecentUsers) => {
     const input = [...preservedHandoffPrefix(body.input, prefixEnd, preserveRecentUsers), ...body.input.slice(prefixEnd)];
-    return { prefixEnd, preserveRecentUsers, minimum: estimateInputTokens(routedBody({ ...body, input }, route, maxBytes)) };
+    const routed = routedBody({ ...body, input }, route, maxBytes);
+    return { prefixEnd, preserveRecentUsers, minimum: estimateInputTokens(routed), minimumBytes: Buffer.byteLength(JSON.stringify(routed)) };
   };
   if (!Array.isArray(body.input)) return { prefixEnd: -1 };
   const compacted = body.input.findLastIndex((item) => item.type === "compaction");
   const boundary = budgetHistoryBoundary(body.input);
   const preferred = boundary > compacted && boundary > 0 ? measure(boundary, false) : { prefixEnd: -1, minimum: Infinity };
-  if (preferred.minimum <= threshold) return preferred;
+  if (preferred.minimum <= threshold && preferred.minimumBytes <= forwardLimit) return preferred;
   const toolBoundary = budgetToolBoundary(body.input);
   if (toolBoundary > compacted && toolBoundary > 0) {
     const fallback = measure(toolBoundary, true);
-    if (fallback.minimum < preferred.minimum) return fallback;
+    if (fallback.minimum < preferred.minimum || (preferred.minimumBytes > forwardLimit && fallback.minimumBytes < preferred.minimumBytes)) return fallback;
   }
   return preferred;
 }
@@ -186,10 +187,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
+  // Accept bounded history before reducing it to the smaller forwarding budget.
+  maxRequestBytes = maxBytes * 4,
   summaryModel = "gpt-6.1-sol", onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
+  if (![maxBytes, maxRequestBytes].every(n => Number.isSafeInteger(n) && n > 0) || maxRequestBytes < maxBytes) {
+    throw new Error("受信上限は送信上限以上の正の整数で指定してください");
+  }
   const routes = catalogRoutes(catalog);
   const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes });
   const bridge = new URL(bridgeBase);
@@ -217,6 +223,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     if (request.method === "GET" && path === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
+        request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxBytes },
         history_transport: allowDirectResponses ? "model" : "chat",
         direct_header: "x-codex-bridge-direct",
         direct_models: (allowDirectResponses ? catalog.models : []).filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
@@ -260,7 +267,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       for await (const chunk of request) {
         size += chunk.length;
         metric.received_bytes = size;
-        if (size > maxBytes) {
+        if (size > maxRequestBytes) {
+          metric.input_limit_reason = "wire_bytes";
           fail(response, 413, "request_too_large", "入力が大きすぎます");
           return;
         }
@@ -279,10 +287,12 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       try {
-        if (decompress) payload = decompress(payload, { maxOutputLength: maxBytes });
+        if (decompress) payload = decompress(payload, { maxOutputLength: maxRequestBytes });
+        metric.decoded_bytes = payload.length;
         body = JSON.parse(payload.toString("utf8"));
       } catch (error) {
         const oversized = error.code === "ERR_BUFFER_TOO_LARGE";
+        if (oversized) metric.input_limit_reason = "decoded_bytes";
         fail(response, oversized ? 413 : 400, oversized ? "request_too_large" : "invalid_json", oversized ? "入力が大きすぎます" : "JSONが不正です");
         return;
       }
@@ -405,10 +415,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         try {
           const threshold = opencodeSoftLimitTokens > 0
             ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
-          const plan = budgetHandoffPlan(body, route, maxBytes, threshold);
+          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
+          const preview = JSON.stringify(routedBody(body, route, maxRequestBytes));
           const extend = autoBudgetHandoff && opencodeHardLimitTokens > 0
             && plan.prefixEnd > body.input.findLastIndex((item) => item.type === "compaction") + 1
-            && estimateInputTokens(JSON.stringify(routedBody(body, route, maxBytes))) > threshold;
+            && (estimateInputTokens(preview) > threshold || Buffer.byteLength(preview) > maxBytes);
           if (extend) metric.budget_compaction_extended = true;
           if (extend && plan.preserveRecentUsers) metric.budget_intra_turn = true;
           body = await expandCompaction(body, { ...handoffOptions, ...(extend ? plan : {}),
@@ -420,21 +431,23 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       let routed;
       let routedObject;
       try {
-        routedObject = nativeTool ? body : routedBody(body, route, maxBytes);
+        routedObject = nativeTool ? body : routedBody(body, route, maxRequestBytes);
         routed = JSON.stringify(routedObject);
-        if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
+        const initialBytes = Buffer.byteLength(routed);
         const initialTokens = route.provider === "opencode" ? estimateInputTokens(routed) : 0;
         const threshold = opencodeSoftLimitTokens > 0
           ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
         if (route.provider === "opencode" && opencodeHardLimitTokens > 0 && opencodeSoftLimitTokens > opencodeHardLimitTokens) {
           metric.budget_limit_clamped = true;
         }
-        if (route.provider === "opencode" && !directResponses && autoBudgetHandoff && opencodeHardLimitTokens > 0 && initialTokens > threshold && !compactionExpanded) {
+        if (route.provider === "opencode" && !directResponses && autoBudgetHandoff && opencodeHardLimitTokens > 0
+            && (initialTokens > threshold || initialBytes > maxBytes) && !compactionExpanded) {
           metric.budget_initial_tokens = initialTokens;
-          const plan = budgetHandoffPlan(body, route, maxBytes, threshold);
-          const { prefixEnd, minimum } = plan;
+          metric.budget_initial_bytes = initialBytes;
+          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
+          const { prefixEnd, minimum, minimumBytes } = plan;
           if (prefixEnd > 0 && prefixEnd < body.input.length) {
-            if (minimum < opencodeHardLimitTokens && routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization) {
+            if (minimum < opencodeHardLimitTokens && minimumBytes < maxBytes && routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization) {
               metric.stage = "budget_handoff";
               if (plan.preserveRecentUsers) metric.budget_intra_turn = true;
               const summaryStart = performance.now();
@@ -446,12 +459,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
               routed = JSON.stringify(routedObject);
               if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
               metric.budget_recovered = estimateInputTokens(routed) <= opencodeHardLimitTokens;
-            } else metric.budget_recovery_skipped = minimum >= opencodeHardLimitTokens ? "protected_input_too_large"
+            } else metric.budget_recovery_skipped = minimum >= opencodeHardLimitTokens || minimumBytes >= maxBytes ? "protected_input_too_large"
               : !summaryHeaders.authorization ? "summary_auth_missing" : "summary_model_missing";
           } else metric.budget_recovery_skipped = "no_completed_history";
         }
+        if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
       } catch (error) {
         if (!(error instanceof RangeError)) throw error;
+        metric.input_limit_reason = "forwarded_bytes";
         fail(response, 413, "request_too_large", "変換後の入力が大きすぎます");
         return;
       }

@@ -611,3 +611,15 @@ cases:
     test_file: test/compaction-handoff.test.mjs
     issues: [67]
     notes: "修正前の汎用エラーを再現。20単体テスト、全265件成功。実app-server+模擬上流で空要約/上限未完了から各1回の再生成、OpenCode応答、再圧縮、resumeを確認。既存OAuthの短い合成入力でmax_output_tokens受付と正常終端を確認。障害会話そのものの実上流再送は未実施。"
+
+  - id: TC-055
+    title: "画像履歴を受信上限内で受け付け送信容量に合わせて要約する"
+    feature: "受信と送信の容量分離"
+    scenario: "JSON/gzip/zstd、実32MiB超、境界値、最新画像・未完了ツール・指示保持"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [69]
+    notes: "修正前413を再現。合成33MiB画像のgzip入力が要約を経て送信可能。同一ターン完了画像・native compaction後・未完了ツール・直近依頼の保持、保護入力過大・不十分な要約・無効化・GPT経路の停止を確認。受信/展開上限のちょうど/1byte超をJSON/gzip/br/zstdで検証。実会話の外部再送は未実施。"

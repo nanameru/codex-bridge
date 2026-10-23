@@ -308,7 +308,7 @@ test("accepts compressed Codex requests without forwarding encoding headers", as
 });
 
 test("limits decompressed data and rejects unsupported encodings", async (context) => {
-  const { base, calls } = await fixture(context, { maxBytes: 200 });
+  const { base, calls } = await fixture(context, { maxBytes: 200, maxRequestBytes: 200 });
   for (const [encoding, body, status] of [
     ["gzip", zlib.gzipSync(Buffer.from("x".repeat(500))), 413],
     ["constructor", Buffer.from("{}"), 415],
@@ -318,6 +318,149 @@ test("limits decompressed data and rejects unsupported encodings", async (contex
     assert.equal(response.status, status);
   }
   assert.equal(calls.length, 0);
+});
+
+test("byte-heavy image history reaches summarization before the forwarding limit, for plain/gzip/zstd requests", async (context) => {
+  const forwarded = [];
+  const metrics = [];
+  const { base } = await fixture(context, { maxBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
+    opencodeSoftLimitTokens: 100000, opencodeHardLimitTokens: 200000, onMetric: m => metrics.push(m),
+    fetcher: async (url, options) => {
+      const body = JSON.parse(options.body); forwarded.push({ url, body, headers: options.headers });
+      return Response.json({ status: "completed", output: [{ type: "message", content: [
+        { type: "output_text", text: "Completed image work and next steps." },
+      ] }] });
+    } });
+  const latest = [ { role: "user", content: "current work" },
+    { type: "function_call", call_id: "pending", name: "edit", arguments: "{}" },
+    { role: "user", content: "latest request" } ];
+  const input = [{ role: "developer", content: "constraints" },
+    { role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64," + "A".repeat(9000) }] },
+    { role: "assistant", content: "old result" }, ...latest];
+  const body = { model: "deepseek-test", input, tools: [{ type: "function", name: "edit", parameters: { type: "object" } }] };
+  assert.ok(estimateInputTokens(body) < 100000, "byte recovery must not depend on the token trigger");
+  const original = JSON.stringify(body);
+  for (const [encoding, compress] of [["identity", x => x], ["gzip", zlib.gzipSync], ["zstd", zlib.zstdCompressSync]].filter(([, fn]) => fn)) {
+    const response = await fetch(base + "/responses", { method: "POST", headers: {
+      authorization: "Bearer fake-native-token", "content-encoding": encoding,
+    }, body: compress(Buffer.from(original)) });
+    assert.equal(response.status, 200, await response.text());
+  }
+  const summaries = forwarded.filter(c => c.body.model === "gpt-test");
+  const downstream = forwarded.filter(c => c.body.model === "deepseek-test");
+  assert.equal(summaries.length, downstream.length);
+  assert.ok(summaries.length >= 2);
+  for (const c of summaries) { assert.deepEqual(c.body.tools, []); assert.ok(c.body.input.some(i => Array.isArray(i.content) && i.content.some(p => p.type === "input_image"))); }
+  for (const c of downstream) {
+    assert.ok(Buffer.byteLength(JSON.stringify(c.body)) <= 5000);
+    assert.deepEqual(c.body.input.slice(-3), latest);
+    assert.deepEqual(c.body.input[0], input[0]); assert.deepEqual(c.body.tools, body.tools);
+    assert.equal(c.headers.authorization, undefined);
+  }
+  assert.ok(metrics.every(m => m.budget_initial_bytes > 5000 && m.budget_recovered));
+  assert.equal(JSON.stringify(body), original);
+});
+
+test("default limits recover a compressed image history larger than 32 MiB", async context => {
+  const metrics = []; let summaryCalls = 0; let answerCalls = 0;
+  const { base } = await fixture(context, { summaryModel: "gpt-test", onMetric: m => metrics.push(m),
+    fetcher: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (body.model === "gpt-test") {
+        summaryCalls++; assert.deepEqual(body.tools, []);
+      } else { answerCalls++; assert.ok(Buffer.byteLength(init.body) < 32 * 1024 * 1024); }
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Image created; continue the current work." }] }] });
+    } });
+  const body = { model: "deepseek-test", input: [
+    { role: "user", content: "old work" },
+    { type: "function_call", call_id: "image", name: "imagegen", arguments: "{}" },
+    { type: "function_call_output", call_id: "image", output: [{ type: "input_image", image_url: "data:image/png;base64," + "A".repeat(33 * 1024 * 1024) }] },
+    { role: "user", content: "recent" }, { role: "user", content: "latest" },
+  ] };
+  const response = await fetch(base + "/responses", { method: "POST", headers: {
+    authorization: "Bearer fake-native-token", "content-encoding": "gzip",
+  }, body: zlib.gzipSync(Buffer.from(JSON.stringify(body))) });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(summaryCalls, 1); assert.equal(answerCalls, 1);
+  assert.ok(metrics[0].received_bytes < 32 * 1024 * 1024);
+  assert.ok(metrics[0].decoded_bytes > 32 * 1024 * 1024);
+  assert.ok(metrics[0].budget_initial_bytes > 32 * 1024 * 1024);
+  assert.equal(metrics[0].budget_recovered, true);
+});
+
+test("byte recovery keeps protected images, pending tools, schemas and native routing bounded", async context => {
+  for (const scenario of ["latest", "pending", "tools", "disabled", "native", "insufficient", "compacted"]) {
+    const sent = []; const metrics = [];
+    const { send } = await fixture(context, { maxBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
+      autoBudgetHandoff: scenario !== "disabled", onMetric: m => metrics.push(m),
+      fetcher: async (_url, init) => {
+        const body = JSON.parse(init.body); sent.push(body);
+        return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text",
+          text: scenario === "insufficient" ? "x".repeat(4800) : "Summary" }] }] });
+      } });
+    const image = [{ type: "input_image", image_url: "data:image/png;base64," + "A".repeat(9000) }];
+    const body = { model: scenario === "native" ? "gpt-test" : "deepseek-test", input: [
+      { role: "user", content: image }, { role: "assistant", content: "old result" },
+      { role: "user", content: "recent" }, { role: "user", content: "latest" },
+    ] };
+    if (scenario === "latest") body.input.at(-1).content = image;
+    if (scenario === "pending") body.input.splice(1, 0, { type: "function_call", call_id: "pending", name: "edit", arguments: "{}" });
+    if (scenario === "tools") { body.input[0].content = "old"; body.tools = [{ type: "function", name: "tool", description: "x".repeat(9000) }]; }
+    if (scenario === "compacted") body.input.unshift({ type: "compaction", encrypted_content: "native-opaque" });
+    const original = structuredClone(body);
+    const response = await send(body);
+    assert.equal(response.status, scenario === "compacted" ? 200 : 413, scenario + ": " + await response.text());
+    assert.deepEqual(body, original);
+    const answers = sent.filter(b => b.model === "deepseek-test");
+    assert.equal(answers.length, scenario === "compacted" ? 1 : 0, scenario);
+    assert.equal(sent.filter(b => b.instructions?.startsWith("Produce only")).length,
+      ["compacted", "insufficient"].includes(scenario) ? 1 : 0, scenario);
+    if (scenario === "compacted") { assert.equal(metrics[0].budget_compaction_extended, true); assert.ok(Buffer.byteLength(JSON.stringify(answers[0])) < 5000); }
+  }
+});
+
+test("wire and decoded request limits remain finite with inclusive boundaries", async context => {
+  const metrics = [];
+  const { base, calls } = await fixture(context, { maxBytes: 1000, maxRequestBytes: 1000, onMetric: m => metrics.push(m) });
+  const stub = JSON.stringify({ model: "gpt-test", input: "" });
+  const exact = Buffer.from(JSON.stringify({ model: "gpt-test", input: "a".repeat(1000 - Buffer.byteLength(stub)) }));
+  assert.equal(exact.length, 1000);
+  for (const [encoding, compress] of [["identity", x => x], ["gzip", zlib.gzipSync], ["br", zlib.brotliCompressSync], ["zstd", zlib.zstdCompressSync]].filter(([, fn]) => fn)) {
+    const accepted = await fetch(base + "/responses", { method: "POST", headers: { authorization: "Bearer test", "content-encoding": encoding }, body: compress(exact) });
+    assert.equal(accepted.status, 200); await accepted.text();
+    const rejected = await fetch(base + "/responses", { method: "POST", headers: { authorization: "Bearer test", "content-encoding": encoding }, body: compress(Buffer.concat([exact, Buffer.from(" ")])) });
+    assert.equal(rejected.status, 413); await rejected.text();
+  }
+  assert.ok(calls.length >= 3);
+  assert.ok(metrics.filter(m => m.status === 413).every(m => ["wire_bytes", "decoded_bytes"].includes(m.input_limit_reason)));
+  for (const maxRequestBytes of [0, Infinity, NaN, 999]) assert.throws(() => createRouter({ catalog, maxBytes: 1000, maxRequestBytes }));
+});
+
+test("byte recovery can summarize completed image tools within one turn without losing steering or pending calls", async context => {
+  for (const compacted of [false, true]) {
+    const sent = []; const metrics = [];
+    const { send } = await fixture(context, { maxBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
+      onMetric: m => metrics.push(m), fetcher: async (_url, init) => {
+        sent.push(JSON.parse(init.body));
+        return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Previous images created." }] }] });
+      } });
+    const current = [{ type: "function_call", call_id: "pending", name: "edit", arguments: "{}" }, { role: "user", content: "latest steering" }];
+    const body = { model: "deepseek-test", input: [
+      ...(compacted ? [{ type: "compaction", encrypted_content: "native-opaque" }] : []),
+      { role: "developer", content: "constraints" }, { role: "user", content: "original request" },
+      { type: "function_call", call_id: "image", name: "imagegen", arguments: "{}" },
+      { type: "function_call_output", call_id: "image", output: [{ type: "input_image", image_url: "data:image/png;base64," + "A".repeat(9000) }] }, ...current,
+    ] };
+    const response = await send(body);
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(sent.filter(b => b.model === "gpt-test").length, 1);
+    const answer = sent.find(b => b.model === "deepseek-test");
+    assert.deepEqual(answer.input.slice(-2), current);
+    assert.ok(answer.input.some(i => i.role === "user" && i.content === "original request"));
+    assert.ok(answer.input.some(i => i.role === "developer" && i.content === "constraints"));
+    assert.equal(metrics[0].budget_intra_turn, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(answer)) < 5000);
+  }
 });
 
 test("rejects opaque references and a missing summary model without discarding history", async (context) => {
