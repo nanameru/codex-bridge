@@ -93,7 +93,7 @@ export function answerOnlyStream(contentType, maxBytes, { retry, diagnose = () =
         } else result = frames[0];
         if (!result || !['completed','failed','incomplete'].includes(result.status)) throw new Error('terminal');
         const empty = result.error?.reason === 'empty_output' || (result.status === 'completed' && !hasAnswer(result.output));
-        const length = result.error?.reason === 'max_output_tokens' || result.incomplete_details?.reason === 'max_output_tokens';
+        const length = !empty && (result.error?.reason === 'max_output_tokens' || result.incomplete_details?.reason === 'max_output_tokens');
         diagnose({ recovery_response_status: empty ? 'failed' : result.status, ...(length ? { recovery_finish_reason: 'length' } : empty ? { recovery_finish_reason: 'empty_output' } : {}) });
         if ((length || empty) && retry) {
           const upstream = await retry(length ? 'length' : 'empty_output');
