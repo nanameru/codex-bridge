@@ -45,19 +45,22 @@ function assertAnswer(items) {
 }
 for (const model of models) {
   const started = Date.now();
+  let phase = "probe";
   try {
     const thread = 'bridge-smoke-' + randomUUID();
     const first = await ask(model, [user], thread);
     const calls = first.filter(item => item.type === 'function_call');
     assert.equal(calls.length, 1, 'expected exactly one probe'); assert.equal(calls[0].name, 'route_probe');
+    phase = "answer";
     assertAnswer(await ask(model, [user, ...first, output(calls[0].call_id)], thread));
     const repeated = [user, ...Array.from({ length: 3 }, (_, i) => [{ type: 'function_call', call_id: 'probe_' + i,
       name: 'route_probe', arguments: '{}' }, output('probe_' + i)]).flat()];
+    phase = "recovery";
     assertAnswer(await ask(model, repeated, 'bridge-smoke-' + randomUUID()));
     console.log(JSON.stringify({ model, passed: true, scenarios: ['tool_once_then_answer', 'repeated_results_to_answer'], elapsed_ms: Date.now() - started }));
   } catch (error) {
     failures++;
-    console.log(JSON.stringify({ model, passed: false, check: error.code ?? error.name, elapsed_ms: Date.now() - started }));
+    console.log(JSON.stringify({ model, passed: false, phase, check: error.code ?? error.name, elapsed_ms: Date.now() - started }));
   }
 }
 console.log(JSON.stringify({ requests, failures }));

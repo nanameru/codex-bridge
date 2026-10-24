@@ -72,6 +72,10 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     const patched = spawnSync("python3", [join(root, "scripts/patch_chat_protocol.py"), script, "--apply"], { encoding: "utf8" });
     assert.equal(patched.status, 0, patched.stderr);
   }
+  if (process.env.LEGACY_BRIDGE_SOURCE) {
+    const sampling = spawnSync("python3", [join(root, "scripts/patch_sampling.py"), script, "--apply"], { encoding: "utf8" });
+    assert.equal(sampling.status, 0, sampling.stderr);
+  }
   const child = spawn(process.execPath, [script], { env: { ...process.env, HOME: directory, CODEX_HOME: directory, PORT: String(port),
     OPENCODE_API_KEY: "dummy-test-token", UPSTREAM_BASE: `http://127.0.0.1:${mockPort}/v1`,
     CODEX_BRIDGE_TEST_UPSTREAM: "1",
@@ -118,6 +122,15 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.notEqual(sessions[0], sessions[2]);
   assert.ok(sessions.every((session) => /^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(session)));
   assert.ok(calls.every((call) => call.headers["x-codex-bridge-auth"] === undefined));
+  for (const call of calls) {
+    for (const field of ["temperature", "top_p", "frequency_penalty", "presence_penalty"]) assert.equal(field in call.body, false);
+  }
+  const explicit = { temperature: 1, top_p: 0.8, frequency_penalty: 0, presence_penalty: 0 };
+  const sampled = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
+    headers: { "content-type": "application/json", "x-codex-bridge-auth": internalKey },
+    body: JSON.stringify({ model: "kimi-k3.1-pro", input: "Hello", stream: false, ...explicit }) });
+  assert.equal(sampled.status, 200, await sampled.text());
+  for (const [field, value] of Object.entries(explicit)) assert.equal(calls.at(-1).body[field], value);
   // Exercise both real auth boundaries together, not just isolated header assertions.
   await writeFile(join(directory, "auth.json"), JSON.stringify({ tokens: { access_token: "owner-test-token" } }), { mode: 0o600 });
   const router = createRouter({ codexRoot: directory, bridgeBase: `http://127.0.0.1:${port}/v1`,
