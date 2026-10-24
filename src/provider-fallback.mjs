@@ -359,4 +359,3 @@ export class ProviderFallbackState {
     return { provider, available: false, windows: structuredClone(entry.windows) };
   }
 }
-
