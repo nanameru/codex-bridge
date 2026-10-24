@@ -635,7 +635,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const upstreamStart = performance.now();
       const routeFetch = manual
         ? (url, options) => fetchManualProvider(route.provider, url, options, fetcher, maxBytes,
-          chat => estimateInputTokens({ ...chat, messages: undefined, input: chat.messages.map(message => ({ ...message, role: "user",
+          chat => hardLimitTokens <= 0 || estimateInputTokens({ ...chat, messages: undefined, input: chat.messages.map(message => ({ ...message, role: "user",
             content: Array.isArray(message.content) ? message.content.map(part => part.type === "image_url"
               ? { type: "input_image", image_url: part.image_url } : part) : message.content })) }) <= hardLimitTokens)
         : fetcher;

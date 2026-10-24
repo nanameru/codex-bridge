@@ -163,3 +163,10 @@ test('stream取消で上流readerを中止し実行可能toolを確定しない'
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(cancelled,true);
 });
+
+test('既存の入力予算無効化設定でも手動接続が常に413にならない', async t => {
+  const f=await fixture(t,{opencodeHardLimitTokens:0,opencodeSoftLimitTokens:0});
+  const response=await f.send({model:'ollama/deepseek-v4.1-flash',input:'hello'});
+  assert.equal(response.status,200,await response.text());
+  assert.equal(f.calls.length,1);
+});
