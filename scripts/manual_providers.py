@@ -29,7 +29,7 @@ def private_write(path, text):
     fd, name = tempfile.mkstemp(prefix=".manual-provider-", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as out:
-            os.chmod(name, 0o600)
+            os.fchmod(out.fileno(), 0o600)
             out.write(text)
             out.flush()
             os.fsync(out.fileno())
