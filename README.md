@@ -119,7 +119,7 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 - 統合routerはOpenCodeの既知の一時エラー `Endpoint is unavailable.` だけ、出力開始前に
   同じモデル・会話・認証で1回再試行します（通常500ms待機）。`Retry-After`が2秒を超える場合や
   一般の利用枠429・認証エラー・通信切断・出力開始後は再送しません。供給側の障害を必ず直すものでは
-  ありません。再試行でも失敗した場合は元のエラーを返します。モデル/課金先は自動変更しません。
+  ありません。再試行でも失敗した場合は元のエラーを返します。DeepSeekの利用枠切替は下記の別機能です。
 - provider固有のreasoningは転送先に合わせて取り扱い、freeformツールの履歴・応答を変換します。
   ツール項目IDも型に合わせて `fc_` / `ctc_` を変換し、実行を結び付ける `call_id` は保持します。
   旧版が保存した不整合なIDは通常送信・圧縮・引き継ぎ要約の送信時に補正するため、履歴ファイルの編集は不要です。
@@ -581,7 +581,7 @@ RUN_LIVE_ROUTER=1 python3 test/live-compaction-smoke.py --rollout /path/to/rollo
 
 ### Command Code / Ollama CloudのDeepSeekを手動で選ぶ
 
-共通ルーターへ次の2件を追加できます。自動ルーティングは行わず、`/model`で明示的に選びます。
+共通ルーターへ次の2件を追加できます。この2件は`/model`で明示的に選ぶ固定ルートです。
 
 | 一覧の表示 | CodexのモデルID | 公式APIに送るmodel |
 | --- | --- | --- |
@@ -611,7 +611,7 @@ Codex Appは会話を完了してから開き直し、CLIで一覧が古い場�
 `codex resume <thread-id> --no-daemon`で再読込してください。
 動的な一覧更新でも、この2件は既存OpenAI/OpenCodeモデルと共存します。
 
-APIキー未登録は`provider_key_required`で止まります。認証失敗・429・利用枠切れでも他社へ切り替えません。
+この2件の手動指定では、APIキー未登録は`provider_key_required`で止まります。認証失敗・429・利用枠切れでも他社へ切り替えません。
 履歴引き継ぎ/圧縮だけは既存のOpenAI要約経路を使い、その後の通常要求は選択したサービスへ戻ります。
 最新依頼・指示・未完了ツール・schemaを保持し、既存の入力予算と分割要約を適用します。
 新しいChat経路も会話単位の40要求/分の制限と、routerの300秒/転送byte制限に従います。
@@ -733,3 +733,40 @@ Linux なら systemd の `Restart=always` を使います。
 ## ライセンス
 
 MIT
+
+### DeepSeekの利用枠に応じた自動切替
+
+通常の`opencode/deepseek-v4.1-flash`を選ぶと、OpenCode Go → Command Code → Ollama Cloudの順で使います。
+手動プロバイダー有効時の既定動作で、認証情報とカタログのある候補だけが対象です。
+上流から402、または利用枠枯渇を明確に示す429が返った場合だけ、同じ要求を次の候補へ送ります。
+一般の混雑429、ローカル40要求/分ガード、401/403、400、5xx、接続失敗では切り替えません。
+成功応答やツール出力の転送を始めた後も再送しません。切替チェーンは最大3候補です（既存の同一サービスへの一時エラー再試行は別）。
+履歴準備の進捗表示はモデル出力と区別し、圧縮済みの履歴・最新依頼・ツール結果をそのまま引き継ぎます。
+Command Codeで画像入力は提供しないため、画像付き要求の能力制約は固定ルートと同じです。
+
+5時間・週間・月間・期限不明の制限を個別に記録し、重なった制限がすべて期限切れになるまでその提供元を避けます。
+応答の`Retry-After`、resetヘッダー、JSON時刻、`Resets in 2h 41m`などを使います。
+解除時刻がない場合は既定5分のクールダウンです。期限後の**次のリクエスト**で最優先の利用可能な提供元へ戻ります。
+OllamaからOpenCodeへ直接戻ることもできます。バックグラウンド推論・定期ポーリングは行いません。
+全社制限中は`provider_limits_exhausted`と`Retry-After`で停止します。キー未登録候補は飛ばし、認証拒否を枯渇と推測しません。
+
+選択モデル名はOpenCodeのままで、要求ごとの実提供元をメトリクス`provider`と`fallback_providers`へ記録します。
+ヘッダー確定前なら応答の`x-codex-bridge-provider`でも確認できます。
+状態は`CODEX_HOME/provider-fallback-state.json`へ0600・atomic replaceで保存し、再起動後も復元します。
+保存するのは固定の提供元名・窓・期限・HTTP分類だけで、APIキー・会話ID・本文は保存しません。
+保存できない場合はそのプロセス内の制限を維持し、`provider_state_error`を記録します。
+`CODEX_AUTO_PROVIDER_FALLBACK=0`で従来の固定経路に戻せます。
+`CODEX_PROVIDER_FALLBACK_COOLDOWN_MS`は解除時刻不明時の再確認間隔（既定300000ms、最小1000ms）です。
+設定変更は常駐サービスを安全に更新してから有効になります。
+
+各社共通の残量APIはなく、使用額から上限を推測せず、実際の上限応答に基づいて判断します。
+[OpenCode Go](https://opencode.ai/v2/docs/console/go/)はモデル別の月間枠に加え5時間20%・週間50%の枠です。
+[Command Code](https://commandcode.ai/docs/resources/usage-limits)は5時間・7日・請求月の枠で、
+既存top-upがある場合は提供元側で自動消費されることがあります。枠のboostを短期枠へ比例換算しません。
+[Ollamaの現行プラン](https://ollama.com/pricing)は月間credits制で、旧セッション/週間制限は適用されません。
+購入・契約・auto reload設定は変更しません。未課金の402も期限不明として扱うため、購入せずに次の候補か全社停止へ進みます。
+
+```bash
+node --test test/provider-fallback*.test.mjs
+python3 test/provider-fallback-e2e.py
+```

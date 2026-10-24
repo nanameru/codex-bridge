@@ -826,3 +826,39 @@ cases:
     test_file: test/manual-providers-e2e.py
     issues: [89]
     notes: "隔離CODEX_HOME/合成認証/模擬上流12要求で成功。実CLIモデル一覧に2社追加を確認し、選択の混在と認証流出なし。実アカウントの契約/APIキー未確認、実推論は0要求。"
+
+  - id: TC-073
+    title: "提供元の枯渇と解除期限を安全に分類し再起動後も保持する"
+    feature: "DeepSeekの期限付き利用枠管理"
+    scenario: "402・quota429・一般429・重複制限・private状態・期限不明・読取timeout"
+    status: done
+    priority: high
+    type: unit
+    source: [src/provider-fallback.mjs, src/manual-providers.mjs]
+    test_file: test/provider-fallback.test.mjs
+    issues: [91]
+    notes: "秘密や任意の上流コードを保存しない。無期限/異常なresetは短いcooldownへ戻す。"
+
+  - id: TC-074
+    title: "DeepSeekを優先順で切替し最上位へ復帰する"
+    feature: "DeepSeekの自動切替と復帰"
+    scenario: "3社順次切替・月間/週間/短期重複・上位復帰・全社枯渇・固定指定・応答開始後非再送・履歴圧縮"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/provider-fallback.mjs, src/manual-providers.mjs]
+    test_file: test/provider-fallback-router.test.mjs
+    issues: [91]
+    notes: "模擬APIと仮想時計のみ。履歴準備の進捗SSEと実モデル出力を区別し、認証境界を維持する。"
+
+  - id: TC-075
+    title: "実Codexで同一選択のまま自動切替と復帰を確認する"
+    feature: "実CodexのDeepSeek自動切替"
+    scenario: "OpenCode→Command Code→Ollama・圧縮・保存再開・Ollama→OpenCode復帰"
+    status: done
+    priority: high
+    type: e2e
+    source: [src/model-router.mjs, src/provider-fallback.mjs]
+    test_file: test/provider-fallback-e2e.py
+    issues: [91]
+    notes: "隔離CODEX_HOMEと合成認証。模擬上流10要求で圧縮/再開/上位復帰成功。実API0要求。"

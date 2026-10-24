@@ -16,6 +16,8 @@ import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER,
 import { createRequestGuard } from "./request-guard.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
 import { MANUAL_PROVIDERS, manualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
+import { AUTO_DEEPSEEK_MODEL, AUTO_DEEPSEEK_PROVIDERS, ProviderFallbackState,
+  classifyProviderLimit } from "./provider-fallback.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
 // These JSON endpoints belong to OpenAI, irrespective of the selected chat model.
@@ -31,6 +33,7 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./sync-models.mjs", import.meta.url)))
   .update(readFileSync(new URL("./catalog-safety.mjs", import.meta.url)))
   .update(readFileSync(new URL("./manual-providers.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./provider-fallback.mjs", import.meta.url)))
   .update(readFileSync(new URL("./chat-protocol.mjs", import.meta.url)))
   .update(readFileSync(new URL("./upstream-options.mjs", import.meta.url)))
   .update(readFileSync(new URL("./request-guard.mjs", import.meta.url)))
@@ -57,7 +60,8 @@ export function catalogRoutes(catalog) {
     }
     routes.set(model.slug, { provider: model.router_provider, model: model.router_model ?? model.slug,
       ...(model.context_window !== undefined ? { contextWindow: model.context_window } : {}),
-      ...(model.router_transport ? { transport: model.router_transport } : {}) });
+      ...(model.router_transport ? { transport: model.router_transport } : {}),
+      ...(model.router_provider === "opencode" && (model.router_model ?? model.slug) === AUTO_DEEPSEEK_MODEL ? { autoFallback: true } : {}) });
   }
   for (const model of catalog.models) {
     if (model.router_provider === "opencode" && model.router_model && !routes.has(model.router_model)) {
@@ -211,6 +215,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   // Accept bounded history before reducing it to the smaller forwarding budget.
   maxRequestBytes = maxBytes * 4,
   manualProvidersEnabled = false, manualKey = provider => readManualKey(provider, codexRoot),
+  providerFallbackState, providerFallbackFile = join(codexRoot, "provider-fallback-state.json"),
+  providerFallbackCooldownMs = envLimit("CODEX_PROVIDER_FALLBACK_COOLDOWN_MS", 300000),
+  autoProviderFallback = manualProvidersEnabled && process.env.CODEX_AUTO_PROVIDER_FALLBACK !== "0",
   summaryModel = "gpt-6.1-sol", summaryInputLimitTokens = 200000, onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
@@ -220,6 +227,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   }
   if (manualProvidersEnabled) catalog = withManualModels(catalog);
   let routes = catalogRoutes(catalog);
+  let fallbackState = providerFallbackState;
+  const getFallbackState = () => fallbackState ??= new ProviderFallbackState({
+    file: providerFallbackFile, unknownCooldownMs: providerFallbackCooldownMs,
+  });
   const manualGuard = createRequestGuard();
   const commitCatalog = candidate => {
     if (manualProvidersEnabled) candidate = withManualModels(candidate);
@@ -376,6 +387,38 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           && (!allowDirectResponses || request.headers["x-codex-bridge-direct"] !== "1")) {
         route = { ...route, transport: "chat" };
       }
+      const requestedProvider = route.provider;
+      let fallbackRoutes = [];
+      if (autoProviderFallback && route.autoFallback && route.transport !== "responses"
+          && path === "/v1/responses" && !body.input?.some?.(item => item.type === "compaction_trigger")) {
+        const state = getFallbackState();
+        const providerRoutes = new Map([["opencode", route]]);
+        for (const provider of AUTO_DEEPSEEK_PROVIDERS.slice(1)) {
+          const candidate = routes.get(manualSlug(provider));
+          if (candidate && MANUAL_PROVIDERS[candidate.provider]) providerRoutes.set(provider, candidate);
+        }
+        const available = state.candidates(AUTO_DEEPSEEK_PROVIDERS).filter(provider => providerRoutes.has(provider));
+        const ready = available.filter(provider => provider === "opencode"
+          ? Boolean(route.transport === "responses" ? openCodeKey() : bridgeKey())
+          : Boolean(manualKey(provider)));
+        if (!ready.length) {
+          if (!available.length) {
+            const earliest = state.earliestUnblockAt(AUTO_DEEPSEEK_PROVIDERS);
+            if (earliest) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
+            fail(response, 429, "provider_limits_exhausted",
+              "DeepSeek V4.1 Flashの全提供元が利用枠制限中です。制限解除後に同じ要求を再試行してください");
+          } else {
+            fail(response, 503, "auto_provider_credentials_required",
+              "自動切替候補の認証情報を準備してください。選択モデルと会話履歴は保持しています");
+          }
+          return;
+        }
+        route = providerRoutes.get(ready[0]);
+        fallbackRoutes = ready.slice(1).map(provider => providerRoutes.get(provider));
+        metric.requested_provider = requestedProvider;
+        metric.auto_fallback = true;
+        metric.auto_available_providers = ready;
+      }
       metric.provider = route.provider;
       const directResponses = route.provider === "opencode" && route.transport === "responses";
       if (directResponses) metric.transport = "responses";
@@ -424,7 +467,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.tool_recovery_rounds = recovery.rounds;
         body = recoverWithAnswer(body);
       }
-      const headers = { "content-type": "application/json", accept: nativeTool ? "application/json" : "text/event-stream, application/json" };
+      let headers = { "content-type": "application/json", accept: nativeTool ? "application/json" : "text/event-stream, application/json" };
       if (route.provider === "opencode" && !directResponses) {
         const key = bridgeKey();
         if (!key) {
@@ -451,7 +494,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           headers.session_id = session;
         }
       }
-      const manual = MANUAL_PROVIDERS[route.provider];
+      let manual = MANUAL_PROVIDERS[route.provider];
       if (manual) {
         const key = manualKey(route.provider);
         if (!key) {
@@ -633,18 +676,104 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       metric.stage = "upstream_headers";
       const upstreamStart = performance.now();
-      const routeFetch = manual
-        ? (url, options) => fetchManualProvider(route.provider, url, options, fetcher, maxBytes,
+      const makeRouteFetch = candidateRoute => MANUAL_PROVIDERS[candidateRoute.provider]
+        ? (url, options) => fetchManualProvider(candidateRoute.provider, url, options, fetcher, maxBytes,
           chat => hardLimitTokens <= 0 || estimateInputTokens({ ...chat, messages: undefined, input: chat.messages.map(message => ({ ...message, role: "user",
             content: Array.isArray(message.content) ? message.content.map(part => part.type === "image_url"
               ? { type: "input_image", image_url: part.image_url } : part) : message.content })) }) <= hardLimitTokens)
         : fetcher;
-      const send = route.provider === "opencode"
+      // Bind the provider that owns the transformed request. Recovery retries
+      // must continue to use that same provider and conversion path.
+      let routeFetch = makeRouteFetch(route);
+      let send = route.provider === "opencode"
         ? (url, options) => fetchWithAvailabilityRetry(fetcher, url, options, () => { metric.upstream_retries = 1; }) : routeFetch;
-      const upstream = await send(destination.replace(/\/$/, "") + suffix, {
+      let upstream = await send(destination.replace(/\/$/, "") + suffix, {
         method: "POST", headers, body: routed,
         signal: abort.signal, redirect: "manual",
       });
+      if (metric.auto_fallback) {
+        const state = getFallbackState();
+        const conversationId = body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id;
+        const skipped = [];
+        for (;;) {
+          if (upstream.ok || ![402, 429].includes(upstream.status)) break;
+          const limit = await classifyProviderLimit(upstream, {
+            now: state.now(), unknownCooldownMs: providerFallbackCooldownMs,
+          });
+          if (limit) {
+            try { state.recordLimit(route.provider, limit); }
+            catch { metric.provider_state_error = true; } // The in-memory block remains active.
+          }
+          if (!limit) break;
+          metric.provider_limit_provider = route.provider;
+          metric.provider_limit_window = limit.window;
+          metric.provider_limit_reset_known = limit.resetKnown;
+          let next = null;
+          while (fallbackRoutes.length) {
+            const candidateRoute = fallbackRoutes.shift();
+            if (!state.available(candidateRoute.provider)) {
+              skipped.push(candidateRoute.provider);
+              continue;
+            }
+            const candidateManual = MANUAL_PROVIDERS[candidateRoute.provider];
+            const key = candidateManual ? manualKey(candidateRoute.provider) : null;
+            if (!candidateManual || !key) {
+              skipped.push(candidateRoute.provider);
+              continue;
+            }
+            const guarded = manualGuard.check(conversationId);
+            if (!guarded.allowed) {
+              skipped.push(candidateRoute.provider);
+              continue;
+            }
+            const nextObject = { ...routedObject, model: candidateRoute.model };
+            const nextSerialized = JSON.stringify(nextObject);
+            const reserved = Number.isSafeInteger(nextObject.max_output_tokens) && nextObject.max_output_tokens > 0
+              ? nextObject.max_output_tokens : 0;
+            if (hardLimitTokens > 0 && candidateRoute.contextWindow) {
+              hardLimitTokens = Math.min(hardLimitTokens, Math.floor(candidateRoute.contextWindow * 0.95) - reserved);
+              if (hardLimitTokens <= 0 || estimateInputTokens(nextSerialized) > hardLimitTokens) {
+                upstream.body?.cancel().catch(() => {});
+                fail(response, 413, "input_budget_exceeded", "切替先の入力容量を超えます。履歴と選択モデルは保持しています");
+                return;
+              }
+              metric.effective_input_limit_tokens = hardLimitTokens;
+            }
+            const nextHeaders = {
+              "content-type": "application/json", accept: "text/event-stream, application/json",
+              authorization: "Bearer " + key,
+            };
+            next = { route: candidateRoute, destination: candidateManual.base, headers: nextHeaders,
+              routedObject: nextObject, routed: nextSerialized };
+            break;
+          }
+          if (!next) {
+            if (skipped.length) metric.fallback_skipped = skipped;
+            break;
+          }
+          await upstream.body?.cancel().catch(() => {});
+          route = next.route;
+          manual = MANUAL_PROVIDERS[route.provider];
+          destination = next.destination;
+          headers = next.headers;
+          routedObject = next.routedObject;
+          routed = next.routed;
+          routeFetch = makeRouteFetch(route);
+          send = routeFetch;
+          metric.forwarded_bytes = Buffer.byteLength(routed);
+          metric.provider = route.provider;
+          metric.transport = undefined;
+          metric.fallback_providers = [...(metric.fallback_providers ?? []), route.provider];
+          metric.fallback_attempts = (metric.fallback_attempts ?? 0) + 1;
+          metric.stage = "upstream_headers";
+          upstream = await routeFetch(destination.replace(/\/$/, "") + "/responses", {
+            method: "POST", headers, body: routed,
+            signal: abort.signal, redirect: "manual",
+          });
+          metric.upstream_status = upstream.status;
+        }
+        if (skipped.length && !metric.fallback_skipped) metric.fallback_skipped = skipped;
+      }
       metric.upstream_headers_ms = Math.round(performance.now() - upstreamStart);
       metric.upstream_status = upstream.status;
       if (upstream.status >= 300 && upstream.status < 400) {
@@ -656,6 +785,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 502, "empty_upstream", "転送先から応答がありません");
         return;
       }
+      if (metric.auto_fallback && upstream.ok) {
+        const state = getFallbackState();
+        try { state.recordSuccess(route.provider); } catch { metric.provider_state_error = true; }
+      }
       if (handoffStatus.started && !upstream.ok) {
         const detail = await readUpstreamFailure(upstream);
         Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
@@ -663,6 +796,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store" };
+      if (metric.auto_fallback) responseHeaders["x-codex-bridge-provider"] = route.provider;
       for (const name of ["retry-after", "x-request-id", "x-codex-imagegen-request-id"]) {
         if (upstream.headers.has(name)) responseHeaders[name] = upstream.headers.get(name);
       }

@@ -162,7 +162,9 @@ export function failHandoffStatus(response, status, code, message) {
 const SAFE_UPSTREAM_CODES = new Set(["invalid_request_error", "invalid_prompt", "context_length_exceeded",
   "invalid_image", "invalid_image_format", "invalid_base64_image", "invalid_image_url", "image_too_large",
   "failed_to_download_image", "unsupported_parameter", "unsupported_value", "model_not_found",
-  "rate_limit_exceeded", "insufficient_quota", "authentication_error", "permission_error", "server_error",
+  "rate_limit_exceeded", "insufficient_quota", "usage_exceeded", "quota_exceeded", "insufficient_credits",
+  "credits_exhausted", "billing_hard_limit_reached", "monthly_limit_exceeded", "weekly_limit_exceeded",
+  "authentication_error", "permission_error", "server_error",
   "content_filter", "invalid_api_key", "not_found_error", "overloaded_error"]);
 export async function readUpstreamFailure(response, { maxBytes = 16384, timeoutMs = 1000 } = {}) {
   const reader = response.body.getReader();
