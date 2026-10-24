@@ -849,7 +849,7 @@ cases:
     source: [src/model-router.mjs, src/provider-fallback.mjs, src/manual-providers.mjs]
     test_file: test/provider-fallback-router.test.mjs
     issues: [91]
-    notes: "模擬APIと仮想時計のみ。履歴準備の進捗SSEと実モデル出力を区別し、認証境界を維持する。"
+    notes: "模擬APIと仮想時計のみ。候補別のcontext/出力予約を独立計算。履歴準備の進捗SSEと実モデル出力を区別し、認証境界を維持する。"
 
   - id: TC-075
     title: "実Codexで同一選択のまま自動切替と復帰を確認する"

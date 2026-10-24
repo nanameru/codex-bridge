@@ -233,6 +233,7 @@ function parseState(raw) {
 }
 
 function privateDirectory(path) {
+  if (typeof process.getuid !== "function") return false;
   try {
     const info = lstatSync(path);
     return info.isDirectory() && info.uid === process.getuid() && !(info.mode & 0o022);
@@ -316,8 +317,9 @@ export class ProviderFallbackState {
   recordLimit(provider, result) {
     if (!AUTO_DEEPSEEK_PROVIDERS.includes(provider) || !result?.providerLimited) throw new Error("provider_limit_invalid");
     const window = WINDOWS.has(result.window) ? result.window : "unknown";
-    const until = Number.isSafeInteger(result.resetAt) && result.resetAt > this.now() && result.resetAt <= this.now() + MAX_RESET_AHEAD_MS
-      ? result.resetAt : this.now() + this.unknownCooldownMs;
+    const now = this.now();
+    const until = Number.isSafeInteger(result.resetAt) && result.resetAt > now && result.resetAt <= now + MAX_RESET_AHEAD_MS
+      ? result.resetAt : now + this.unknownCooldownMs;
     const entry = this.state.providers[provider] ??= { windows: {} };
     const previous = entry.windows[window];
     entry.windows[window] = {

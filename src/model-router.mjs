@@ -676,11 +676,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       metric.stage = "upstream_headers";
       const upstreamStart = performance.now();
-      const makeRouteFetch = candidateRoute => MANUAL_PROVIDERS[candidateRoute.provider]
+      const makeRouteFetch = (candidateRoute, inputLimit = hardLimitTokens) => MANUAL_PROVIDERS[candidateRoute.provider]
         ? (url, options) => fetchManualProvider(candidateRoute.provider, url, options, fetcher, maxBytes,
-          chat => hardLimitTokens <= 0 || estimateInputTokens({ ...chat, messages: undefined, input: chat.messages.map(message => ({ ...message, role: "user",
+          chat => inputLimit <= 0 || estimateInputTokens({ ...chat, messages: undefined, input: chat.messages.map(message => ({ ...message, role: "user",
             content: Array.isArray(message.content) ? message.content.map(part => part.type === "image_url"
-              ? { type: "input_image", image_url: part.image_url } : part) : message.content })) }) <= hardLimitTokens)
+              ? { type: "input_image", image_url: part.image_url } : part) : message.content })) }) <= inputLimit)
         : fetcher;
       // Bind the provider that owns the transformed request. Recovery retries
       // must continue to use that same provider and conversion path.
@@ -730,21 +730,23 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             const nextSerialized = JSON.stringify(nextObject);
             const reserved = Number.isSafeInteger(nextObject.max_output_tokens) && nextObject.max_output_tokens > 0
               ? nextObject.max_output_tokens : 0;
-            if (hardLimitTokens > 0 && candidateRoute.contextWindow) {
-              hardLimitTokens = Math.min(hardLimitTokens, Math.floor(candidateRoute.contextWindow * 0.95) - reserved);
-              if (hardLimitTokens <= 0 || estimateInputTokens(nextSerialized) > hardLimitTokens) {
+            const candidateLimit = opencodeHardLimitTokens > 0 && candidateRoute.contextWindow
+              ? Math.min(opencodeHardLimitTokens, Math.floor(candidateRoute.contextWindow * 0.95) - reserved)
+              : opencodeHardLimitTokens;
+            if (opencodeHardLimitTokens > 0) {
+              if (candidateLimit <= 0 || estimateInputTokens(nextSerialized) > candidateLimit) {
                 upstream.body?.cancel().catch(() => {});
                 fail(response, 413, "input_budget_exceeded", "切替先の入力容量を超えます。履歴と選択モデルは保持しています");
                 return;
               }
-              metric.effective_input_limit_tokens = hardLimitTokens;
+              metric.effective_input_limit_tokens = candidateLimit;
             }
             const nextHeaders = {
               "content-type": "application/json", accept: "text/event-stream, application/json",
               authorization: "Bearer " + key,
             };
             next = { route: candidateRoute, destination: candidateManual.base, headers: nextHeaders,
-              routedObject: nextObject, routed: nextSerialized };
+              routedObject: nextObject, routed: nextSerialized, inputLimit: candidateLimit };
             break;
           }
           if (!next) {
@@ -758,7 +760,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           headers = next.headers;
           routedObject = next.routedObject;
           routed = next.routed;
-          routeFetch = makeRouteFetch(route);
+          routeFetch = makeRouteFetch(route, next.inputLimit);
           send = routeFetch;
           metric.forwarded_bytes = Buffer.byteLength(routed);
           metric.provider = route.provider;
