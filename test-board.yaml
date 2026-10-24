@@ -778,3 +778,51 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [87, 83]
     notes: "既定20万tokensとcatalog contextの80%の小さい方で、出力予約16384を含めて要約要求を制限する。既存の35MiB画像・plain/gzip/zstd回帰も維持。"
+
+  - id: TC-069
+    title: "Command CodeとOllamaのDeepSeekを同一会話で手動選択する"
+    feature: "DeepSeekの手動プロバイダー切替"
+    scenario: "固定model ID・公式origin・別々のキー・JSON/SSE・custom tool結果・動的一覧"
+    status: done
+    priority: high
+    type: integration
+    source: [src/manual-providers.mjs, src/model-router.mjs]
+    test_file: test/manual-providers.test.mjs
+    issues: [89]
+    notes: "公式モデル一覧でCommand Codeのdeepseek/deepseek-v4.1-flashとcontext100万、Ollama tags/showでdeepseek-v4.1-flashとcontext1048576を確認。OpenAI認証を第三者へ送らず、tool schemaと最新入力を保持。"
+
+  - id: TC-070
+    title: "手動接続の失敗時は自動fallbackせず履歴と選択を保持する"
+    feature: "手動プロバイダーの認証境界と有限実行"
+    scenario: "未設定キー・401/403/429・redirect・不完全stream・取消・入力予算・40要求/分"
+    status: done
+    priority: high
+    type: security
+    source: [src/manual-providers.mjs, src/model-router.mjs, src/request-guard.mjs]
+    test_file: test/manual-providers.test.mjs
+    issues: [89, 87]
+    notes: "未知APIへ転送せず、上流エラー本文のsecret反射を防ぐ。未完了streamは実行可能toolを確定しない。予算内要約後もcustom tool結果を保持し、他会話を巻き込まず要求を制限する。"
+
+  - id: TC-071
+    title: "手動接続のキーとモデル一覧をprivateに設定する"
+    feature: "手動プロバイダーの設定"
+    scenario: "非表示入力・0600・不正入力・symlink・共有root・idempotence・既存設定保持"
+    status: done
+    priority: high
+    type: security
+    source: [scripts/manual_providers.py, src/local-security.mjs, src/manual-providers.mjs]
+    test_file: test/test_manual_providers.py
+    issues: [89]
+    notes: "模擬キーだけを使用。キーを引数/画面へ出さず保存し、元のconfig.tomlとモデル一覧を保持する。無効入力や不正ファイルでは既存キーを維持。"
+
+  - id: TC-072
+    title: "実Codexで4社の一覧と手動切替と圧縮後のモデル保持を確認する"
+    feature: "実Codexの手動切替"
+    scenario: "OpenAI/OpenCode/Command Code/Ollama・同一thread・2圧縮・再指定なし継続・保存再開"
+    status: done
+    priority: high
+    type: e2e
+    source: [src/model-router.mjs, src/manual-providers.mjs, scripts/manual_providers.py]
+    test_file: test/manual-providers-e2e.py
+    issues: [89]
+    notes: "隔離CODEX_HOME/合成認証/模擬上流12要求で成功。実CLIモデル一覧に2社追加を確認し、選択の混在と認証流出なし。実アカウントの契約/APIキー未確認、実推論は0要求。"

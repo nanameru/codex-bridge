@@ -1,0 +1,44 @@
+import http from 'node:http';
+import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { createRouter } from '../src/model-router.mjs';
+import { MANUAL_PROVIDERS } from '../src/manual-providers.mjs';
+const calls=[];
+const servers=[];
+async function listen(server){server.listen(0,'127.0.0.1');await once(server,'listening');servers.push(server);return `http://127.0.0.1:${server.address().port}/v1`;}
+const bases={};
+for(const provider of ['openai','opencode','commandcode','ollama']){
+  bases[provider]=await listen(http.createServer(async(req,res)=>{
+    let text='';for await(const c of req)text+=c;
+    const body=JSON.parse(text);
+    const manual=provider in MANUAL_PROVIDERS;
+    const summary=body.instructions?.startsWith('Produce only');
+    const compact=body.input?.some(i=>i.type==='compaction_trigger');
+    calls.push({provider,model:body.model,summary:Boolean(summary),compact:Boolean(compact),
+      expectedKey:manual?req.headers.authorization===`Bearer fake-${provider}-key`:true,
+      nativeLeak:manual?Boolean(req.headers['chatgpt-account-id']||req.headers['x-codex-bridge-auth']||req.headers.authorization==='Bearer fake-native'):false});
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    if(manual){
+      res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:provider+'_OK'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');return;
+    }
+    const id='resp_'+calls.length;
+    const item=compact?{id:'cmp_test',type:'compaction',encrypted_content:'fake-native-history'}:
+      {id:'msg_'+calls.length,type:'message',role:'assistant',phase:'final_answer',status:'completed',content:[{type:'output_text',text:summary?'HANDOFF':provider+'_OK',annotations:[]}]};
+    const result={id,object:'response',model:body.model,status:'completed',output:[item],usage:{input_tokens:10,output_tokens:2,total_tokens:12}};
+    let n=0;const emit=(type,data)=>res.write('data: '+JSON.stringify({type,sequence_number:n++,...data})+'\n\n');
+    emit('response.created',{response:{...result,status:'in_progress',output:[]}});
+    emit('response.output_item.added',{output_index:0,item});
+    if(!compact){emit('response.content_part.added',{output_index:0,content_index:0,item_id:item.id,part:{type:'output_text',text:'',annotations:[]}});
+      emit('response.output_text.delta',{output_index:0,content_index:0,item_id:item.id,delta:item.content[0].text});}
+    emit('response.output_item.done',{output_index:0,item});emit('response.completed',{response:result});res.end();
+  }));
+}
+const catalog=JSON.parse(readFileSync(process.env.CODEX_HOME+'/unified-model-catalog.json'));
+const router=createRouter({catalog,manualProvidersEnabled:true,nativeBase:bases.openai,bridgeBase:bases.opencode,allowTestOrigins:true,
+  bridgeKey:()=> 'fake-bridge-key',manualKey:p=>`fake-${p}-key`,fetcher:async(url,init)=>{
+    for(const[p,config]of Object.entries(MANUAL_PROVIDERS))if(url.startsWith(config.base+'/'))return fetch(url.replace(config.base,bases[p]),init);
+    return fetch(url,init);
+  }});
+process.stdout.write(JSON.stringify({url:await listen(router)})+'\n');
+process.stdin.on('data',()=>process.stdout.write(JSON.stringify({calls})+'\n'));
+process.stdin.on('end',()=>{for(const server of servers){server.closeAllConnections();server.close();}});
