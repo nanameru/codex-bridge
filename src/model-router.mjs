@@ -448,7 +448,20 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         diagnose: details => Object.assign(metric, details),
         threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id };
       let compactionExpanded = false;
-      if (route.provider === "opencode" && !directResponses && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
+      if (route.provider === "opencode" && !directResponses && autoBudgetHandoff) {
+        const reused = expandCompaction.reuseBudget(body, handoffOptions);
+        if (reused) {
+          const preview = JSON.stringify(routedBody(reused, route, maxRequestBytes));
+          const threshold = opencodeSoftLimitTokens > 0
+            ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
+          if (threshold > 0 && estimateInputTokens(preview) <= threshold && Buffer.byteLength(preview) <= maxBytes) {
+            body = reused;
+            metric.budget_prefix_cache = "hit";
+            compactionExpanded = true;
+          }
+        }
+      }
+      if (!compactionExpanded && route.provider === "opencode" && !directResponses && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
         if (routes.get(summaryModel)?.provider !== "openai") {
           fail(response, 422, "summary_model_required", "圧縮履歴の引き継ぎに使うOpenAIモデルがカタログにありません");
           return;

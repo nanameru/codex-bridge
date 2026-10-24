@@ -95,16 +95,19 @@ def run(fail=False):
             notifications, status = turn(server, thread, "opencode/deepseek-v4.1-flash")
             deltas = [(i, m.get("params", {}).get("delta", "")) for i, m in enumerate(notifications)
                       if m.get("method") == "item/agentMessage/delta"]
-            assert any("選択中のモデルで使える形式に変換しています" in text for _i, text in deltas), [m.get("method") for m in notifications]
+            progress = [(i, m.get("params", {}).get("delta", "")) for i, m in enumerate(notifications)
+                        if m.get("method") == "item/reasoning/summaryTextDelta"]
+            assert not any("履歴を変換中" in text for _i, text in deltas)
+            assert any("履歴を変換中" in text for _i, text in progress), [m.get("method") for m in notifications]
             if fail:
                 assert status == "failed", status
                 assert not any("opencode_OK" in text for _i, text in deltas)
             else:
                 assert status == "completed", status
-                waiting = next(i for i, text in deltas if "形式に変換しています" in text)
+                waiting = next(i for i, text in progress if "履歴を変換中" in text)
                 answer = next(i for i, text in deltas if "opencode_OK" in text)
                 assert waiting < answer
-                assert any("履歴の変換が完了" in text for _i, text in deltas)
+                assert any("履歴変換完了" in text for _i, text in progress)
                 # The selected model remains OpenCode; a second compaction must
                 # still use the native Responses model for the required item.
                 compact(server, thread)
@@ -133,7 +136,7 @@ def run(fail=False):
             assert not any(c["compactionTrigger"] and c["provider"] == "opencode" for c in calls), calls
             assert all(c["hasNativeAuth"] == (c["provider"] == "openai") for c in calls)
             assert not any(c["statusReplayed"] for c in calls), calls
-            print("Codex App/CLI app-server: native encrypted compaction preserved; delayed handoff commentary -> "
+            print("Codex App/CLI app-server: native encrypted compaction preserved; delayed handoff progress -> "
                   + ("failure, no OpenCode request" if fail else "answer; cache hit hidden; resume succeeds")
                   + f"; summary attempts={expected_summaries}; auth isolated; bridge status not replayed")
         finally:

@@ -678,7 +678,7 @@ test("recovers an over-budget history once, preserving schemas, current work and
   }
   assert.deepEqual(input, original);
   assert.equal(metrics[0].budget_recovered, true);
-  assert.equal(metrics[1].budget_summary_cache, "hit");
+  assert.equal(metrics[1].budget_prefix_cache, "hit");
   assert.doesNotMatch(JSON.stringify(metrics), /fake-native-token|latest request|Old decisions|Keep project/);
 });
 
@@ -989,4 +989,30 @@ test("only retries known OpenCode availability failures, preserving isolation an
   await new Promise((done) => setImmediate(done));
   assert.equal(metrics[0].upstream_retries, 1);
   assert.equal(metrics[1].upstream_retries, undefined);
+});
+
+test("appended short turns reuse a budget prefix until its growing suffix needs compaction", async context => {
+  const calls = [], metrics = [];
+  const { send } = await fixture(context, { summaryModel: "gpt-test", opencodeSoftLimitTokens: 1000,
+    opencodeHardLimitTokens: 1400, onMetric: metric => metrics.push(metric), fetcher: async (_url, options) => {
+      const body = JSON.parse(options.body); calls.push(body);
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text",
+        text: body.instructions?.startsWith("Produce only") ? "Old decisions retained." : "OK" }] }] });
+    } });
+  const input = [{ role: "developer", content: "keep constraints" }, { role: "user", content: "x".repeat(10000) },
+    { role: "assistant", content: "done" }, { role: "user", content: "recent" }, { role: "user", content: "latest" }];
+  for (let index = 0; index < 6; index++) {
+    if (index) input.push({ role: "assistant", content: "answer" }, { role: "user", content: "short followup " + index });
+    const response = await send({ model: "deepseek-test", input, prompt_cache_key: "short-turn-thread" });
+    assert.equal(response.status, 200); await response.text();
+    assert.equal(calls.at(-1).input.at(-1).content, input.at(-1).content);
+  }
+  assert.equal(calls.filter(call => call.instructions?.startsWith("Produce only")).length, 1);
+  assert.equal(metrics.filter(metric => metric.budget_prefix_cache === "hit").length, 5);
+  input.push({ role: "assistant", content: "new tool evidence " + "z".repeat(10000) },
+    { role: "user", content: "review evidence" }, { role: "assistant", content: "reviewed" }, { role: "user", content: "continue" });
+  const response = await send({ model: "deepseek-test", input, prompt_cache_key: "short-turn-thread" });
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(calls.filter(call => call.instructions?.startsWith("Produce only")).length, 2);
+  assert.equal(calls.at(-1).input.at(-1).content, "continue");
 });

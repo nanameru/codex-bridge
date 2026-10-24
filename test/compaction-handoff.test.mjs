@@ -2,6 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { budgetHistoryBoundary, budgetToolBoundary, compactionHandoff } from "../src/compaction-handoff.mjs";
 
+test("budget prefix reuse preserves appended turns and isolates thread, auth, history and compaction", async () => {
+  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 100000,
+    fetcher: async () => Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "prior work" }] }] }) });
+  const options = { destination: "https://native.invalid/v1", headers: { authorization: "Bearer a", "chatgpt-account-id": "a" },
+    threadId: "thread-a", signal: new AbortController().signal };
+  const body = { input: [{ role: "developer", content: "directives" }, { role: "user", content: "old" },
+    { role: "assistant", content: "old answer" }, { role: "user", content: "recent" }, { role: "user", content: "latest" }] };
+  await expand(body, { ...options, prefixEnd: 3 });
+  const next = { input: [...body.input, { type: "function_call", call_id: "call_pending", name: "read", arguments: "{}" },
+    { role: "user", content: "steering while read runs" }] };
+  const original = structuredClone(next);
+  assert.deepEqual(expand.reuseBudget(next, options).input.slice(-4), next.input.slice(-4));
+  assert.deepEqual(next, original);
+  for (const changed of [{ threadId: "thread-b" }, { threadId: "" }, { destination: "https://other.invalid/v1" },
+    { headers: { ...options.headers, authorization: "Bearer b" } }, { headers: { ...options.headers, "chatgpt-account-id": "b" } }]) {
+    assert.equal(expand.reuseBudget(next, { ...options, ...changed }), null);
+  }
+  const edited = structuredClone(next); edited.input[1].content = "edited branch";
+  assert.equal(expand.reuseBudget(edited, options), null);
+  assert.equal(expand.reuseBudget({ input: [...next.input, { type: "compaction", encrypted_content: "new" }, { role: "user", content: "continue" }] }, options), null);
+  const aborted = new AbortController(); aborted.abort();
+  assert.throws(() => expand.reuseBudget(next, { ...options, signal: aborted.signal }), /abort/i);
+});
+
 test("intra-turn boundaries keep parallel and unresolved tool exchanges intact", () => {
   const call = (call_id) => ({ type: "function_call", call_id, name: "read", arguments: "{}" });
   const output = (call_id) => ({ type: "function_call_output", call_id, output: "done" });

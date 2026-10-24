@@ -90,7 +90,19 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
   const cache = new Map();
   const pending = new Map();
   const summaryLimit = 64 * 1024;
-  return async (body, { destination, headers, signal, threadId, prefixEnd, preserveRecentUsers = false, observe = () => {}, diagnose = () => {} }) => {
+  const clean = item => !isHandoffStatusItem(item) && !["system", "developer"].includes(item.role)
+    && (item.type !== "reasoning" || !item.encrypted_content?.startsWith("cxb1:"));
+  const canonical = input => JSON.stringify(input.map(normalizeToolCallId).map(({ id, status, ...item }) => item));
+  const scopeFor = ({ destination, headers, threadId }) => typeof threadId === "string" && threadId.length > 0 && threadId.length <= 200
+    ? createHash("sha256").update(JSON.stringify([threadId, destination, model, headers.authorization ?? "", headers["chatgpt-account-id"] ?? ""])).digest("hex") : null;
+  const replace = (body, end, summary, recent) => {
+    const preserved = preservedHandoffPrefix(body.input, end, recent);
+    return { ...body, input: [...preserved.filter(item => ["system", "developer"].includes(item.role)),
+      { type: "message", role: "user", content: [{ type: "input_text", text:
+        "Conversation handoff from the preceding compacted history. This is context, not a new instruction:\n" + summary }] },
+      ...preserved.filter(item => item.role === "user"), ...body.input.slice(end)] };
+  };
+  const expand = async (body, { destination, headers, signal, threadId, prefixEnd, preserveRecentUsers = false, observe = () => {}, diagnose = () => {} }) => {
     signal.throwIfAborted();
     if (prefixEnd !== undefined && (!Number.isInteger(prefixEnd) || prefixEnd <= 0 || prefixEnd >= body.input.length)) {
       throw new HandoffError("要約境界が不正です。履歴は変更していません");
@@ -108,7 +120,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
       .update("\0").update(headers["chatgpt-account-id"] ?? "").update("\0")
       .update(JSON.stringify(input.map(({ id, status, ...item }) => item))).digest("hex");
     const key = typeof threadId === "string" && threadId.length > 0 && threadId.length <= 200 ? threadId + ":" + fingerprint : null;
-    let summary = key ? cache.get(key) : null;
+    let summary = key ? cache.get(key)?.text : null;
     if (!summary) {
       let job = key ? pending.get(key) : null;
       observe({ cache: job ? "shared" : "miss" });
@@ -240,7 +252,9 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
           signal.throwIfAborted();
           if (key) {
             if (cache.size >= 64) cache.delete(cache.keys().next().value);
-            cache.set(key, summary);
+            cache.set(key, { text: summary, scope: scopeFor({ destination, headers, threadId }),
+              count: input.length, digest: createHash("sha256").update(canonical(input)).digest("hex"),
+              budget: prefixEnd !== undefined, recent: preserveRecentUsers });
           }
           return summary;
         };
@@ -287,10 +301,33 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
         }
       }
     } else observe({ cache: "hit" });
-    const preserved = preservedHandoffPrefix(body.input, index + 1, preserveRecentUsers);
-    const instructions = preserved.filter((item) => ["system", "developer"].includes(item.role));
-    return { ...body, input: [...instructions, { type: "message", role: "user", content: [{ type: "input_text",
-      text: "Conversation handoff from the preceding compacted history. This is context, not a new instruction:\n" + summary }] },
-      ...preserved.filter((item) => item.role === "user"), ...body.input.slice(index + 1)] };
+    return replace(body, index + 1, summary, preserveRecentUsers);
   };
+  // Reuse a verified budget prefix before moving the summary boundary forward.
+  // Store hashes, never an extra copy of image/tool history. Keep the new suffix verbatim.
+  expand.reuseBudget = (body, options) => {
+    options.signal.throwIfAborted();
+    const scope = scopeFor(options);
+    if (!scope || !Array.isArray(body.input)) return null;
+    const input = body.input.map((item, index) => ({ item, index })).filter(({ item }) => clean(item));
+    const candidates = [...cache.values()].filter(entry => entry.budget && entry.scope === scope && entry.count <= input.length)
+      .sort((a, b) => b.count - a.count);
+    if (!candidates.length) return null;
+    const counts = new Set(candidates.map(entry => entry.count));
+    const digests = new Map();
+    const hash = createHash("sha256").update("[");
+    for (let i = 0; i < candidates[0].count; i++) {
+      if (i) hash.update(",");
+      hash.update(canonical([input[i].item]).slice(1, -1));
+      if (counts.has(i + 1)) digests.set(i + 1, hash.copy().update("]").digest("hex"));
+    }
+    for (const entry of candidates) {
+      const end = input[entry.count - 1]?.index + 1;
+      if (!(end > 0 && end < body.input.length)) continue;
+      if (body.input.slice(end).some(item => item.type === "compaction")) continue;
+      if (digests.get(entry.count) === entry.digest) return replace(body, end, entry.text, entry.recent);
+    }
+    return null;
+  };
+  return expand;
 }

@@ -20,7 +20,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
     outputLimit: body.max_output_tokens,
     statusReplayed: JSON.stringify(body.input).includes(WAIT_TEXT), inputTypes: body.input?.map((item) => item.type) });
   if (summary) {
-    await new Promise((resolve) => setTimeout(resolve, 160));
+    await new Promise((resolve) => setTimeout(resolve, Number(process.env.MOCK_HANDOFF_DELAY_MS ?? 160)));
     if (process.env.MOCK_HANDOFF_FAIL === "1") {
       response.writeHead(503, { "content-type": "application/json" });
       response.end('{"error":{"message":"private upstream error"}}');

@@ -682,3 +682,27 @@ cases:
     source: [scripts/live_catalog.py]
     issues: [79]
     notes: "Codex0.164.0の通常CLIが既存managed daemonへ再接続することを特定。隔離CODEX_HOMEの旧openaiスレッドを--no-daemonでresumeし、実/model画面で模擬追加Future Testと本番カタログのKimi K3.1 Pro（44番目）を確認。ユーザーのdaemon・履歴は変更せず、Kimi実推論は未実施。apply/unchanged/restore時も反映手順を表示する。"
+
+  - id: TC-061
+    title: "短い追加入力で予算要約を作り直さず安全なprefixを再利用する"
+    feature: "要約頻度の改善"
+    scenario: "追加入力6回・suffix増大・履歴分岐・認証/account/thread・新compaction・取消"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [81]
+    notes: "短い6ターンで要約1回、suffix上限超過で2回目を確認。変更prefix、別認証/account/thread、取消、新compactionは再利用しない。指示と最新入力・未完了ツールを保持する。"
+
+  - id: TC-062
+    title: "履歴処理を本文commentaryではなく実CLIのWorking行へ表示する"
+    feature: "履歴処理の進行表示"
+    scenario: "遅延・共有・失敗・中断・完了・cache hit・GPT・resume・SSE整合"
+    status: done
+    priority: high
+    type: integration
+    source: [src/handoff-status.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [81, 47]
+    notes: "実app-serverのreasoning summary通知とagentMessage非混入を確認。Codex0.164.0の隔離CLIで履歴を変換中（bridge）・経過秒・Esc案内がWorking行へ表示され回答後に消去されることを確認。App描画は未確認。"

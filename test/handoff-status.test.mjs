@@ -88,7 +88,7 @@ async function fixture(context, options = {}) {
   return { gate, calls, send, summarySignal: () => summarySignal };
 }
 
-test("App/CLI commentary arrives while summary is pending; response IDs, indexes and sequences remain consistent", { timeout: 5000 }, async (context) => {
+test("App/CLI progress arrives while summary is pending; response IDs, indexes and sequences remain consistent", { timeout: 5000 }, async (context) => {
   const { gate, calls, send } = await fixture(context);
   const response = await send();
   const first = await prefix(response);
@@ -104,9 +104,11 @@ test("App/CLI commentary arrives while summary is pending; response IDs, indexes
   assert.equal(done.response.output.length, 2);
   assert.ok(isHandoffStatusItem(done.response.output[0]));
   assert.equal(done.response.output[1].id, "msg_upstream");
-  assert.match(done.response.output[0].content[0].text, /履歴の変換が完了/);
+  assert.match(done.response.output[0].summary[0].text, /履歴変換完了/);
   assert.equal(stream.find((e) => e.type === "response.output_item.done" && e.item.id === "msg_upstream").output_index, 1);
   assert.equal(calls[1].headers.authorization, undefined);
+  assert.equal(done.response.output[0].type, "reasoning");
+  assert.equal(stream.some(e => e.type === "response.output_text.delta" && e.item_id === done.response.output[0].id), false);
   assert.doesNotMatch(JSON.stringify(calls[1].body), /native-private-history/);
 });
 
@@ -174,7 +176,7 @@ test("shared waiters receive independent statuses and one summary", { timeout: 5
   const responses = await Promise.all([send(), send()]);
   const first = await Promise.all(responses.map(prefix));
   assert.equal(calls.length, 1);
-  assert.ok(first.some(x => x.text.includes("別の要求で進行中")));
+  assert.ok(first.some(x => x.text.includes("共有処理の完了待ち")));
   gate.resolve();
   const streams = await Promise.all(first.map(async (x) => events(x.text + await remainder(x.reader))));
   assert.notEqual(streams[0][0].response.id, streams[1][0].response.id);
@@ -240,7 +242,7 @@ test("budget summary reports input reduction rather than a model switch", async 
   status.dispose();
   const output = events(stream);
   assert.ok(output.some(e => e.delta === BUDGET_TEXT));
-  assert.ok(output.some(e => e.delta?.includes("履歴の要約が完了")));
+  assert.ok(output.some(e => e.delta?.includes("要約完了")));
   assert.doesNotMatch(stream, /切り替えるため/);
   assert.doesNotMatch(WAIT_TEXT, /切り替えるため/);
 });
@@ -257,7 +259,7 @@ test("router chooses budget notification for both new summaries and extended com
     const first = await prefix(response, BUDGET_TEXT);
     gate.resolve();
     const text = first.text + await remainder(first.reader);
-    assert.match(text, /履歴の要約が完了/);
+    assert.match(text, /要約完了/);
     assert.doesNotMatch(text, /切り替えるため/);
     assert.equal(calls.filter(c => c.body.instructions?.startsWith("Produce only")).length, 1);
     assert.equal(calls.at(-1).body.input.at(-1).content, "latest");
