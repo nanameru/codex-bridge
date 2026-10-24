@@ -41,12 +41,12 @@ export function catalogRoutes(catalog) {
     if (model.router_transport !== undefined && !["responses", "chat"].includes(model.router_transport)) {
       throw new Error("モデルのAPI形式が不正です");
     }
-    if (model.router_provider === "opencode" && model.context_window !== undefined
+    if (model.context_window !== undefined
         && (!Number.isSafeInteger(model.context_window) || model.context_window < 1024 || model.context_window > 10000000)) {
       throw new Error("モデルのコンテキスト上限が不正です");
     }
     routes.set(model.slug, { provider: model.router_provider, model: model.router_model ?? model.slug,
-      ...(model.router_provider === "opencode" && model.context_window !== undefined ? { contextWindow: model.context_window } : {}),
+      ...(model.context_window !== undefined ? { contextWindow: model.context_window } : {}),
       ...(model.router_transport ? { transport: model.router_transport } : {}) });
   }
   for (const model of catalog.models) {
@@ -200,7 +200,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
   // Accept bounded history before reducing it to the smaller forwarding budget.
   maxRequestBytes = maxBytes * 4,
-  summaryModel = "gpt-6.1-sol", onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
+  summaryModel = "gpt-6.1-sol", summaryInputLimitTokens = 200000, onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
@@ -216,7 +216,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     catalog = candidate; routes = nextRoutes;
     return serialized;
   };
-  const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes });
+  const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes, maxInputBytes: maxRequestBytes, inputLimitTokens: summaryInputLimitTokens, measureTokens: estimateInputTokens });
   const bridge = new URL(bridgeBase);
   const direct = new URL(openCodeBase);
   if ((direct.origin !== "https://opencode.ai" && !(allowTestOrigins && direct.protocol === "http:"
@@ -375,8 +375,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       // compaction_trigger and requires one compaction output item. The Chat
       // conversion cannot produce that wire item, so use the native summary
       // model for this request while the surrounding turn keeps its selection.
-      if (route.provider === "opencode" && !directResponses && path === "/v1/responses"
-          && Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger")) {
+      const remoteCompaction = route.provider === "opencode" && !directResponses && path === "/v1/responses"
+        && Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger");
+      if (remoteCompaction) {
         const summaryRoute = routes.get(summaryModel);
         if (summaryRoute?.provider !== "openai") {
           fail(response, 422, "remote_compaction_model_required", "remote compactionに使えるOpenAIモデルがカタログにありません");
@@ -385,7 +386,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.requested_provider = route.provider;
         metric.remote_compaction_fallback = "openai";
         route = summaryRoute;
-        body = { ...body, model: summaryModel };
+        // The model override belongs only to this compaction request. It never
+        // changes the catalog, thread selection, or the next normal turn.
+        body = { ...body, model: summaryModel, tools: [], tool_choice: "none" };
       }
       if (route.provider === "opencode" && !directResponses && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
@@ -452,6 +455,36 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
         diagnose: details => Object.assign(metric, details),
         threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id };
+      const summaryContext = routes.get(summaryModel)?.contextWindow;
+      const summaryBudget = Math.min(summaryInputLimitTokens, summaryContext ? Math.floor(summaryContext * 0.8) : summaryInputLimitTokens);
+      handoffOptions.inputBudgetTokens = summaryBudget;
+      if (remoteCompaction) {
+        const reserved = Math.max(16384, Number.isSafeInteger(body.max_output_tokens) ? body.max_output_tokens : 0);
+        const protectedInput = body.input.filter(item => ["system", "developer"].includes(item.role) || item.type === "compaction_trigger");
+        if (estimateInputTokens({ ...body, input: protectedInput }) + reserved >= summaryBudget) {
+          fail(response, 413, "summary_input_budget_exceeded", "保護された指示だけで要約モデルの入力上限を超えています。履歴と選択モデルは保持しています");
+          return;
+        }
+        if (estimateInputTokens(body) + reserved >= summaryBudget || Buffer.byteLength(JSON.stringify(body)) > maxBytes) {
+          if (body.input.at(-1)?.type !== "compaction_trigger" || body.input.length < 2
+              || body.input.slice(0, -1).some(item => item.type === "compaction_trigger")) {
+            fail(response, 422, "invalid_compaction_trigger", "圧縮要求の履歴境界が不正です。履歴は保持しています");
+            return;
+          }
+          const plan = budgetHandoffPlan(body, route, maxRequestBytes, summaryBudget - reserved, maxBytes);
+          if (!(plan.prefixEnd > 0) || plan.minimum + reserved >= summaryBudget || plan.minimumBytes >= maxBytes) {
+            fail(response, 413, "summary_input_budget_exceeded", "最新依頼・指示・未完了ツールを保持すると要約モデルの入力上限を超えます。履歴と選択モデルは保持しています");
+            return;
+          }
+          metric.stage = "remote_compaction_handoff";
+          body = await expandCompaction(body, { ...handoffOptions, ...plan });
+          metric.remote_compaction_prepared = true;
+        }
+        if (estimateInputTokens(body) + reserved >= summaryBudget || Buffer.byteLength(JSON.stringify(body)) > maxBytes) {
+          fail(response, 413, "summary_input_budget_exceeded", "要約後も圧縮要求が入力上限を超えています。履歴と選択モデルは保持しています");
+          return;
+        }
+      }
       let hardLimitTokens = opencodeHardLimitTokens;
       let softLimitTokens = opencodeSoftLimitTokens;
       if (route.provider === "opencode" && !directResponses && route.contextWindow && hardLimitTokens > 0) {

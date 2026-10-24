@@ -587,6 +587,19 @@ RUN_LIVE_ROUTER=1 python3 test/live-compaction-smoke.py --rollout /path/to/rollo
 会話ID不明・認証更新・圧縮履歴の変更・router再起動では再利用しません。要約はディスクに保存しません。
 要約の`response.completed`を受信した時点で次へ進み、接続の終了まで待ち続けません。
 
+要約モデルにも入力予算を設けています。既定20万tokensと要約先カタログのcontext上限の80%の小さい方を使い、
+出力予約16384tokensを含めて事前判定します。巨大な履歴は上限内の断片に分け、前の要約を次へ引き継ぎます。
+要約側が`context_length_exceeded`を返した場合は失敗要求の推定サイズから履歴用の予算を半減して再分割し、出力予約は保持します。
+全体で最大32要求（各断片の一時失敗の再試行も含む）、router全体の既存タイムアウト内で停止します。
+分割したツール履歴は実行可能な呼出しではなくデータとして要約し、画像と暗号化itemは切断しません。
+途中失敗・取消では部分要約をcacheへ登録せず、元の履歴を保持します。
+
+`compaction_trigger`のOpenAI転送は圧縮専用です。ツール定義は送りません。
+その要求にも同じ入力予算を適用し、必要なら完了済み履歴を先に段階要約します。
+最新依頼・指示・未完了ツールだけで予算を超える場合は、破棄せず`summary_input_budget_exceeded`で停止します。
+通常会話の選択モデルや全体設定は変更しません。要約には情報損失と追加の利用枠消費があり、
+画像・暗号化item単体の過大、保護入力の過大、要求数上限、外部障害では回復できない場合があります。
+
 OpenCode向け入力は、隣接して完全一致する指示だけを取り除きます。
 最新依頼・ツール結果・推論履歴の任意切捨てはしないため、大量の履歴を持つ会話が必ず短時間になるわけではありません。
 元の会話・全体のモデル設定・OpenAIへの入力は変更しません。
@@ -604,6 +617,9 @@ macOS常駐時は`~/.codex/log/model-router.log`で確認できます。
 
 - `summary_cache`: `unused` / `miss` / `shared` / `hit`
 - `summary_ms`: 要約生成または再利用を待った時間
+- `summary_requests` / `summary_chunked`: 要約API要求の総数と段階要約の有無
+- `summary_input_tokens`: 直近の要約要求の推定入力tokens
+- `remote_compaction_prepared`: 圧縮専用要求の前処理を完了したか
 - `upstream_headers_ms`: 最終送信先の応答ヘッダまでの時間
 - `first_upstream_byte_ms`: 最終送信先の最初のデータまでの時間（回答の最初のトークンとは異なる）
 - `upstream_stream_ms` / `total_ms`: 本文転送時間 / 入力受信を含む合計時間
