@@ -305,7 +305,6 @@ const server = http.createServer(async (req, res) => {
       medium: "",
       high: "",
     };
-    const EFFORT_TEMP = { none: 0.7, minimal: 0.7, low: 0.6, medium: 0.4, high: 0.2 };
     const hint = EFFORT_HINT[effort] ?? "";
 
     const messages = toChatMessages(body);
@@ -320,10 +319,7 @@ const server = http.createServer(async (req, res) => {
       messages,
       tools: toChatTools(body),
       stream: Boolean(body.stream),
-      temperature: EFFORT_TEMP[effort] ?? 0.4,
       stream_options: body.stream ? { include_usage: true } : undefined,
-      frequency_penalty: 0.3,
-      presence_penalty: 0.1,
       ...reasoningOptions(model, body.reasoning?.effort),
     };
     if (!chatBody.tools) delete chatBody.tools;
