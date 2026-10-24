@@ -579,6 +579,52 @@ RUN_LIVE_ROUTER=1 LIVE_ROUTER_TOOLS=1 python3 test/live-router-smoke.py
 RUN_LIVE_ROUTER=1 python3 test/live-compaction-smoke.py --rollout /path/to/rollout.jsonl
 ```
 
+### Command Code / Ollama CloudのDeepSeekを手動で選ぶ
+
+共通ルーターへ次の2件を追加できます。自動ルーティングは行わず、`/model`で明示的に選びます。
+
+| 一覧の表示 | CodexのモデルID | 公式APIに送るmodel |
+| --- | --- | --- |
+| Command Code · DeepSeek V4.1 Flash | `commandcode/deepseek-v4.1-flash` | `deepseek/deepseek-v4.1-flash` |
+| Ollama Cloud · DeepSeek V4.1 Flash | `ollama/deepseek-v4.1-flash` | `deepseek-v4.1-flash` |
+
+今回はDeepSeek V4.1 Flashだけです。Command Codeは[Provider API](https://commandcode.ai/docs/provider)、
+Ollamaは[Cloud API](https://docs.ollama.com/api/openai-compatibility)のChat Completionsを使用します。
+モデルIDとcontextは公式モデル一覧/`api/show`で確認しています。利用枠や契約プランの購入はこの機能では行いません。
+
+各社の公式画面でAPIキーを作成し、次のコマンドへ非表示入力してください。チャットやシェルコマンドの引数へキーを書かないでください。
+
+```bash
+python3 scripts/manual_providers.py set-key commandcode
+python3 scripts/manual_providers.py set-key ollama
+python3 scripts/manual_providers.py install-models
+python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
+```
+
+キーは`CODEX_HOME/commandcode-api-key`と`CODEX_HOME/ollama-api-key`へ本人専用の0600権限で保存します。
+専用環境変数`CMD_API_KEY` / `OLLAMA_API_KEY`がある場合はそちらを優先します。
+共有権限・symlink・hardlinkの鍵ファイルは読みません。OpenAIログインと他社のキーを混ぜません。
+設定コマンドは既定モデルや既存会話を書き換えず、モデル一覧のバックアップを作り、2件だけ追加します。
+常駐ルーターはキーの変更を要求ごとに読み込むので、キーの登録/更新だけなら再起動不要です。
+
+Codex Appは会話を完了してから開き直し、CLIで一覧が古い場合は
+`codex resume <thread-id> --no-daemon`で再読込してください。
+動的な一覧更新でも、この2件は既存OpenAI/OpenCodeモデルと共存します。
+
+APIキー未登録は`provider_key_required`で止まります。認証失敗・429・利用枠切れでも他社へ切り替えません。
+履歴引き継ぎ/圧縮だけは既存のOpenAI要約経路を使い、その後の通常要求は選択したサービスへ戻ります。
+最新依頼・指示・未完了ツール・schemaを保持し、既存の入力予算と分割要約を適用します。
+新しいChat経路も会話単位の40要求/分の制限と、routerの300秒/転送byte制限に従います。
+Command Codeの画像入力はこの初期設定では提供せず、Ollama側だけ公式vision capabilityに基づき有効です。
+
+実APIへ送らずに4社の一覧・同一会話の手動切替・圧縮後の選択保持・保存再開を確認できます。
+
+```bash
+node --test test/manual-providers.test.mjs
+python3 -m unittest discover -s test -p test_manual_providers.py
+python3 test/manual-providers-e2e.py
+```
+
 ### 応答待ち時間の改善と計測
 
 圧縮済み履歴を初めてOpenCodeへ引き継ぐときは、OpenAIでの要約が先に必要です。
