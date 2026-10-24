@@ -152,3 +152,9 @@ Chat変換の入力判定は、設定された共通上限と、カタログの`
 ```bash
 RUN_LIVE_MODELS=1 node test/live-model-smoke.mjs opencode/deepseek-v4.1-flash opencode/kimi-k3.1-pro
 ```
+
+## モデル固有のsampling既定値
+
+Chat adapterでは、明示されていない`temperature`・`top_p`・`frequency_penalty`・`presence_penalty`を送らず、提供元のモデル既定値を使う。以前の全モデル共通temperature 0.4とpenalty注入は、temperature=1だけを許すKimi K3.1 ProなどでHTTP400になっていた。指定された値（0を含む）は保持し、明示値が提供元の制約と合わない場合はそのエラーを返す。DeepSeekのthinking/effort指定とは別の処理である。
+
+既存legacyコードへの反映には`python3 scripts/patch_sampling.py <bridge.mjs> --apply`を使う。想定した箇所だけ変更し、私有バックアップ・構文検査・同時編集とsymlinkの拒否を行う。サービスは自動再起動しない。

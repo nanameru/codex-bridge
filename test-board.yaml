@@ -718,3 +718,15 @@ cases:
     test_file: test/model-router.test.mjs
     issues: [83]
     notes: "修正前はモデル上限を超えても共通100万token未満なら上流へ転送することを再現。修正後は要約し、指示と最新入力を保持。出力予約だけの容量不足と保護入力過大を送信前に拒否。Node190/Python109件成功。実DeepSeekの合成ツール確認成功、Kimiはtemperature関連400を別途調査。"
+
+  - id: TC-064
+    title: "未指定のsampling値を注入せずモデル固有の既定値を使う"
+    feature: "モデル互換性"
+    scenario: "Kimiの固定温度・sampling未指定・0を含む明示値・DeepSeek思考・認証・画像ツール"
+    status: done
+    priority: high
+    type: integration
+    source: [src/codex-bridge.mjs, scripts/patch_sampling.py]
+    test_file: test/bridge-transport.test.mjs
+    issues: [85]
+    notes: "実Kimiのtemperature関連HTTP400を確認。実稼働legacyのコピーと模擬上流で未指定4値の非送信、明示値保持、既存の認証・思考・ツール・画像処理を確認。パッチのidempotence・私有原本・構文失敗・symlink拒否も検証。修正済みの隔離legacy＋routerから実DeepSeek/Kimi各3要求（計6要求）が成功。通常サービスは通信終了待ちで反映する。"

@@ -305,7 +305,6 @@ const server = http.createServer(async (req, res) => {
       medium: "",
       high: "",
     };
-    const EFFORT_TEMP = { none: 0.7, minimal: 0.7, low: 0.6, medium: 0.4, high: 0.2 };
     const hint = EFFORT_HINT[effort] ?? "";
 
     const messages = toChatMessages(body);
@@ -320,15 +319,16 @@ const server = http.createServer(async (req, res) => {
       messages,
       tools: toChatTools(body),
       stream: Boolean(body.stream),
-      temperature: EFFORT_TEMP[effort] ?? 0.4,
       stream_options: body.stream ? { include_usage: true } : undefined,
-      frequency_penalty: 0.3,
-      presence_penalty: 0.1,
       ...reasoningOptions(model, body.reasoning?.effort),
     };
     if (!chatBody.tools) delete chatBody.tools;
     if (body.max_output_tokens) chatBody.max_tokens = body.max_output_tokens;
-    if (body.temperature != null) chatBody.temperature = body.temperature;
+    // Explicit sampling values are opt-in; model defaults differ across providers.
+    for (const field of ["temperature", "top_p", "frequency_penalty", "presence_penalty"]) {
+      if (body[field] != null) chatBody[field] = body[field];
+      else delete chatBody[field];
+    }
     if (body.tool_choice) chatBody.tool_choice = body.tool_choice;
 
     dbg("→", model, "messages:", chatBody.messages.length, "tools:", chatBody.tools?.length ?? 0);
