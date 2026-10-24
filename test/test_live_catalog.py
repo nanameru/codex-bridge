@@ -8,6 +8,7 @@ import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import live_catalog as lc
+import unified_config
 
 
 class LiveCatalogConfigTests(unittest.TestCase):
@@ -81,6 +82,22 @@ class LiveCatalogConfigTests(unittest.TestCase):
             lc.apply(self.root)
         self.assertEqual(self.config.read_text(), self.source)
         self.assertFalse((self.root / "live-catalog-state.json").exists())
+
+    def test_static_prepare_does_not_treat_live_opencode_cache_entries_as_native(self):
+        native = {"models": [{"slug": "gpt-test"}, {"slug": "opencode/stale"}]}
+        (self.root / "models_cache.json").write_text(json.dumps(native))
+        (self.root / "model-catalog.json").write_text(json.dumps({"models": [{"slug": "old"}]}))
+        source = self.root / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src/models.json").write_text(json.dumps({"models": [{"id": "old"}]}))
+        path = unified_config.prepare(self.root, source)
+        models = json.loads(path.read_text())["models"]
+        self.assertEqual({m["slug"] for m in models}, {"gpt-test", "opencode/old"})
+        self.assertEqual(next(m for m in models if m["slug"] == "gpt-test")["router_provider"], "openai")
+        self.assertEqual(json.loads((self.root / "models_cache.json").read_text()), native)
+        (self.root / "models_cache.json").write_text(json.dumps({"models": [{"slug": "opencode/stale"}]}))
+        with self.assertRaises(ValueError):
+            unified_config.prepare(self.root, source)
 
 
 if __name__ == "__main__":

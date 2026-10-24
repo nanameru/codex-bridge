@@ -655,10 +655,10 @@ cases:
     status: done
     priority: high
     type: regression
-    source: [scripts/live_catalog.py]
+    source: [scripts/live_catalog.py, scripts/unified_config.py]
     test_file: test/test_live_catalog.py
     issues: [73]
-    notes: "実Codex0.164.0で標準openai provider定義だけの変更では取得されず、codex-liveで認証付き取得が働くことを確認。モデル選択と他provider/機能/コメントを保持し、変更競合や書込失敗では停止する。"
+    notes: "実Codex0.164.0で標準openai provider定義だけの変更では取得されず、codex-liveで認証付き取得が働くことを確認。モデル選択と他provider/機能/コメントを保持し、変更競合や書込失敗では停止する。動的取得後の混在cacheはGoをGPTへ誤転送せず、GPTなしや不正IDを拒否する。"
 
   - id: TC-059
     title: "要約のHTTP前接続タイムアウトだけを既存予算内で有限回復する"

@@ -123,6 +123,12 @@ def prepare(root, source_root):
     for model in native:
         if not isinstance(model, dict):
             raise ValueError("モデルカタログの形式が不正です")
+        cached_slug = model.get("slug")
+        if isinstance(cached_slug, str) and cached_slug.startswith("opencode/"):
+            # Dynamic discovery stores the combined list in Codex's shared cache.
+            # Rebuild Go models from their own source, never as native GPT routes.
+            checked_slug(cached_slug[len("opencode/"):])
+            continue
         slug = checked_slug(model.get("slug"))
         if slug.startswith("opencode/"):
             raise ValueError("OpenAIカタログにOpenCodeの名前空間が含まれています")
@@ -132,6 +138,9 @@ def prepare(root, source_root):
         if "description" in safe:
             safe["description"] = clean_text(safe.get("description"), 500, "")
         models.append(safe)
+    native_count = len(models)
+    if not native_count:
+        raise ValueError("OpenAIとOpenCode両方のモデルカタログが必要です")
     for model in opencode:
         if not isinstance(model, dict):
             raise ValueError("モデルカタログの形式が不正です")
@@ -147,7 +156,7 @@ def prepare(root, source_root):
             safe["description"] = clean_text(safe.get("description"), 500, "")
         models.append(safe)
     models = prioritize(models)
-    if len(models) == len(native) or len({model["slug"] for model in models}) != len(models):
+    if len(models) == native_count or len({model["slug"] for model in models}) != len(models):
         raise ValueError("統合カタログにモデルがないか、名前が重複しています")
     path = root / "unified-model-catalog.json"
     atomic_write(path, json.dumps({"models": models}, ensure_ascii=False))
