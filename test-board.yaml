@@ -729,4 +729,4 @@ cases:
     source: [src/codex-bridge.mjs, scripts/patch_sampling.py]
     test_file: test/bridge-transport.test.mjs
     issues: [85]
-    notes: "実Kimiのtemperature関連HTTP400を確認。実稼働legacyのコピーと模擬上流で未指定4値の非送信、明示値保持、既存の認証・思考・ツール・画像処理を確認。パッチのidempotence・私有原本・構文失敗・symlink拒否も検証。実モデルの反映後結果はIssueへ追記。"
+    notes: "実Kimiのtemperature関連HTTP400を確認。実稼働legacyのコピーと模擬上流で未指定4値の非送信、明示値保持、既存の認証・思考・ツール・画像処理を確認。パッチのidempotence・私有原本・構文失敗・symlink拒否も検証。修正済みの隔離legacy＋routerから実DeepSeek/Kimi各3要求（計6要求）が成功。通常サービスは通信終了待ちで反映する。"
