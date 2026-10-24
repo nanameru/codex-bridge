@@ -706,3 +706,15 @@ cases:
     test_file: test/handoff-status.test.mjs
     issues: [81, 47]
     notes: "実app-serverのreasoning summary通知とagentMessage非混入を確認。Codex0.164.0の隔離CLIで履歴を変換中（bridge）・経過秒・Esc案内がWorking行へ表示され回答後に消去されることを確認。App描画は未確認。"
+
+  - id: TC-063
+    title: "小容量モデルのcontextと出力予約を入力予算へ反映する"
+    feature: "モデル別の入力予算"
+    scenario: "2048tokenモデル・共通上限・明示出力予約・alias・境界ちょうど/1token超・native・無効化"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [83]
+    notes: "修正前はモデル上限を超えても共通100万token未満なら上流へ転送することを再現。修正後は要約し、指示と最新入力を保持。出力予約だけの容量不足と保護入力過大を送信前に拒否。Node190/Python109件成功。実DeepSeekの合成ツール確認成功、Kimiはtemperature関連400を別途調査。"

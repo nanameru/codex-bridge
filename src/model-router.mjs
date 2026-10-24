@@ -41,7 +41,12 @@ export function catalogRoutes(catalog) {
     if (model.router_transport !== undefined && !["responses", "chat"].includes(model.router_transport)) {
       throw new Error("モデルのAPI形式が不正です");
     }
+    if (model.router_provider === "opencode" && model.context_window !== undefined
+        && (!Number.isSafeInteger(model.context_window) || model.context_window < 1024 || model.context_window > 10000000)) {
+      throw new Error("モデルのコンテキスト上限が不正です");
+    }
     routes.set(model.slug, { provider: model.router_provider, model: model.router_model ?? model.slug,
+      ...(model.router_provider === "opencode" && model.context_window !== undefined ? { contextWindow: model.context_window } : {}),
       ...(model.router_transport ? { transport: model.router_transport } : {}) });
   }
   for (const model of catalog.models) {
@@ -447,13 +452,30 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
         diagnose: details => Object.assign(metric, details),
         threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id };
+      let hardLimitTokens = opencodeHardLimitTokens;
+      let softLimitTokens = opencodeSoftLimitTokens;
+      if (route.provider === "opencode" && !directResponses && route.contextWindow && hardLimitTokens > 0) {
+        const reserved = Number.isSafeInteger(body.max_output_tokens) && body.max_output_tokens > 0 ? body.max_output_tokens : 0;
+        // Token counting is an estimate; keep the same 5% margin as the catalog.
+        const available = Math.floor(route.contextWindow * 0.95) - reserved;
+        metric.model_context_window = route.contextWindow;
+        metric.reserved_output_tokens = reserved;
+        if (available <= 0) {
+          metric.stage = "budget_rejected";
+          fail(response, 413, "output_budget_exceeded", "指定された出力予約では、このモデルの入力容量が残りません。max_output_tokensを減らしてください。");
+          return;
+        }
+        hardLimitTokens = Math.min(hardLimitTokens, available);
+        softLimitTokens = softLimitTokens > 0 ? Math.min(softLimitTokens, hardLimitTokens) : 0;
+        metric.effective_input_limit_tokens = hardLimitTokens;
+      }
       let compactionExpanded = false;
       if (route.provider === "opencode" && !directResponses && autoBudgetHandoff) {
         const reused = expandCompaction.reuseBudget(body, handoffOptions);
         if (reused) {
           const preview = JSON.stringify(routedBody(reused, route, maxRequestBytes));
-          const threshold = opencodeSoftLimitTokens > 0
-            ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
+          const threshold = softLimitTokens > 0
+            ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
           if (threshold > 0 && estimateInputTokens(preview) <= threshold && Buffer.byteLength(preview) <= maxBytes) {
             body = reused;
             metric.budget_prefix_cache = "hit";
@@ -469,11 +491,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.stage = "handoff";
         const summaryStart = performance.now();
         try {
-          const threshold = opencodeSoftLimitTokens > 0
-            ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
+          const threshold = softLimitTokens > 0
+            ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
           const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
           const preview = JSON.stringify(routedBody(body, route, maxRequestBytes));
-          const extend = autoBudgetHandoff && opencodeHardLimitTokens > 0
+          const extend = autoBudgetHandoff && hardLimitTokens > 0
             && plan.prefixEnd > body.input.findLastIndex((item) => item.type === "compaction") + 1
             && (estimateInputTokens(preview) > threshold || Buffer.byteLength(preview) > maxBytes);
           if (extend) metric.budget_compaction_extended = true;
@@ -491,19 +513,19 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         routed = JSON.stringify(routedObject);
         const initialBytes = Buffer.byteLength(routed);
         const initialTokens = route.provider === "opencode" ? estimateInputTokens(routed) : 0;
-        const threshold = opencodeSoftLimitTokens > 0
-          ? Math.min(opencodeSoftLimitTokens, opencodeHardLimitTokens) : opencodeHardLimitTokens;
-        if (route.provider === "opencode" && opencodeHardLimitTokens > 0 && opencodeSoftLimitTokens > opencodeHardLimitTokens) {
+        const threshold = softLimitTokens > 0
+          ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
+        if (route.provider === "opencode" && hardLimitTokens > 0 && softLimitTokens > hardLimitTokens) {
           metric.budget_limit_clamped = true;
         }
-        if (route.provider === "opencode" && !directResponses && autoBudgetHandoff && opencodeHardLimitTokens > 0
+        if (route.provider === "opencode" && !directResponses && autoBudgetHandoff && hardLimitTokens > 0
             && (initialTokens > threshold || initialBytes > maxBytes) && !compactionExpanded) {
           metric.budget_initial_tokens = initialTokens;
           metric.budget_initial_bytes = initialBytes;
           const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
           const { prefixEnd, minimum, minimumBytes } = plan;
           if (prefixEnd > 0 && prefixEnd < body.input.length) {
-            if (minimum < opencodeHardLimitTokens && minimumBytes < maxBytes && routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization) {
+            if (minimum < hardLimitTokens && minimumBytes < maxBytes && routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization) {
               metric.stage = "budget_handoff";
               if (plan.preserveRecentUsers) metric.budget_intra_turn = true;
               const summaryStart = performance.now();
@@ -514,8 +536,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
               routedObject = routedBody(body, route, maxBytes);
               routed = JSON.stringify(routedObject);
               if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
-              metric.budget_recovered = estimateInputTokens(routed) <= opencodeHardLimitTokens;
-            } else metric.budget_recovery_skipped = minimum >= opencodeHardLimitTokens || minimumBytes >= maxBytes ? "protected_input_too_large"
+              metric.budget_recovered = estimateInputTokens(routed) <= hardLimitTokens;
+            } else metric.budget_recovery_skipped = minimum >= hardLimitTokens || minimumBytes >= maxBytes ? "protected_input_too_large"
               : !summaryHeaders.authorization ? "summary_auth_missing" : "summary_model_missing";
           } else metric.budget_recovery_skipped = "no_completed_history";
         }
@@ -531,16 +553,16 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.forwarded_tools_bytes = Array.isArray(routedObject.tools)
         ? Buffer.byteLength(JSON.stringify(routedObject.tools)) : 0;
       metric.estimated_input_tokens = estimateInputTokens(routed);
-      if (metric.budget_compaction_extended) metric.budget_recovered = metric.estimated_input_tokens <= opencodeHardLimitTokens;
-      if (route.provider === "opencode" && !directResponses && opencodeSoftLimitTokens > 0
-          && metric.estimated_input_tokens > opencodeSoftLimitTokens) {
+      if (metric.budget_compaction_extended) metric.budget_recovered = metric.estimated_input_tokens <= hardLimitTokens;
+      if (route.provider === "opencode" && !directResponses && softLimitTokens > 0
+          && metric.estimated_input_tokens > softLimitTokens) {
         metric.budget_warning = true;
       }
-      if (route.provider === "opencode" && !directResponses && opencodeHardLimitTokens > 0
-          && metric.estimated_input_tokens > opencodeHardLimitTokens) {
+      if (route.provider === "opencode" && !directResponses && hardLimitTokens > 0
+          && metric.estimated_input_tokens > hardLimitTokens) {
         metric.stage = "budget_rejected";
         fail(response, 413, "input_budget_exceeded",
-          `OpenCodeの入力が推定${metric.estimated_input_tokens}トークンで上限${opencodeHardLimitTokens}を超えます。`
+          `OpenCodeの入力が推定${metric.estimated_input_tokens}トークンで上限${hardLimitTokens}を超えます。`
           + `最新の依頼・進行中のツール・指示・ツール定義を保持したままでは上限内に収まりません。`
           + `不要なMCPを無効化するか、/compactを実行して再試行してください`
           + `（tools=${metric.tools_count}, tools_bytes=${metric.tools_bytes}）。`);

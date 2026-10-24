@@ -1016,3 +1016,66 @@ test("appended short turns reuse a budget prefix until its growing suffix needs 
   assert.equal(calls.filter(call => call.instructions?.startsWith("Produce only")).length, 2);
   assert.equal(calls.at(-1).input.at(-1).content, "continue");
 });
+
+test("small model context triggers summarization below the global input limit", async context => {
+  const calls = [], metrics = [];
+  const smallCatalog = { models: catalog.models.map(m => m.router_provider === "opencode" ? { ...m, context_window: 2048 } : m) };
+  const { send } = await fixture(context, { catalog: smallCatalog, summaryModel: "gpt-test",
+    opencodeSoftLimitTokens: 900000, opencodeHardLimitTokens: 1000000, onMetric: m => metrics.push(m),
+    fetcher: async (_url, options) => {
+      const body = JSON.parse(options.body); calls.push(body);
+      return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Preserved prior work." }] }] });
+    } });
+  const input = [{ role: "user", content: "x".repeat(16000) }, { role: "assistant", content: "done" },
+    { role: "user", content: "recent" }, { role: "user", content: "latest" }];
+  const response = await send({ model: "deepseek-test", input, max_output_tokens: 512, prompt_cache_key: "small-thread" });
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(calls.filter(c => c.instructions?.startsWith("Produce only")).length, 1);
+  assert.ok(estimateInputTokens(JSON.stringify(calls.at(-1))) + 512 <= 2048);
+  assert.equal(calls.at(-1).input.at(-1).content, "latest");
+  assert.equal(metrics[0].model_context_window, 2048);
+});
+
+test("model budgets reserve explicit output, retain global caps and do not rewrite native requests", async context => {
+  const customCatalog = { models: catalog.models.map(m => ({ ...m, context_window: 2048 })) };
+  for (const scenario of ["protected", "output", "global", "native", "disabled", "missing"]) {
+    const metrics = [];
+    const opts = { catalog: customCatalog, opencodeSoftLimitTokens: 900000, opencodeHardLimitTokens: 1000000, onMetric: m => metrics.push(m) };
+    if (scenario === "global") opts.opencodeHardLimitTokens = 150;
+    if (scenario === "disabled") opts.opencodeHardLimitTokens = 0;
+    if (scenario === "missing") opts.catalog = catalog;
+    const { calls, send } = await fixture(context, opts);
+    const body = { model: scenario === "native" ? "gpt-test" : "deepseek-test", input: [{ role: "user", content: "x".repeat(9000) }],
+      ...(scenario === "output" ? { max_output_tokens: 2048 } : {}) };
+    const response = await send(body); const text = await response.text();
+    const allowed = ["native", "disabled", "missing"].includes(scenario);
+    assert.equal(response.status, allowed ? 200 : 413, scenario + ": " + text);
+    assert.equal(calls.length, allowed ? 1 : 0, scenario);
+    if (scenario === "output") assert.match(text, /output_budget_exceeded/);
+    if (scenario === "global") assert.equal(metrics[0].effective_input_limit_tokens, 150);
+    if (scenario === "native") assert.equal(metrics[0].model_context_window, undefined);
+  }
+});
+
+test("context budget boundaries accept exact estimate and reject one additional token", async context => {
+  const customCatalog = { models: catalog.models.map(m => m.router_provider === "opencode" ? { ...m, context_window: 2048 } : m) };
+  const limit = Math.floor(2048 * 0.95) - 512;
+  const body = { model: "deepseek-test", input: [{ role: "user", content: "" }], max_output_tokens: 512 };
+  const route = catalogRoutes(customCatalog).get("deepseek-test");
+  while (estimateInputTokens(JSON.stringify(routedBody(body, route))) < limit) body.input[0].content += "xxxx";
+  assert.equal(estimateInputTokens(JSON.stringify(routedBody(body, route))), limit);
+  const { send } = await fixture(context, { catalog: customCatalog });
+  const exact = await send(body); assert.equal(exact.status, 200); await exact.text();
+  body.input[0].content += "xxxx";
+  const over = await send(body); assert.equal(over.status, 413); await over.text();
+});
+
+test("context metadata is validated and is preserved for both slug and bare model aliases", () => {
+  const customCatalog = { models: [{ slug: "opencode/small", router_model: "small", router_provider: "opencode", context_window: 4096 }] };
+  const routes = catalogRoutes(customCatalog);
+  assert.equal(routes.get("small").contextWindow, 4096);
+  assert.equal(routes.get("opencode/small").contextWindow, 4096);
+  for (const context_window of [0, -1, "4096", 3.5, Infinity, 10000001]) {
+    assert.throws(() => catalogRoutes({ models: [{ ...customCatalog.models[0], context_window }] }), /コンテキスト/);
+  }
+});
