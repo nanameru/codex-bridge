@@ -184,6 +184,10 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
           const body = summaryBody(items, 16384);
           return measureTokens(body) + 16384 < limit && Buffer.byteLength(JSON.stringify(body)) <= maxInputBytes;
         };
+        // Halve the history allowance, not the reserved output. Halving the
+        // whole budget can leave no input capacity after the first rejection.
+        const smallerLimit = (items, limit) => 16384
+          + Math.floor((Math.min(limit, measureTokens(summaryBody(items, 16384)) + 16384) - 16384) / 2);
         const generateOnce = async (items, signal, attempt, outputLimit) => {
           let responseKind = "unknown";
           let upstreamStatus;
@@ -332,7 +336,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             try { result = await generateStep(input, signal); }
             catch (error) {
               if (error.upstreamCode !== "context_length_exceeded") throw error;
-              limit = Math.floor(Math.min(limit, measureTokens(summaryBody(input, 16384)) + 16384) / 2);
+              limit = smallerLimit(input, limit);
             }
           }
           if (result === undefined) {
@@ -343,11 +347,13 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
               const { chunk, input: items } = takeSummaryChunk(queue, carry, items => fits(items, limit));
               try { carry = await generateStep(items, signal); }
               catch (error) {
-                if (error.upstreamCode !== "context_length_exceeded" || limit <= 32768) throw error;
+                if (error.upstreamCode !== "context_length_exceeded") throw error;
+                const nextLimit = smallerLimit(items, limit);
+                if (nextLimit <= 16384 + 512 || nextLimit >= limit) throw error;
                 // Replan only the failed chunk, retaining the preceding completed
                 // checkpoint. Never resend the same oversized request unchanged.
                 queue.unshift(...chunk);
-                limit = Math.floor(Math.min(limit, measureTokens(summaryBody(items, 16384)) + 16384) / 2);
+                limit = nextLimit;
                 continue;
               }
               report({ summary_chunked: true, summary_requests: requestCount });
@@ -355,6 +361,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             result = carry;
           }
           signal.throwIfAborted();
+          if (typeof result !== "string" || !result.trim()) throw new HandoffError("分割要約が空です。履歴は保持しています");
           // Publish only a fully completed handoff, never an intermediate chunk.
           if (key) {
             if (cache.size >= 64) cache.delete(cache.keys().next().value);

@@ -28,8 +28,10 @@ def start(binary):
 
 
 def turn(server, thread, model):
-    result = server.request("turn/start", {"threadId": thread, "model": model,
-                            "input": [{"type": "text", "text": "Reply OK only. Do not use tools."}]})
+    params = {"threadId": thread, "input": [{"type": "text", "text": "Reply OK only. Do not use tools."}]}
+    if model is not None:
+        params["model"] = model
+    result = server.request("turn/start", params)
     identifier = result["turn"]["id"]
     deadline = time.monotonic() + 30
     messages = []
@@ -111,8 +113,12 @@ def run(fail=False):
                 # The selected model remains OpenCode; a second compaction must
                 # still use the native Responses model for the required item.
                 compact(server, thread)
-                later, status = turn(server, thread, "opencode/deepseek-v4.1-flash")
+                # No model override: native compaction must not change the
+                # thread's selected OpenCode model for the following turn.
+                later, status = turn(server, thread, None)
                 assert status == "completed"
+                assert any("opencode_OK" in m.get("params", {}).get("delta", "") for m in later
+                           if m.get("method") == "item/agentMessage/delta")
                 server.close()
                 server = start(binary)
                 resumed = server.request("thread/resume", {"threadId": thread, "excludeTurns": True})

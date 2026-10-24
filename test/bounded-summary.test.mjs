@@ -142,3 +142,17 @@ test('途中断片のSSE context超過でも完了checkpointを保持して小�
   assert.ok(estimateInputTokens(sent[2]) < estimateInputTokens(sent[1]));
   assert.equal(result.input.at(-1).content, 'latest');
 });
+
+test('小さい要約予算で複数回context超過しても出力予約を保ち履歴部分をさらに分割する', async () => {
+  const requests = [];
+  const expand = compactionHandoff({ model: 'gpt-test', maxBytes: 1000000, inputLimitTokens: 50000,
+    measureTokens: estimateInputTokens, fetcher: async (_url, init) => {
+      const body = JSON.parse(init.body); requests.push(body);
+      if (estimateInputTokens(body) > 2500) return Response.json({ status: 'failed', error: { code: 'context_length_exceeded' } });
+      return completed('checkpoint');
+    } });
+  const body = { input: [{ role: 'user', content: 'x'.repeat(65000) }, { role: 'user', content: 'latest' }] };
+  const result = await expand(body, { ...options(), prefixEnd: 1 });
+  assert.ok(requests.length > 3 && requests.length <= 32);
+  assert.equal(result.input.at(-1).content, 'latest');
+});
