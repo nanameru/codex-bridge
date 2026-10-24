@@ -140,3 +140,15 @@ HTTP応答後の読取失敗、未知の通信エラー、親timeout、利用者
 ```bash
 MOCK_HANDOFF_CONNECT_TIMEOUT=1 python3 test/handoff-app-e2e.py
 ```
+
+## モデルごとの入力予算
+
+Chat変換の入力判定は、設定された共通上限と、カタログの`context_window`の95%から明示`max_output_tokens`を引いた容量の、小さい方を使う。soft limitもその範囲に収める。要約prefixの再利用・新しい要約・最後の超過拒否に同じ予算を使い、小さいモデルへ切り替えた場合も共通の100万tokenで判定しない。
+
+出力予約だけで入力容量がなくなる要求は、履歴を削除せず413で拒否する。カタログにcontext情報がない旧形式では共通上限を使う。hard limitを0にしている場合は従来どおりtoken判定を無効にする。GPT標準経路と明示的な直接Responses経路には適用しない。token数は概算であり、出力未指定時の上流既定値や全提供元のtokenizer差を保証するものではない。
+
+実モデルの合成ツール確認（外部ツールは実行しない、最大3モデル×3要求）:
+
+```bash
+RUN_LIVE_MODELS=1 node test/live-model-smoke.mjs opencode/deepseek-v4.1-flash opencode/kimi-k3.1-pro
+```
