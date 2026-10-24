@@ -3,13 +3,15 @@ import { Transform } from "node:stream";
 
 const active = new WeakMap();
 const ITEM_PREFIX = "msg_bridge_handoff_";
-export const WAIT_TEXT = "接続ステータス：圧縮された会話履歴を、選択中のモデルで使える形式に変換しています。";
-export const BUDGET_TEXT = "接続ステータス：入力上限に収まるよう、会話履歴を要約しています。";
-const READY_TEXT = "\n履歴の変換が完了しました。選択中のモデルの応答を待っています。";
+const PROGRESS_PREFIX = "rs_bridge_handoff_";
+export const WAIT_TEXT = "履歴を変換中（bridge）";
+export const BUDGET_TEXT = "会話履歴を要約中（bridge）";
+const READY_TEXT = "\nモデルの応答待ち（履歴変換完了）";
 
 export function isHandoffStatusItem(item) {
-  return item?.type === "message" && item.role === "assistant" && item.phase === "commentary"
-    && typeof item.id === "string" && item.id.startsWith(ITEM_PREFIX);
+  return typeof item?.id === "string" && (
+    (item.type === "message" && item.role === "assistant" && item.phase === "commentary" && item.id.startsWith(ITEM_PREFIX))
+    || (item.type === "reasoning" && item.id.startsWith(PROGRESS_PREFIX)));
 }
 
 // Only used after authenticated requests actually wait for a cache miss/shared job.
@@ -24,7 +26,7 @@ export class HandoffStatus {
     this.finished = false;
     this.terminal = false;
     this.id = "resp_bridge_handoff_" + randomUUID();
-    this.itemId = ITEM_PREFIX + randomUUID();
+    this.itemId = PROGRESS_PREFIX + randomUUID();
   }
   observe(cache, reason = "handoff") {
     if (!this.enabled || !["miss", "shared"].includes(cache) || this.timer || this.started) return;
@@ -38,8 +40,10 @@ export class HandoffStatus {
       model: this.model, status, output, error: null };
   }
   item(status = "completed") {
-    return { id: this.itemId, type: "message", role: "assistant", phase: "commentary", status,
-      content: [{ type: "output_text", text: this.text, annotations: [] }] };
+    // Codex derives its live Working heading from reasoning-summary deltas.
+    // This is explicitly bridge progress, not model-generated reasoning.
+    return { id: this.itemId, type: "reasoning", status,
+      summary: [{ type: "summary_text", text: this.text }] };
   }
   frame(payload) {
     return `event: ${payload.type}\ndata: ${JSON.stringify({ ...payload, sequence_number: this.sequence++ })}\n\n`;
@@ -51,27 +55,27 @@ export class HandoffStatus {
     if (this.started || this.response.destroyed || this.response.writableEnded) return;
     this.started = true;
     this.text = this.reason === "budget" ? BUDGET_TEXT : WAIT_TEXT;
-    if (this.shared) this.text += " 別の要求で進行中の同じ履歴処理の完了を待っています。";
+    if (this.shared) this.text += "・共有処理の完了待ち";
     active.set(this.response, this);
     this.response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" });
     this.response.flushHeaders();
     this.emit({ type: "response.created", response: this.envelope("in_progress") });
     this.emit({ type: "response.output_item.added", output_index: 0,
-      item: { ...this.item("in_progress"), content: [] } });
-    this.emit({ type: "response.content_part.added", item_id: this.itemId, output_index: 0, content_index: 0,
-      part: { type: "output_text", text: "", annotations: [] } });
-    this.emit({ type: "response.output_text.delta", item_id: this.itemId, output_index: 0, content_index: 0, delta: this.text });
+      item: { ...this.item("in_progress"), summary: [] } });
+    this.emit({ type: "response.reasoning_summary_part.added", item_id: this.itemId, output_index: 0, summary_index: 0,
+      part: { type: "summary_text", text: "" } });
+    this.emit({ type: "response.reasoning_summary_text.delta", item_id: this.itemId, output_index: 0, summary_index: 0, delta: this.text });
   }
-  ready() { this.finish(this.reason === "budget" ? "\n履歴の要約が完了しました。選択中のモデルの応答を待っています。" : READY_TEXT); }
+  ready() { this.finish(this.reason === "budget" ? "\nモデルの応答待ち（要約完了）" : READY_TEXT); }
   finish(suffix) {
     clearTimeout(this.timer);
     this.timer = null;
     if (!this.started || this.finished) return;
     this.finished = true;
     this.text += suffix;
-    this.emit({ type: "response.output_text.delta", item_id: this.itemId, output_index: 0, content_index: 0, delta: suffix });
-    this.emit({ type: "response.output_text.done", item_id: this.itemId, output_index: 0, content_index: 0, text: this.text });
-    this.emit({ type: "response.content_part.done", item_id: this.itemId, output_index: 0, content_index: 0, part: this.item().content[0] });
+    this.emit({ type: "response.reasoning_summary_text.delta", item_id: this.itemId, output_index: 0, summary_index: 0, delta: suffix });
+    this.emit({ type: "response.reasoning_summary_text.done", item_id: this.itemId, output_index: 0, summary_index: 0, text: this.text });
+    this.emit({ type: "response.reasoning_summary_part.done", item_id: this.itemId, output_index: 0, summary_index: 0, part: this.item().summary[0] });
     this.emit({ type: "response.output_item.done", output_index: 0, item: this.item() });
   }
   fail(status, code, message) {
