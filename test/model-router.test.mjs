@@ -1079,3 +1079,98 @@ test("context metadata is validated and is preserved for both slug and bare mode
     assert.throws(() => catalogRoutes({ models: [{ ...customCatalog.models[0], context_window }] }), /コンテキスト/);
   }
 });
+
+test('巨大なremote compactionを上限内で処理し通常会話のOpenCodeモデルを保持する', async context => {
+  const selected = 'opencode/deepseek-test';
+  const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', summaryInputLimitTokens: 40000,
+    upstreamResponse: async ({ provider, response, body }) => {
+      if (provider !== 'openai') return false;
+      assert.ok(estimateInputTokens(body) + (body.max_output_tokens ?? 16384) < 40000);
+      assert.deepEqual(body.tools, []);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ status: 'completed', model: 'gpt-test', output: body.input.some(item => item.type === 'compaction_trigger')
+        ? [{ type: 'compaction', encrypted_content: 'synthetic-opaque' }]
+        : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'checkpoint' }] }] }));
+      return true;
+    } });
+  const response = await send({ model: selected, tools: Array.from({ length: 57 }, (_, i) => ({ type: 'function', name: `tool_${i}`,
+    description: 'x'.repeat(25000) })), input: [{ role: 'user', content: 'x'.repeat(450000) }, { role: 'assistant', content: 'completed work' },
+      { role: 'user', content: 'latest task' }, { type: 'function_call', call_id: 'pending', name: 'read', arguments: '{}' }, { type: 'compaction_trigger' }] });
+  assert.equal(response.status, 200, await response.text());
+  assert.ok(calls.length > 2);
+  assert.deepEqual(calls.at(-1).body.input.slice(-3), [{ role: 'user', content: 'latest task' },
+    { type: 'function_call', call_id: 'pending', name: 'read', arguments: '{}' }, { type: 'compaction_trigger' }]);
+  const after = await send({ model: selected, input: [{ role: 'user', content: 'continue' }] });
+  assert.equal(after.status, 200); await after.text();
+  assert.equal(calls.at(-1).provider, 'opencode');
+  assert.equal(calls.at(-1).body.model, 'deepseek-test');
+});
+
+test('remote compactionの保護指示だけで要約予算を超えた場合は上流へ送らない', async context => {
+  const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', summaryInputLimitTokens: 40000 });
+  const response = await send({ model: 'opencode/deepseek-test', instructions: 'x'.repeat(200000),
+    input: [{ role: 'user', content: 'continue' }, { type: 'compaction_trigger' }] });
+  assert.equal(response.status, 413);
+  assert.match(await response.text(), /summary_input_budget_exceeded/);
+  assert.equal(calls.length, 0);
+});
+
+test('185万tokenの通常要求は段階要約後も57toolsと最新依頼とOpenCode宛先を保持する', async context => {
+  const tools = Array.from({ length: 57 }, (_, i) => ({ type: 'function', name: `tool_${i}`, description: 's'.repeat(25000), parameters: { type: 'object' } }));
+  const input = [{ role: 'developer', content: 'preserve directives' },
+    ...Array.from({ length: 2120 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(2800) })),
+    { role: 'user', content: 'latest task' }, { type: 'function_call', call_id: 'pending', name: 'tool_0', arguments: '{}' }];
+  const original = structuredClone(input);
+  const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', opencodeSoftLimitTokens: 600000,
+    upstreamResponse: async ({ provider, response, body }) => {
+      if (provider !== 'openai') return false;
+      assert.ok(estimateInputTokens(body) + body.max_output_tokens < 200000);
+      assert.deepEqual(body.tools, []);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'checkpoint' }] }] }));
+      return true;
+    } });
+  const result = await send({ model: 'opencode/deepseek-test', tools, input });
+  assert.equal(result.status, 200, await result.text());
+  assert.ok(calls.filter(call => call.provider === 'openai').length > 1);
+  const final = calls.at(-1);
+  assert.equal(final.provider, 'opencode');
+  assert.equal(final.body.model, 'deepseek-test');
+  assert.deepEqual(final.body.tools, tools);
+  assert.deepEqual(final.body.input.slice(-2), input.slice(-2));
+  assert.ok(estimateInputTokens(final.body) < 600000);
+  assert.deepEqual(input, original);
+});
+
+test('要約モデルのcatalog上限も分割予算へ反映する', async context => {
+  const { calls, send } = await fixture(context, { catalog: { models: [
+    { slug: 'gpt-test', router_provider: 'openai', context_window: 32768 },
+    { slug: 'opencode/deepseek-test', router_provider: 'opencode', router_model: 'deepseek-test' },
+  ] }, summaryModel: 'gpt-test', opencodeSoftLimitTokens: 1000,
+    upstreamResponse: async ({ provider, response, body }) => {
+      if (provider !== 'openai') return false;
+      assert.ok(estimateInputTokens(body) + 16384 < Math.floor(32768 * 0.8));
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'checkpoint' }] }] }));
+      return true;
+    } });
+  const result = await send({ model: 'opencode/deepseek-test', input: [{ role: 'user', content: 'x'.repeat(100000) },
+    { role: 'user', content: 'recent' }, { role: 'user', content: 'latest' }] });
+  assert.equal(result.status, 200, await result.text());
+  assert.ok(calls.length > 2);
+});
+
+
+test('remote compactionでも最新依頼や未完了ツールを切り捨てて回復しない', async context => {
+  const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', summaryInputLimitTokens: 40000 });
+  for (const input of [
+    [{ role: 'user', content: 'x'.repeat(200000) }, { type: 'compaction_trigger' }],
+    [{ role: 'user', content: 'old' }, { type: 'function_call', call_id: 'pending', name: 'read', arguments: '{}' },
+      { role: 'user', content: 'x'.repeat(200000) }, { type: 'compaction_trigger' }],
+  ]) {
+    const response = await send({ model: 'opencode/deepseek-test', input });
+    assert.equal(response.status, 413);
+    assert.match(await response.text(), /summary_input_budget_exceeded/);
+  }
+  assert.equal(calls.length, 0);
+});

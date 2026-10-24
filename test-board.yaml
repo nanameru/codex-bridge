@@ -730,3 +730,51 @@ cases:
     test_file: test/bridge-transport.test.mjs
     issues: [85]
     notes: "実Kimiのtemperature関連HTTP400を確認。実稼働legacyのコピーと模擬上流で未指定4値の非送信、明示値保持、既存の認証・思考・ツール・画像処理を確認。パッチのidempotence・私有原本・構文失敗・symlink拒否も検証。修正済みの隔離legacy＋routerから実DeepSeek/Kimi各3要求（計6要求）が成功。通常サービスは通信終了待ちで反映する。"
+
+  - id: TC-065
+    title: "185万tokenの通常履歴を要約モデルの上限内で段階要約する"
+    feature: "巨大履歴の要約"
+    scenario: "2120items・57tools・最新依頼・未完了ツール・指示・モデル選択の保持"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, src/model-router.mjs]
+    test_file: test/bounded-summary.test.mjs
+    issues: [87]
+    notes: "修正前に一括送信による超過を再現。分割全要求に入力と出力予約の上限を課し、途中checkpointを引継ぐ。test/model-router.test.mjsでは実HTTPの通常経路から57schemasを保持してOpenCodeまで到達する。実ユーザー会話と実APIは未使用。"
+
+  - id: TC-066
+    title: "要約側context超過を小さい要求へ分割し途中失敗をcacheへ公開しない"
+    feature: "要約の有界回復"
+    scenario: "HTTP400・SSE失敗・Unicode・並列ツール断片・32要求上限・途中取消・暗号化item"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/bounded-summary.test.mjs
+    issues: [87]
+    notes: "通常の一時失敗は各step最大2回、全体最大32要求。context超過は失敗要求の推定サイズから予算を半減し同一要求を丸ごと再送しない。暗号化itemと画像は不可分、処理不能時は履歴を保持する。"
+
+  - id: TC-067
+    title: "圧縮専用要求でも要約予算と最新依頼と未完了ツールを保持する"
+    feature: "remote compactionの予算保護"
+    scenario: "57toolsの非転送・巨大履歴の前処理・保護入力過大・次の通常要求はOpenCode"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/compaction-handoff.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [87, 57]
+    notes: "圧縮専用OpenAI要求にtoolsを付けず、上限内の前処理を行ってからcompaction_triggerを送る。最新依頼・未完了ツールを含む保護対象だけで超過する場合は上流へ送らず413。通常要求のモデルは変更しない。実app-serverの既存圧縮/再開も成功。"
+
+  - id: TC-068
+    title: "OpenAI要約モデルのcatalog上限を要約予算に反映する"
+    feature: "要約先モデルの入力予算"
+    scenario: "32768context・入力と出力予約・動的catalog経路・既存の画像byte上限"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [87, 83]
+    notes: "既定20万tokensとcatalog contextの80%の小さい方で、出力予約16384を含めて要約要求を制限する。既存の35MiB画像・plain/gzip/zstd回帰も維持。"
