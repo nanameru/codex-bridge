@@ -5,6 +5,7 @@ import { buildCatalog } from './make-catalog.mjs';
 import { chatMessages, chatToResponses, pipeChatStream } from './chat-protocol.mjs';
 import { readUpstreamFailure } from './handoff-status.mjs';
 import { reasoningOptions } from './upstream-options.mjs';
+import { classifyProviderLimit } from './provider-fallback.mjs';
 
 export const MANUAL_PROVIDERS = Object.freeze({
   commandcode: Object.freeze({ label: 'Command Code', base: 'https://api.commandcode.ai/provider/v1',
@@ -77,10 +78,12 @@ export async function fetchManualProvider(provider, url, options, fetcher, maxBy
     headers: { authorization: options.headers.authorization, 'content-type': 'application/json', accept: 'text/event-stream, application/json' }, body: serialized });
   if (upstream.status >= 300 && upstream.status < 400) { await upstream.body?.cancel(); return new Response(null, { status: upstream.status }); }
   if (!upstream.ok) {
-    const detail = await readUpstreamFailure(upstream);
+    const limit = await classifyProviderLimit(upstream);
+    const detail = upstream.body ? await readUpstreamFailure(upstream) : { code: "unknown_error" };
     const retryAfter = upstream.headers.get('retry-after');
-    return Response.json({ error: { type: 'provider_error', code: detail.code,
-      message: `${config.label}が要求を拒否しました（HTTP ${upstream.status}、${detail.code}）。別サービスへの自動切替は行いません。` } },
+    return Response.json({ error: { type: 'provider_error', code: limit ? 'usage_exceeded' : detail.code,
+      ...(limit ? { window: limit.window, ...(limit.resetKnown ? { resets_at: new Date(limit.resetAt).toISOString() } : {}), reset_known: limit.resetKnown } : {}),
+      message: `${config.label}が要求を拒否しました（HTTP ${upstream.status}、${detail.code}）。利用枠と認証設定を確認してください。` } },
     { status: upstream.status, headers: /^\d{1,6}$/.test(retryAfter ?? '') ? { 'retry-after': retryAfter } : {} });
   }
   if (!upstream.body) throw new Error('manual_empty_response');

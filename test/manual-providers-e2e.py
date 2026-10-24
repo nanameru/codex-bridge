@@ -21,7 +21,10 @@ source = Path(original or Path.home() / '.codex')
 with tempfile.TemporaryDirectory(prefix='manual-providers-e2e-') as directory:
     home = Path(directory)
     for name in ['models_cache.json', 'model-catalog.json']:
-        (home / name).write_bytes((source / name).read_bytes())
+        cache = json.loads((source / name).read_text())
+        if name == 'models_cache.json':
+            cache['models'] = [m for m in cache['models'] if m.get('slug') == 'gpt-6.1-sol']
+        (home / name).write_text(json.dumps(cache))
     h.prepare(home, ROOT)
     m.install_models(home)
     (home / 'auth.json').write_text(json.dumps(h.e2e.fake_auth()))
