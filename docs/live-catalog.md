@@ -26,7 +26,15 @@ python3 scripts/live_catalog.py --apply --restore
 
 固定`model_catalog_json`を外し、`codex-live` providerへ移行する。`requires_openai_auth=true`で既存のChatGPT認証を使用し、推論先とカタログ先だけを本人用loopback routerへ向ける。モデル選択や他の設定は保持する。設定原本は`~/.codex/live-catalog-state.json`へ0600で保存し、競合や独自の同名providerは上書きしない。
 
-既に起動している固定カタログのCodexは一度終了して再開する。CLIは`codex resume <thread-id>`で続けられる。以後は同じプロセスでTTL後のモデル一覧取得が新モデルを反映する。明示的に固定カタログを指定するprofileや起動引数は、その設定が優先される。
+既に起動している常駐app-serverは古い設定を保持する。CLIだけを終了して通常の`codex resume`で開き直しても、同じ常駐サーバーに再接続するため反映されない場合がある。
+
+他のチャットを止めずに新設定で再開するには、対象CLIを終了して次を実行する（Codex 0.164.0で実機確認済み）。既存スレッドの履歴を使い、新しい組み込みapp-serverで起動する。
+
+```bash
+codex resume <thread-id> --no-daemon
+```
+
+通常の起動方法にも反映したい場合は、接続中の全チャットの作業が終わってから`codex app-server daemon restart`で常駐サーバーを一度再起動し、CLIを再開する。この操作は接続中の他チャットにも影響するため、設定適用ツールから自動では実行しない。以後、新モデル追加ごとの再起動は不要で、TTL後のモデル一覧取得が新モデルを反映する。明示的に固定カタログを指定するprofileや起動引数は、その設定が優先される。
 
 動的取得後の`models_cache.json`はGPTとOpenCodeの混在一覧になる。旧固定カタログの準備処理でもOpenCode項目をGPTとして取り込まず、それぞれの元一覧から再生成する。GPT項目のないキャッシュや不正なIDは引き続き拒否する。
 
@@ -41,3 +49,5 @@ python3 test/live-catalog-app-e2e.py
 ```
 
 実app-serverと模擬提供元で、一覧取得、新ID追加、同じプロセスでのTTL後の反映、新モデルの模擬応答、native圧縮、再圧縮、再起動resumeを検証する。APIキー/ChatGPT認証の取り違え、他accountやバージョンのキャッシュ混用、未認証取得、件数/容量/ID不正も検証する。
+
+実CLIの検証はapp-serverの`model/list`検証と区別する。隔離CODEX_HOMEの古い合成スレッドを`--no-daemon`でresumeし、実際に`/model`を開く。模擬提供元では追加したFuture Test、本番カタログではKimi K3.1 Proの表示を確認した（0.164.0）。一覧表示だけの検証であり、Kimiへの実推論やユーザーの実スレッドへの送信は行っていない。
