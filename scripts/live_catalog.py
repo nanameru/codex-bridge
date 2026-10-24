@@ -79,6 +79,10 @@ if __name__ == "__main__":
         fcntl.flock(lock, fcntl.LOCK_EX)
         if args.apply:
             print(apply(root, args.port, args.restore))
+            print("設定ファイルの更新と、起動済み常駐app-serverへの反映は別です。")
+            print("他のチャットを止めずに読み込むには: codex resume <thread-id> --no-daemon")
+            print("通常起動にも反映するには、全チャットの作業終了後に codex app-server daemon restart を実行してください。")
+            print("このツールは常駐サーバーを停止しません。")
         else:
             candidate((root / "config.toml").read_text(), args.port)
             print("設定の検証が完了しました。適用は--apply、復元は--apply --restoreです")

@@ -671,3 +671,14 @@ cases:
     test_file: test/compaction-handoff.test.mjs
     issues: [76]
     notes: "修正前のTypeError/ETIMEDOUT/unknownによる1回停止を再現。接続失敗から1回復帰、2回停止後のcache非汚染、取消・HTTP受信後失敗の非再試行を検証。実app-server＋模擬接続失敗で履歴変換・回答・resume成功。実回線の無障害を保証しない。"
+
+  - id: TC-060
+    title: "常駐サーバーが古い設定を持つ場合も新設定で実CLIを再開できる"
+    feature: "動的カタログのCLI移行"
+    scenario: "既存daemon・合成旧スレッドresume・実モデル選択画面・他チャット非中断"
+    status: done
+    priority: high
+    type: manual
+    source: [scripts/live_catalog.py]
+    issues: [79]
+    notes: "Codex0.164.0の通常CLIが既存managed daemonへ再接続することを特定。隔離CODEX_HOMEの旧openaiスレッドを--no-daemonでresumeし、実/model画面で模擬追加Future Testと本番カタログのKimi K3.1 Pro（44番目）を確認。ユーザーのdaemon・履歴は変更せず、Kimi実推論は未実施。apply/unchanged/restore時も反映手順を表示する。"
