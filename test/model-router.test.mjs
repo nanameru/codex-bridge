@@ -1174,3 +1174,109 @@ test('remote compactionでも最新依頼や未完了ツールを切り捨てて
   }
   assert.equal(calls.length, 0);
 });
+
+test("upstream stream failure sends a safe terminal error instead of becoming a client cancellation", async context => {
+  let record;
+  const recorded = new Promise(resolve => { record = resolve; });
+  const { send } = await fixture(context, { onMetric: record,
+    fetcher: async () => new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n'));
+      setTimeout(() => controller.error(new Error('secret-key private-message https://private.example')), 40);
+    } }), { headers: { 'content-type': 'text/event-stream' } }) });
+  const response = await send({ model: 'gpt-test', stream: true });
+  const text = await response.text().catch(() => 'connection destroyed');
+  const metric = await recorded;
+  assert.match(text, /partial/);
+  assert.match(text, /event: response.failed/);
+  assert.match(text, /upstream_stream_error/);
+  assert.equal(metric.outcome, 'failed');
+  assert.equal(metric.termination_reason, 'upstream_stream_error');
+  assert.doesNotMatch(text + JSON.stringify(metric), /secret-key|private-message|private\.example/);
+});
+
+test("stream timeout sends a terminal error and records the deadline separately", async context => {
+  let record, cancelled = false;
+  const recorded = new Promise(resolve => { record = resolve; });
+  const { send } = await fixture(context, { onMetric: record, timeoutMs: 100,
+    fetcher: async () => new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
+    }, cancel() { cancelled = true; } }), { headers: { 'content-type': 'text/event-stream' } }) });
+  const response = await send({ model: 'gpt-test', stream: true });
+  const text = await response.text().catch(() => 'connection destroyed');
+  const metric = await recorded;
+  assert.match(text, /event: response.failed/);
+  assert.match(text, /request_timeout/);
+  assert.equal(metric.outcome, 'timeout');
+  assert.equal(metric.termination_reason, 'deadline_exceeded');
+  assert.equal(cancelled, true);
+});
+
+test("client cancellation stops upstream without recording a provider failure", async context => {
+  let record, cancelled = false;
+  const recorded = new Promise(resolve => { record = resolve; });
+  const { send } = await fixture(context, { onMetric: record,
+    fetcher: async () => new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
+    }, cancel() { cancelled = true; } }), { headers: { 'content-type': 'text/event-stream' } }) });
+  const response = await send({ model: 'gpt-test', stream: true });
+  const reader = response.body.getReader();
+  await reader.read(); await reader.cancel();
+  const metric = await recorded;
+  assert.equal(metric.outcome, 'aborted');
+  assert.equal(metric.termination_reason, 'client_disconnected');
+  assert.equal(cancelled, true);
+});
+
+test("a real upstream socket reset is reported through SSE without retrying inference", async context => {
+  let record;
+  const recorded = new Promise(resolve => { record = resolve; });
+  const { send, calls } = await fixture(context, { onMetric: record,
+    upstreamResponse: ({ response }) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"type":"response.output_text.delta","delta":"before reset"}\n\n');
+      setTimeout(() => response.destroy(), 40);
+      return true;
+    } });
+  const response = await send({ model: 'gpt-test', stream: true });
+  const text = await response.text();
+  const metric = await recorded;
+  assert.match(text, /before reset/);
+  assert.match(text, /upstream_stream_error/);
+  assert.equal(metric.outcome, 'failed');
+  assert.equal(metric.termination_reason, 'upstream_stream_error');
+  assert.equal(metric.transport_error_code, 'UND_ERR_SOCKET');
+  assert.equal(calls.length, 1);
+});
+
+test("a header timeout remains HTTP 504 with a separate deadline outcome", async context => {
+  let record;
+  const recorded = new Promise(resolve => { record = resolve; });
+  const { send } = await fixture(context, { onMetric: record, timeoutMs: 50,
+    fetcher: async (_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('secret-timeout')), { once: true });
+    }) });
+  const response = await send({ model: 'gpt-test' });
+  assert.equal(response.status, 504);
+  const body = await response.json();
+  assert.equal(body.error.type, 'request_timeout');
+  assert.doesNotMatch(JSON.stringify(body), /secret-timeout/);
+  const metric = await recorded;
+  assert.equal(metric.outcome, 'timeout');
+  assert.equal(metric.termination_reason, 'deadline_exceeded');
+});
+
+test("aborting an incomplete request body is classified as client input cancellation", async context => {
+  let record;
+  const recorded = new Promise(resolve => { record = resolve; });
+  const { base, calls } = await fixture(context, { onMetric: record, timeoutMs: 2000 });
+  const request = http.request(base + '/responses', { method: 'POST',
+    headers: { authorization: 'Bearer synthetic-token', 'content-type': 'application/json' } });
+  request.on('error', () => {});
+  request.write('{"model":"gpt-test","input":"unfinished');
+  await new Promise(resolve => setTimeout(resolve, 40));
+  request.destroy();
+  const metric = await recorded;
+  assert.equal(metric.outcome, 'aborted');
+  assert.equal(metric.termination_reason, 'client_request_aborted');
+  assert.equal(calls.length, 0);
+});

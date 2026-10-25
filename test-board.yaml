@@ -922,3 +922,27 @@ cases:
     test_file: test/cli-model-sync.test.mjs
     issues: [95]
     notes: "config/readの値を保存せず検査済みprovider名だけを30秒/接続単位cache。codex-liveの実CLI E2Eと実環境22接続のprepare読取検証に成功。"
+
+  - id: TC-081
+    title: "ストリーム障害とキャンセルを区別し安全な理由をCLIへ返す"
+    feature: "ストリーム終了と障害通知"
+    scenario: "上流ストリーム例外・実socket切断・ヘッダー/本文タイムアウト・本人キャンセル・機密を含む例外・再試行なし"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [97]
+    notes: "HTTP200と完走を区別。pipelineからHTTP応答を分離し、固定文の終端SSE response.failedを送る。終了原因と許可済みtransport codeだけを記録する。"
+
+  - id: TC-082
+    title: "実Codexがストリーム障害と期限超過の理由を受け取る"
+    feature: "CLIのストリーム終端エラー"
+    scenario: "隔離設定・合成キー・外部通信しない模擬上流で切断/期限超過が理由付きfailedとなる"
+    status: done
+    priority: high
+    type: e2e
+    source: [src/model-router.mjs, test/stream-error-driver.mjs]
+    test_file: test/stream-error-e2e.py
+    issues: [97]
+    notes: "各1回の模擬推論。stream_max_retries=0でCLIの再試行も止め、一般的なstream closedへ理由が失われないことを検証する。"

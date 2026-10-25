@@ -670,8 +670,15 @@ macOS常駐時は`~/.codex/log/model-router.log`で確認できます。
 - `first_upstream_byte_ms`: 最終送信先の最初のデータまでの時間（回答の最初のトークンとは異なる）
 - `upstream_stream_ms` / `total_ms`: 本文転送時間 / 入力受信を含む合計時間
 - `received_bytes` / `forwarded_bytes` / `response_bytes`: 受信wire / 変換後送信 / 上流本文のbytes（トークン数ではない）
+- `outcome`: `complete`（転送完了）/ `rejected`（HTTPで拒否）/ `aborted`（クライアント中断）/ `timeout`（期限超過）/ `failed`（上流・変換処理の障害）
+- `termination_reason`: `client_request_aborted` / `client_disconnected` / `deadline_exceeded` / `upstream_error` / `upstream_stream_error`。最初の終了原因を保持する
+- `transport_error_code`: 許可した通信エラーコードのみ。例外の生message・上流URLは保存しない
 
 本文・認証・会話ID・キャッシュキーは記録しません。`complete`は転送完了であり、HTTP 200内のモデルエラーがないことまでは保証しません。
+上流ストリームの障害や期限超過は、接続が残っていればSSEの終端`response.failed`で固定文の理由を返します。
+HTTP 200が既に送られていても`outcome`は障害として記録し、途中回答の再推論やサービスの自動切替は行いません。
+実Codexでの通知確認は`python3 test/stream-error-e2e.py`で実行できます。
+隔離した設定・合成APIキー・模擬上流だけを使用します（ローカルに`codex`が必要）。
 
 ### 既存のhome-runner版への反映
 
