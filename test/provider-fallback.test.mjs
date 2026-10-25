@@ -3,9 +3,40 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { ProviderFallbackState, classifyProviderLimit } from "../src/provider-fallback.mjs";
+import { ProviderFallbackState, classifyProviderLimit, classifyTransientProviderLimit } from "../src/provider-fallback.mjs";
 
 const now = Date.parse("2026-10-25T00:00:00Z");
+
+test('temporary 429 cooldown is bounded, honors Retry-After and never persists as quota', async () => {
+  for(const [header,wait] of [[undefined,30000],['0',1000],['45',45000],['999999',300000],['invalid',30000],
+    [new Date(now+60000).toUTCString(),60000]]) {
+    const response=Response.json({error:{code:'rate_limit_exceeded',message:'Too many requests'}},
+      {status:429,headers:header===undefined?{}:{'retry-after':header}});
+    const transient=await classifyTransientProviderLimit(response,{now});
+    assert.equal(transient.resetAt,now+wait);
+    const file=join(mkdtempSync(join(tmpdir(),'transient-limit-')),'state.json');
+    let clock=now;
+    const state=new ProviderFallbackState({file,now:()=>clock});
+    state.recordTransient('opencode',transient);
+    assert.equal(state.available('opencode'),false);assert.deepEqual(state.snapshot('opencode').windows,{});
+    assert.equal(state.earliestUnblockAt(),now+wait);
+    assert.equal(new ProviderFallbackState({file,now:()=>clock}).available('opencode'),true);
+    state.recordLimit('commandcode',{providerLimited:true,window:'monthly',status:402,resetAt:now+86400000});
+    assert.ok(!readFileSync(file,'utf8').includes('opencode'));
+    clock+=wait;assert.equal(state.available('opencode'),true);
+    assert.equal(state.available('commandcode'),false);
+  }
+  assert.equal(await classifyTransientProviderLimit(Response.json({error:{message:'codex-bridge: protected'}},{status:429})),null);
+  assert.equal(await classifyTransientProviderLimit(Response.json({},{status:503})),null);
+  assert.equal(await classifyTransientProviderLimit(Response.json({error:{code:'monthly_limit_exceeded'}},{status:429})),null);
+  let clock=now;
+  const overlap=new ProviderFallbackState({now:()=>clock});
+  overlap.recordLimit('opencode',{providerLimited:true,window:'monthly',status:429,resetAt:now+86400000});
+  overlap.recordTransient('opencode',{transientLimited:true,resetAt:now+30000});
+  assert.equal(overlap.nextResetAt('opencode'),now+30000);
+  assert.equal(overlap.unblockAt('opencode'),now+86400000);
+  clock+=30001;assert.equal(overlap.available('opencode'),false);
+});
 
 test("classifies only explicit quota exhaustion and preserves general 429", async () => {
   const quota = Response.json({ error: {

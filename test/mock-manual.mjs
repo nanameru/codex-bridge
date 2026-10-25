@@ -26,8 +26,10 @@ for(const provider of ['openai','opencode','commandcode','ollama',...(process.en
       res.writeHead(402, {'content-type':'application/json'});res.end(JSON.stringify({error:{message:'Subscription inactive. Add credits.'}}));return;
     }
     if (automatic && !summary && !compact && ((provider === 'opencode' && phase >= 1) || (provider === 'commandcode' && phase >= 2))) {
-      res.writeHead(429, {'content-type':'application/json'});
-      res.end(JSON.stringify({error:{code:'usage_exceeded',window:provider === 'opencode'?'monthly':'weekly',resets_at:new Date(clock+60000).toISOString()}}));
+      const transient=process.env.CODEX_TEST_TRANSIENT_429==='1';
+      res.writeHead(429, {'content-type':'application/json',...(transient?{'retry-after':'60'}:{})});
+      res.end(JSON.stringify({error:transient?{code:'rate_limit_exceeded',message:'Too many requests'}:
+        {code:'usage_exceeded',window:provider === 'opencode'?'monthly':'weekly',resets_at:new Date(clock+60000).toISOString()}}));
       return;
     }
     res.writeHead(200,{'content-type':'text/event-stream'});

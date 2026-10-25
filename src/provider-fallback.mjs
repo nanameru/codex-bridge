@@ -209,6 +209,22 @@ export async function classifyProviderLimit(response, { now = Date.now(), unknow
   });
 }
 
+// Separate from quota exhaustion: this short-lived state must never be written
+// to the durable subscription-window file. The bridge's own guard stays local.
+export async function classifyTransientProviderLimit(response, { now = Date.now() } = {}) {
+  if (response?.status !== 429) return null;
+  const payload = await readFailurePayload(response);
+  const error = errorObject(payload);
+  if (safeText(error.message).startsWith("codex-bridge:")) return null;
+  const headers = headerObject(response.headers);
+  if (hasQuotaSignal(response.status, error, searchableFailure(error, payload, headers), headers)) return null;
+  const retry = response.headers.get("retry-after")?.trim();
+  let waitMs = 30000;
+  if (/^\d{1,6}$/.test(retry ?? "")) waitMs = Number(retry) * 1000;
+  else if (retry && retry.length <= 128 && Number.isFinite(Date.parse(retry))) waitMs = Date.parse(retry) - now;
+  return { transientLimited: true, resetAt: now + Math.min(300000, Math.max(1000, waitMs)) };
+}
+
 function validEntry(entry) {
   return entry && typeof entry === "object" && !Array.isArray(entry)
     && Number.isSafeInteger(entry.until) && entry.until > 0
@@ -289,10 +305,12 @@ export class ProviderFallbackState {
     this.file = file;
     this.now = now;
     this.unknownCooldownMs = unknownCooldownMs;
+    this.transient = new Map();
     this.state = file ? readStateFile(file) : { version: PROVIDER_STATE_VERSION, providers: {} };
   }
 
   #prune(provider) {
+    if (this.transient.get(provider) <= this.now()) this.transient.delete(provider);
     const entry = this.state.providers[provider];
     if (!entry) return;
     const now = this.now();
@@ -308,7 +326,7 @@ export class ProviderFallbackState {
 
   available(provider) {
     this.#prune(provider);
-    return !this.state.providers[provider];
+    return !this.state.providers[provider] && !this.transient.has(provider);
   }
 
   candidates(order = AUTO_DEEPSEEK_PROVIDERS) {
@@ -332,21 +350,30 @@ export class ProviderFallbackState {
     return this.snapshot(provider);
   }
 
+  recordTransient(provider, result) {
+    if (!ALL_FALLBACK_PROVIDERS.includes(provider) || !result?.transientLimited || !Number.isSafeInteger(result.resetAt))
+      throw new Error("provider_transient_limit_invalid");
+    const now = this.now();
+    this.transient.set(provider, Math.max(this.transient.get(provider) ?? 0,
+      now + Math.min(300000, Math.max(1000, result.resetAt - now))));
+    return this.snapshot(provider);
+  }
+
   recordSuccess(provider) {
-    this.#prune(provider);
-    if (this.state.providers[provider]) return this.snapshot(provider);
-    return null;
+    return this.available(provider) ? null : this.snapshot(provider);
   }
 
   nextResetAt(provider) {
     this.#prune(provider);
     const windows = Object.values(this.state.providers[provider]?.windows ?? {});
+    if (this.transient.has(provider)) windows.push({ until: this.transient.get(provider) });
     return windows.length ? Math.min(...windows.map(window => window.until)) : null;
   }
 
   unblockAt(provider) {
     this.#prune(provider);
     const windows = Object.values(this.state.providers[provider]?.windows ?? {});
+    if (this.transient.has(provider)) windows.push({ until: this.transient.get(provider) });
     return windows.length ? Math.max(...windows.map(window => window.until)) : null;
   }
 
@@ -358,7 +385,8 @@ export class ProviderFallbackState {
   snapshot(provider) {
     this.#prune(provider);
     const entry = this.state.providers[provider];
-    if (!entry) return { provider, available: true, windows: {} };
-    return { provider, available: false, windows: structuredClone(entry.windows) };
+    const transientUntil = this.transient.get(provider);
+    return { provider, available: !entry && !transientUntil, windows: structuredClone(entry?.windows ?? {}),
+      ...(transientUntil ? { transientUntil } : {}) };
   }
 }

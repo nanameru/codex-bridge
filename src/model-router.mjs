@@ -20,7 +20,7 @@ import { providerHelp, allProviderHelp, providerNoticeStream } from "./provider-
 import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel } from "./cli-model-sync.mjs";
 import { WhatstokenFreeGate } from "./whatstoken-free.mjs";
 import { AUTO_DEEPSEEK_MODEL, AUTO_DEEPSEEK_PROVIDERS, ProviderFallbackState,
-  classifyProviderLimit } from "./provider-fallback.mjs";
+  classifyProviderLimit, classifyTransientProviderLimit } from "./provider-fallback.mjs";
 
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
 // These JSON endpoints belong to OpenAI, irrespective of the selected chat model.
@@ -174,8 +174,9 @@ function envLimit(name, fallback) {
 
 export const readOpenCodeKey = readOpenCodeApiKey;
 
-export async function fetchWithAvailabilityRetry(fetcher, url, options, onRetry = () => {}) {
+export async function fetchWithAvailabilityRetry(fetcher, url, options, onRetry = () => {}, { retry429 = true } = {}) {
   const upstream = await fetcher(url, options);
+  if (upstream.status === 429 && !retry429) return upstream;
   if (![429, 502, 503].includes(upstream.status) || !upstream.body) return upstream;
   const reader = upstream.clone().body.getReader();
   const cancel = () => { reader.cancel().catch(() => {}); };
@@ -456,7 +457,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             const earliest = state.earliestUnblockAt(order);
             if (earliest) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
             fail(response, 429, "provider_limits_exhausted",
-              "DeepSeek V4.1 Flashの全提供元が利用枠制限中です。制限解除を待つか、利用枠・支払い設定を確認してください。" + allProviderHelp());
+              "DeepSeek V4.1 Flashの全提供元が一時制限または利用枠制限中です。制限解除を待つか、利用枠・支払い設定を確認してください。" + allProviderHelp());
           } else {
             fail(response, 503, "auto_provider_credentials_required",
               "自動切替候補の認証情報を準備してください。選択モデルと会話履歴は保持しています。" + allProviderHelp());
@@ -754,7 +755,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       // must continue to use that same provider and conversion path.
       let routeFetch = makeRouteFetch(route);
       let send = route.provider === "opencode"
-        ? (url, options) => fetchWithAvailabilityRetry(fetcher, url, options, () => { metric.upstream_retries = 1; }) : routeFetch;
+        ? (url, options) => fetchWithAvailabilityRetry(fetcher, url, options, () => { metric.upstream_retries = 1; },
+          { retry429: !metric.auto_fallback }) : routeFetch;
       const syncSelection = async () => {
         if (cliContext) {
           metric.cli_model_sync = await getModelSync().sync(cliContext,
@@ -775,18 +777,26 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           const limit = await classifyProviderLimit(upstream, {
             now: state.now(), unknownCooldownMs: providerFallbackCooldownMs,
           });
+          const transient = !limit && route.provider !== 'whatstoken'
+            ? await classifyTransientProviderLimit(upstream, { now: state.now() }) : null;
           if (limit) {
             try { state.recordLimit(route.provider, limit); }
             catch { metric.provider_state_error = true; } // The in-memory block remains active.
           }
-          if (!limit && route.provider !== 'whatstoken') break;
+          if (transient) {
+            state.recordTransient(route.provider, transient);
+            metric.provider_transient_provider = route.provider;
+          }
+          if (!limit && !transient && route.provider !== 'whatstoken') break;
           if (route.provider === 'whatstoken') freeGate.unavailable?.();
-          providerNotices.push(route.provider === 'whatstoken'
+          providerNotices.push(transient ? `${route.provider}が一時制限中のため、別の提供元へ切り替えます。` : route.provider === 'whatstoken'
             ? 'WhatsTokenの無料経路が利用できないため、既存の提供元へ切り替えます。' + providerHelp('whatstoken')
             : `提供元の利用枠を確認してください。${providerHelp(route.provider)}`);
-          metric.provider_limit_provider = route.provider;
-          metric.provider_limit_window = limit?.window;
-          metric.provider_limit_reset_known = limit?.resetKnown;
+          if (limit) {
+            metric.provider_limit_provider = route.provider;
+            metric.provider_limit_window = limit.window;
+            metric.provider_limit_reset_known = limit.resetKnown;
+          }
           let next = null;
           while (fallbackRoutes.length) {
             const candidateRoute = fallbackRoutes.shift();
