@@ -100,3 +100,9 @@ test('WhatsTokenの送信本文だけから登録済みのAPIキーを伏せ、�
   assert.doesNotMatch(sent,/commandcode-key|native-secret/);assert.match(sent,/credential redacted/);
   assert.deepEqual(input,before);assert.equal(f.calls[0].headers.authorization,'Bearer whatstoken-key');
 });
+
+test('無料判定の注入clockと送信前の残時間判定に同じ時刻を使う',async t=>{
+  const clock=Date.parse('2026-01-01T22:30:00+08:00');
+  const f=await fixture(t,{gate:{now:()=>clock,check:async()=>({allowed:true,end:clock+3600000}),unavailable(){}}});
+  assert.equal((await f.send()).status,200);assert.deepEqual(f.calls.map(c=>c.provider),['whatstoken']);
+});

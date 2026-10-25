@@ -7,6 +7,7 @@ function models() {
   return { models: [{ model_id: 'deepseek-v4.1-flash-1017', has_ha: false,
     discount_schedule: '{"enabled":false}', billing: { billing_type: 'tokens', billing_rule: 'standard',
       pricing_tiers: '[]', prompt_rate: 0.15, completion_rate: 0.6, cached_rate: 0.003,
+      fixed_rate: 0, duration_rate: 0, claude_cache_creation_rate: 0, claude_cache_read_rate: 0,
       extended_config: JSON.stringify({ enable_time_multipliers: true, time_input_tz: 'operation',
         web_search_rate: 0, invert_time_multipliers: true, invert_remainder_multiplier: 1,
         time_multipliers: [
@@ -29,12 +30,14 @@ test('無料料金・運用timezone・通常モデル・翌境界の変更はfai
     m => { m.models[0].model_id += '-special'; },
     m => { m.models.push(structuredClone(m.models[0])); },
     m => { m.models[0].has_ha = true; },
+    m => { m.models[0].billing.fixed_rate = 1; },
     m => { m.models[0].billing.pricing_tiers = '[{}]'; },
     m => { m.models[0].discount_schedule = '{"enabled":true}'; },
     m => { m.models[0].billing.extended_config = '{"enable_time_multipliers":false}'; },
     m => { const c=JSON.parse(m.models[0].billing.extended_config);c.time_multipliers[1].end='23:00';m.models[0].billing.extended_config=JSON.stringify(c); },
     m => { const c=JSON.parse(m.models[0].billing.extended_config);c.time_multipliers.push({days:[7],start:'22:31',end:'22:32',multiplier:1});m.models[0].billing.extended_config=JSON.stringify(c); },
     m => { const c=JSON.parse(m.models[0].billing.extended_config);c.web_search_rate=1;m.models[0].billing.extended_config=JSON.stringify(c); },
+    m => { const c=JSON.parse(m.models[0].billing.extended_config);c.request_fee=1;m.models[0].billing.extended_config=JSON.stringify(c); },
   ];
   for (const mutate of mutations) { const m=models();mutate(m);assert.equal(publishedFree(m, settings, at('22:30:00')),false); }
   assert.equal(publishedFree(models(), {site:{default_timezone:'Asia/Tokyo'}}, at('22:30:00')),false);

@@ -730,7 +730,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         ? async (url, options) => {
           if (candidateRoute.provider === 'whatstoken') {
             const eligibility = whatstokenFreeEnabled ? await freeGate.check(options.signal) : { allowed: false };
-            const remaining = eligibility.end - Date.now() - 5000;
+            const remaining = eligibility.end - (freeGate.now?.() ?? Date.now()) - 5000;
             if (!eligibility.allowed || !Number.isSafeInteger(remaining) || remaining <= 0)
               return Response.json({ error: { code: 'free_window_unavailable' } }, { status: 503 });
             const deadline = AbortSignal.timeout(Math.min(remaining, timeoutMs));
@@ -989,7 +989,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     seed: JSON.parse(readFileSync(new URL("./models.json", import.meta.url), "utf8")).models,
     key: readOpenCodeKey, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
   const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
-    catalogProvider, manualProvidersEnabled: process.env.CODEX_CHAT_PROVIDERS !== "0",
+    catalogProvider, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
     cliModelSyncEnabled: process.env.CODEX_CLI_MODEL_SYNC !== "0",
     onMetric: (metric) => console.log(JSON.stringify(metric)) });
   server.listen(Number(process.env.ROUTER_PORT ?? 8790), "127.0.0.1", () => {

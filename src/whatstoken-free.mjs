@@ -47,11 +47,16 @@ export function publishedFree(models, settings, now) {
   if (model.has_ha !== false || billing?.billing_type !== 'tokens' || billing?.billing_rule !== 'standard') return false;
   if (parseJSON(model.discount_schedule, {})?.enabled !== false) return false;
   if (JSON.stringify(parseJSON(billing.pricing_tiers, null)) !== '[]') return false;
+  if (!['fixed_rate', 'duration_rate', 'claude_cache_creation_rate', 'claude_cache_read_rate']
+    .every(name => billing[name] === 0)) return false;
   if (![billing.prompt_rate, billing.completion_rate, billing.cached_rate].every(value => typeof value === 'number' && Number.isFinite(value) && value >= 0)) return false;
   const config = parseJSON(billing.extended_config, null);
   if (!config || config.enable_time_multipliers !== true || config.time_input_tz !== 'operation'
       || config.invert_time_multipliers !== true || config.invert_remainder_multiplier !== 1
       || config.web_search_rate !== 0 || !Array.isArray(config.time_multipliers)) return false;
+  const known = new Set(['enable_time_multipliers', 'invert_time_multipliers', 'invert_remainder_multiplier',
+    'time_input_tz', 'time_multipliers', 'web_search_rate', 'supported_models']);
+  if (Object.keys(config).some(name => !known.has(name))) return false;
   const slots = config.time_multipliers;
   if (slots.some(slot => !slot || !Array.isArray(slot.days) || !slot.days.length
       || slot.days.some(day => !Number.isInteger(day) || day < 1 || day > 7)
@@ -76,6 +81,8 @@ async function publicJSON(fetcher, url, signal, now) {
     response.body?.cancel().catch(() => {}); throw new Error('free_policy_unavailable');
   }
   const date = Date.parse(response.headers.get('date'));
+  // Detect local clock skew; this is not independent proof of provider policy.
+  // The fixed HTTPS origin is the trust boundary for the public pricing data.
   if (!Number.isFinite(date) || Math.abs(date - now) > 120000) {
     response.body.cancel().catch(() => {}); throw new Error('free_policy_clock_unverified');
   }
