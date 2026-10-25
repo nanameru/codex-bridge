@@ -791,7 +791,10 @@ Codex自身が選択IDを保存するため、会話ID対応表を作らずに�
 
 control socketは所有者・0600権限・親ディレクトリを検証します。読取/モデル設定更新だけを使い、
 本文・秘密・会話IDを新たに保存せず、threadの購読やtool/承認requestへの応答も行いません。
-接続できなくても推論ルートを維持し、同期失敗は`cli_model_sync`へ記録します。
+接続名が`codex-live`等でも、`config/read`の定義が当該ルーターの待受port・`/v1`を指し、
+`requires_openai_auth=true`なら同期します。外部URL・別port/path・認証不要のproviderは対象外です。
+検査結果のprovider名だけを30秒/接続単位でcacheし、設定値や秘密を記録しません。
+接続できなくても推論ルートを維持し、同期失敗は`cli_model_sync`と固定カテゴリの`cli_model_sync_reason`へ記録します。
 `CODEX_CLI_MODEL_SYNC=0`で表示同期を無効化できます。`--no-daemon`のCLIやAppの表示同期は対象外です。
 
 項目の追加は`python3 scripts/manual_providers.py install-models`で行います。

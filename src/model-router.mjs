@@ -235,7 +235,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   if (manualProvidersEnabled) catalog = withManualModels(catalog);
   let routes = catalogRoutes(catalog);
   let modelSync = cliModelSync;
-  const getModelSync = () => modelSync ??= new CliModelSync({ root: codexRoot });
+  const getModelSync = () => modelSync ??= new CliModelSync({ root: codexRoot,
+    routerBase: `http://127.0.0.1:${server.address()?.port ?? 8790}/v1` });
   let fallbackState = providerFallbackState;
   const getFallbackState = () => fallbackState ??= new ProviderFallbackState({
     file: providerFallbackFile, unknownCooldownMs: providerFallbackCooldownMs,
@@ -402,8 +403,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       if (cliModelSyncEnabled && autoProviderFallback && route.transport !== "responses" && path === "/v1/responses"
           && !body.input?.some?.(item => item.type === "compaction_trigger")) {
         cliContext = await getModelSync().prepare(cliThreadId(body, request.headers),
-          route.provider === "opencode" && route.autoFallback ? CLI_AUTO_MODEL : body.model);
-        if (route.autoFallback) metric.cli_model_sync = cliContext ? "ready" : "unavailable";
+          route.provider === "opencode" && route.autoFallback ? CLI_AUTO_MODEL : body.model,
+          reason => { metric.cli_model_sync_reason = reason; });
+        if (route.autoFallback) metric.cli_model_sync = cliContext ? "ready"
+          : metric.cli_model_sync_reason === "manual_selection" ? "manual" : "unavailable";
       }
       let fallbackRoutes = [];
       if (autoProviderFallback && route.autoFallback && route.transport !== "responses"

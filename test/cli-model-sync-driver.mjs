@@ -10,6 +10,8 @@ import { CliControl } from '../src/cli-control.mjs';
 const root = process.env.CODEX_HOME;
 assert.match(root, /provider-fallback-e2e-/); // Never manage the user's daemon.
 const binary = process.env.CODEX_BIN || 'codex';
+const provider = process.env.CODEX_TEST_MODEL_PROVIDER || 'openai';
+assert.ok(['openai','codex-live'].includes(provider));
 const upstream = spawn(process.execPath, [fileURLToPath(new URL('./mock-manual.mjs', import.meta.url))], {
   env: process.env, stdio: ['pipe','pipe','inherit'] });
 const lines = createInterface({ input: upstream.stdout });
@@ -17,14 +19,15 @@ const read = () => once(lines, 'line').then(([line]) => JSON.parse(line));
 let control, daemon;
 try {
   const base = (await read()).url;
-  writeFileSync(join(root, 'config.toml'), `model="gpt-6.1-sol"\nmodel_provider="openai"\nopenai_base_url=${JSON.stringify(base)}\nmodel_catalog_json=${JSON.stringify(join(root,'unified-model-catalog.json'))}\n`);
+  writeFileSync(join(root, 'config.toml'), `model="gpt-6.1-sol"\nmodel_provider=${JSON.stringify(provider)}\nopenai_base_url=${JSON.stringify(base)}\nmodel_catalog_json=${JSON.stringify(join(root,'unified-model-catalog.json'))}\n`);
+  if(provider!=='openai')writeFileSync(join(root,'config.toml'),`\n[model_providers.${provider}]\nname="Mock local router"\nwire_api="responses"\nrequires_openai_auth=true\nbase_url=${JSON.stringify(base)}\n`,{flag:'a'});
   daemon=spawn(binary,['app-server','--listen','unix://'],{env:process.env,stdio:['ignore','ignore','ignore']});
   for(let i=0;!existsSync(join(root,'app-server-control/app-server-control.sock'));i++){assert.ok(i<100,'socket timeout');await new Promise(r=>setTimeout(r,50));}
   const events=[];
   control = new CliControl({ socketPath: join(root,'app-server-control/app-server-control.sock'),
     timeoutMs:5000, observeAll:true, onNotification: event => events.push(event) });
   const startedThread = await control.request('thread/start', { cwd:root, sandbox:'read-only', approvalPolicy:'never',
-    model:'opencode/deepseek-v4.1-flash', config:{openai_base_url:base,model_catalog_json:join(root,'unified-model-catalog.json')} });
+    model:'opencode/deepseek-v4.1-flash', modelProvider:provider, config:{openai_base_url:base,model_catalog_json:join(root,'unified-model-catalog.json')} });
   const id=startedThread.thread.id;
   const command = async text => { const result=read(); upstream.stdin.write(text+'\n'); return result; };
   const tmux='codex-bridge-test-'+process.pid;
@@ -61,7 +64,9 @@ try {
         assert.ok(Date.now()<deadline,'turn timeout');await new Promise(r=>setTimeout(r,10));
       }
       if(status==='completed')assert.ok(events.slice(start).some(e=>e.method==='item/agentMessage/delta'&&e.params.delta.includes(provider+'_OK')),provider+' missing from mock');
-      assert.equal((await control.request('thread/read',{threadId:id,includeTurns:false})).thread.model,(manual||provider==='opencode'?'':'auto-')+provider+'/deepseek-v4.1-flash');
+      const current=(await control.request('thread/read',{threadId:id,includeTurns:false})).thread;
+      assert.equal(current.model,(manual||provider==='opencode'?'':'auto-')+provider+'/deepseek-v4.1-flash');
+      assert.equal(current.modelProvider,process.env.CODEX_TEST_MODEL_PROVIDER||'openai');
     }
     await command('phase:1'); await turn('commandcode');
     assert.ok(events.some(e=>e.method==='thread/settings/updated' && e.params.threadSettings.model==='auto-commandcode/deepseek-v4.1-flash'));
