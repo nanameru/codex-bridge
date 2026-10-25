@@ -124,10 +124,10 @@ def prepare(root, source_root):
         if not isinstance(model, dict):
             raise ValueError("モデルカタログの形式が不正です")
         cached_slug = model.get("slug")
-        if isinstance(cached_slug, str) and cached_slug.startswith("opencode/"):
+        if isinstance(cached_slug, str) and cached_slug.startswith(("opencode/", "commandcode/", "ollama/", "auto-commandcode/", "auto-ollama/")):
             # Dynamic discovery stores the combined list in Codex's shared cache.
-            # Rebuild Go models from their own source, never as native GPT routes.
-            checked_slug(cached_slug[len("opencode/"):])
+            # Rebuild external routes from their own source, never as native GPT routes.
+            checked_slug(cached_slug.split("/", 1)[1])
             continue
         slug = checked_slug(model.get("slug"))
         if slug.startswith("opencode/"):

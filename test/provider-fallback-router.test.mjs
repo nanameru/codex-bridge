@@ -171,3 +171,44 @@ test('前候補の小さいcontextを次候補の入力上限へ引き継がな�
   assert.deepEqual(f.calls.map(c => c.provider), ['opencode','commandcode','ollama']);
   assert.equal(f.metrics.at(-1).effective_input_limit_tokens, 7500);
 });
+
+test('CLI同期で再選択したOpenCodeにも通常経路の制限を適用し直接APIを使わない', async t => {
+  const selected=[];
+  const f=await fixture(t,p=>p==='opencode'?quota():answer(p),{
+    cliModelSyncEnabled:true,
+    cliModelSync:{prepare:async()=>({automatic:true}),sync:async(_context,target)=>{selected.push(target);return 'updated';},close(){}},
+    catalog:{models:catalog.models.map(m=>m.router_provider==='opencode'?{...m,router_transport:'responses'}:m)},
+    openCodeKey:()=>{throw new Error('direct API credential must not be read');},
+  });
+  const response=await f.send({prompt_cache_key:'019a12ab-1234-7654-a123-123456789012'});
+  assert.equal(response.status,200);await response.text();
+  assert.deepEqual(f.calls.map(c=>c.provider),['opencode','commandcode']);
+  assert.ok(f.calls[0].url.startsWith('http://127.0.0.1:8788/'));
+  assert.deepEqual(selected,['opencode/deepseek-v4.1-flash','auto-commandcode/deepseek-v4.1-flash']);
+});
+
+test('全社制限中は3社の固定リンクを表示する', async t => {
+  const f=await fixture(t);
+  for(const p of ['opencode','commandcode','ollama'])f.state.recordLimit(p,{providerLimited:true,resetAt:f.state.now()+60000});
+  const response=await f.send();const text=await response.text();
+  assert.equal(response.status,429);
+  for(const url of ['https://opencode.ai/console/go','https://commandcode.ai/billing','https://ollama.com/pricing'])assert.ok(text.includes(url));
+  assert.equal(f.calls.length,0);
+});
+
+test('OpenCodeの認証エラーにも固定リンクを出し上流のURLを隠す', async t => {
+  const f=await fixture(t,()=>Response.json({error:{message:'secret https://evil.invalid'}},{status:401}));
+  const response=await f.send();const text=await response.text();
+  assert.equal(response.status,401);assert.ok(text.includes('https://opencode.ai/console/'));
+  assert.ok(!text.includes('evil.invalid'));assert.ok(!text.includes('secret'));assert.equal(f.calls.length,1);
+});
+
+test('自動用Command Code/Ollamaの選択IDでもチェーンを維持し上位へ復帰する',async t=>{
+  const f=await fixture(t,p=>p==='commandcode'?quota():answer(p));
+  f.state.recordLimit('opencode',{providerLimited:true,window:'monthly',resetAt:f.state.now()+60000});
+  await (await f.send({model:'auto-commandcode/deepseek-v4.1-flash'})).text();
+  assert.deepEqual(f.calls.map(c=>c.provider),['commandcode','ollama']);
+  f.advance(61000);
+  await (await f.send({model:'auto-ollama/deepseek-v4.1-flash'})).text();
+  assert.equal(f.calls.at(-1).provider,'opencode');
+});
