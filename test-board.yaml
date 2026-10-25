@@ -5,6 +5,30 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-090
+    title: "分割要約が中断されても検証済みチャンクを再利用する"
+    feature: "長い履歴要約の再試行"
+    scenario: "中断後の履歴追記・認証/スレッド/内容の隔離・不完全応答除外・有界キャッシュ"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/summary-checkpoints.test.mjs
+    issues: [106]
+    notes: "完成済みのチャンクだけを本人スコープ別に最大64件保持。途中の全体要約を会話へ公開しない。"
+
+  - id: TC-091
+    title: "HTTPの全体期限後に再送しても要約の前半をやり直さない"
+    feature: "要約期限超過からの回復"
+    scenario: "実loopback HTTPで2番目の分割要求を待機させ、期限後の再試行で残りを完了する"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/compaction-handoff.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [106]
+    notes: "45万文字の合成履歴。期限前はOpenCodeへ送信0回、再試行完了後に1回だけ送り、最新依頼を保持する。"
+
   - id: TC-089
     title: "WhatsToken導入後も共有キャッシュからモデル一覧を再構成する"
     feature: "共有モデルキャッシュの互換性"

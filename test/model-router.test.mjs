@@ -1080,6 +1080,32 @@ test("context metadata is validated and is preserved for both slug and bare mode
   }
 });
 
+test('分割要約の全体期限後にHTTP再試行しても完了したチャンクを再送しない', async context => {
+  const metrics=[],summaries=[];
+  const {send,calls}=await fixture(context,{summaryModel:'gpt-test',summaryInputLimitTokens:40000,
+    timeoutMs:2500,handoffStatusDelayMs:1,onMetric:m=>metrics.push(m),
+    upstreamResponse:async({provider,response,body})=>{
+      if(provider!=='openai') return false;
+      summaries.push(body);
+      if(summaries.length===2) return true; // Hold this chunk until the router deadline.
+      response.writeHead(200,{'content-type':'application/json'});
+      response.end(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:'checkpoint'}]}]}));
+      return true;
+    }});
+  const body={model:'opencode/deepseek-test',stream:true,client_metadata:{thread_id:'checkpoint-thread'},
+    input:[{role:'user',content:'x'.repeat(450000)},{type:'compaction',encrypted_content:'opaque'},{role:'user',content:'latest requirement'}]};
+  const first=await send(body,{'session_id':'checkpoint-thread'});
+  assert.match(await first.text(),/response.failed/);
+  assert.equal(summaries.length,2);
+  assert.equal(calls.filter(c=>c.provider==='opencode').length,0);
+  const second=await send(body,{'session_id':'checkpoint-thread'});
+  assert.equal(second.status,200);await second.text();
+  assert.equal(JSON.stringify(summaries[2].input)===JSON.stringify(summaries[1].input),true,'resume at the interrupted chunk');
+  assert.ok(metrics.some(m=>m.summary_checkpoint_hits>=1));
+  assert.equal(calls.filter(c=>c.provider==='opencode').length,1);
+  assert.equal(calls.at(-1).body.input.at(-1).content,'latest requirement');
+});
+
 test('巨大なremote compactionを上限内で処理し通常会話のOpenCodeモデルを保持する', async context => {
   const selected = 'opencode/deepseek-test';
   const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', summaryInputLimitTokens: 40000,
