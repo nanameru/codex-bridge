@@ -61,7 +61,7 @@ export function manualChatBody(provider, body) {
   if (body.tool_choice !== undefined) result.tool_choice = body.tool_choice;
   if (body.max_output_tokens !== undefined) result.max_tokens = body.max_output_tokens;
   for (const key of ['temperature','top_p','frequency_penalty','presence_penalty']) if (body[key] !== undefined) result[key] = body[key];
-  if (provider === 'commandcode') Object.assign(result, reasoningOptions(config.model.split('/').at(-1), body.reasoning?.effort));
+  if (provider === 'commandcode' || provider === 'whatstoken') Object.assign(result, reasoningOptions(config.model.split('/').at(-1), body.reasoning?.effort));
   else if (body.reasoning?.effort !== undefined) result.reasoning_effort = body.reasoning.effort;
   return result;
 }

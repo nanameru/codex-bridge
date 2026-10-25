@@ -26,10 +26,11 @@ async function fixture(t,{enabled=true,key=true,eligible=true,handler=answer,gat
 }
 
 test('明示有効化と無料確認時だけWhatsToken通常モデルを専用の鍵で使う',async t=>{
-  const f=await fixture(t);assert.equal((await f.send()).status,200);
+  const f=await fixture(t);assert.equal((await f.send({reasoning:{effort:'medium'}})).status,200);
   assert.deepEqual(f.calls.map(c=>c.provider),['whatstoken']);
   const c=f.calls[0];assert.equal(c.url,'https://www.whatstoken.ai/v1/chat/completions');
   assert.equal(c.body.model,'deepseek-v4.1-flash-1017');assert.equal(c.headers.authorization,'Bearer whatstoken-key');
+  assert.equal(c.body.reasoning_effort,'high');assert.equal(c.body.thinking.type,'enabled');
   assert.equal(c.headers['chatgpt-account-id'],undefined);assert.equal(c.headers['x-codex-bridge-auth'],undefined);
   assert.doesNotMatch(JSON.stringify(c),/native-secret|private-account|local-bridge-only/);
 });
