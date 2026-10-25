@@ -31,6 +31,8 @@ test("preserves freeform tool history and schemas through the chat bridge", () =
   const converted = openCodeBody(body);
   assert.equal(converted.tools[0].type, "function");
   assert.equal(converted.tools[0].parameters.properties.input.type, "string");
+  assert.match(converted.tools[0].description, /JSON object containing exactly one string field/);
+  assert.match(converted.tools[0].description, /Format of the input string value/);
   assert.equal(JSON.parse(converted.input[0].arguments).input, body.input[0].input);
   assert.equal(converted.input[1].type, "function_call_output");
   assert.equal(converted.input[1].call_id, "call_1");

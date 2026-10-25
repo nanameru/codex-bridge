@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 const id = prefix => prefix + randomUUID().replaceAll('-', '');
 const encodeReasoning = text => 'cxb1:' + Buffer.from(text).toString('base64url');
 class ProtocolError extends Error {}
+const errorCode = error => error.reason === 'invalid_tool_arguments' ? 'server_error' : 'invalid_prompt';
 function primaryChoice(chunk) {
   if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) throw new ProtocolError('Chat応答の形式が不正です。');
   if (!Array.isArray(chunk.choices)) {
@@ -23,7 +24,7 @@ function validate(reason, calls) {
   for (const call of calls) {
     if (typeof call.id !== 'string' || !call.id || ids.has(call.id) || typeof call.function?.name !== 'string' || !call.function.name) throw new ProtocolError('Chatツール呼び出しのIDまたは名前が不正です。');
     ids.add(call.id);
-    try { const args = JSON.parse(call.function.arguments); if (!args || Array.isArray(args) || typeof args !== 'object') throw new Error('object required'); } catch { throw new ProtocolError('Chatツール引数が未完了です。ツールは実行していません。'); }
+    try { const args = JSON.parse(call.function.arguments); if (!args || Array.isArray(args) || typeof args !== 'object') throw new Error('object required'); } catch { throw Object.assign(new ProtocolError('上流モデルのツール引数が不正です。ツールは実行していません。'), { reason: 'invalid_tool_arguments' }); }
   }
 }
 function items(message) {
@@ -48,7 +49,7 @@ export function chatToResponses(chat, model) {
     return { ...envelope, status: 'completed', output: items(choice.message ?? {}), usage: {
       input_tokens: usage.prompt_tokens ?? 0, output_tokens: usage.completion_tokens ?? 0, total_tokens: usage.total_tokens ?? 0 } };
   } catch (error) {
-    return { ...envelope, status: 'failed', error: { code: 'invalid_prompt', ...(error.reason ? { reason: error.reason } : {}), message: error instanceof ProtocolError ? error.message : 'Chat応答の形式が不正です。' } };
+    return { ...envelope, status: 'failed', error: { code: errorCode(error), ...(error.reason ? { reason: error.reason } : {}), message: error instanceof ProtocolError ? error.message : 'Chat応答の形式が不正です。' } };
   }
 }
 export async function pipeChatStream(upstream, response, model, threadId, options = {}) {
@@ -159,7 +160,7 @@ export async function pipeChatStream(upstream, response, model, threadId, option
       usage: usage ? { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens, total_tokens: usage.total_tokens } : undefined } });
     response.end();
   } catch (error) {
-    emit('response.failed', { response: { ...envelope, status: 'failed', output: [], error: { code: error instanceof ProtocolError ? 'invalid_prompt' : 'server_error',
+    emit('response.failed', { response: { ...envelope, status: 'failed', output: [], error: { code: error instanceof ProtocolError ? errorCode(error) : 'server_error',
       ...(error.reason ? { reason: error.reason } : {}), message: error instanceof ProtocolError ? error.message : 'Chatストリームが中断しました。ツールは実行していません。' } } });
     response.end();
   } finally {

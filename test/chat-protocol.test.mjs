@@ -17,13 +17,33 @@ async function stream(chunks) {
 
 test('JSON rejects truncated, malformed, error and conflicting tools without executable output', () => {
   for (const data of [chat('length',[call]),chat(null,[call]),chat('stop',[call]),chat('tool_calls'),
-    chat('tool_calls',[{...call,function:{name:'probe',arguments:'{"partial"'}}]),chat('tool_calls',[call,call]),{error:{message:'PRIVATE'}}]) {
+    chat('tool_calls',[call,call]),{error:{message:'PRIVATE'}}]) {
     const result = chatToResponses(data,'test');
     assert.equal(result.status,'failed'); assert.deepEqual(result.output,[]); assert.equal(result.error.code,'invalid_prompt');
     assert.doesNotMatch(result.error.message,/PRIVATE/);
   }
   assert.equal(chatToResponses(chat('tool_calls',[call]),'test').output[0].phase,'commentary');
   assert.equal(chatToResponses(chat('stop'),'test').output[0].phase,'final_answer');
+});
+
+test('invalid upstream tool arguments are retryable without exposing or executing any tool', async () => {
+  for (const args of ['{"PRIVATE_FIXTURE":', '', 'null', '[]', '"PRIVATE_FIXTURE"', '{"input":"raw\nnewline"}']) {
+    const invalid = {...call, id:'call_2', function:{name:'probe', arguments:args}};
+    const json = chatToResponses(chat('tool_calls',[call, invalid]),'test');
+    const output = await stream([frame({choices:[{delta:{tool_calls:[{index:0,...call},{index:1,...invalid,id:'call_2'}]}}]}),
+      frame({choices:[{delta:{},finish_reason:'tool_calls'}]})]);
+    // Validate the whole batch before committing even the preceding valid tool.
+    const single = chatToResponses(chat('tool_calls',[invalid]),'test');
+    for (const failure of [single, json, output.at(-1).response]) {
+      assert.equal(failure.status,'failed');
+      assert.equal(failure.error.code,'server_error');
+      assert.equal(failure.error.reason,'invalid_tool_arguments');
+      assert.deepEqual(failure.output,[]);
+      assert.doesNotMatch(failure.error.message,/PRIVATE_FIXTURE|raw/);
+    }
+    assert.deepEqual(json.output,[]);
+    assert.ok(!output.some(e=>e.item?.type==='function_call'));
+  }
 });
 
 test('SSE cannot execute tools on EOF without finish_reason or on length/content_filter', async () => {

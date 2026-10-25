@@ -49,6 +49,12 @@ def run():
         home = Path(directory)
         for name in ['models_cache.json', 'model-catalog.json']:
             (home / name).write_bytes((source / name).read_bytes())
+        # A discovery cache may contain installed third-party namespaces. This
+        # fixture needs only the native template; no live routes or user config.
+        cache_path = home / 'models_cache.json'
+        cache = json.loads(cache_path.read_text())
+        cache['models'] = [model for model in cache['models'] if '/' not in model.get('slug', '')]
+        cache_path.write_text(json.dumps(cache))
         prepare(home, ROOT)
         (home / 'bridge-local-token').write_text('a' * 64 + '\n')
         (home / 'bridge-local-token').chmod(0o600)
@@ -76,12 +82,22 @@ def run():
                     ('MIXED_LOOP', 'completed', 10), ('LENGTH_LOOP', 'completed', 3), ('EMPTY_LOOP', 'completed', 3), ('TRUNCATED', 'failed', 0)]
             if os.environ.get('CHAT_PROTOCOL_CASES') == 'truncated':
                 cases = [('TRUNCATED', 'failed', 0)]
+            if os.environ.get('CHAT_PROTOCOL_CASES') == 'arguments':
+                cases = [('ARGS_RETRY', 'completed', 1), ('ARGS_ALWAYS_BAD', 'failed', 0)]
             for label, expected_status, expected_calls in cases:
                 outcome, count = turn(server, thread, label)
                 assert outcome['status'] == expected_status and count == expected_calls, (label, outcome, count)
             upstream.stdin.write('summary\n')
             upstream.stdin.flush()
             calls = json.loads(upstream.stdout.readline())['metrics']
+            if os.environ.get('CHAT_PROTOCOL_CASES') == 'arguments':
+                recovered = [call for call in calls if call['label'] == 'ARGS_RETRY']
+                failed = [call for call in calls if call['label'] == 'ARGS_ALWAYS_BAD']
+                assert len(recovered) == 3, len(recovered)
+                assert 2 <= len(failed) <= 10, len(failed)
+                assert not any(call['recovery'] for call in calls)
+                print('Real Codex: invalid arguments retried, tool executed once; persistent invalid arguments stopped with zero execution; requests=' + str(len(calls)))
+                return
             if os.environ.get('CHAT_PROTOCOL_CASES') == 'truncated':
                 assert len(calls) == 1
                 print('Truncated tool response rejected with no execution.')
