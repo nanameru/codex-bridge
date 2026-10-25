@@ -5,6 +5,30 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-092
+    title: "一時429の短い待機を利用枠切れと分離する"
+    feature: "一時制限の状態管理"
+    scenario: "Retry-Afterの数値/日付/不正値を有界化し、週次/月次状態を保持して一時制限を非永続化する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/provider-fallback.mjs]
+    test_file: test/provider-fallback.test.mjs
+    issues: [108]
+    notes: "30秒既定、1秒〜5分。利用枠のclassifyProviderLimitを変更しない。"
+
+  - id: TC-093
+    title: "一時429でDeepSeekの提供元とCLI表示を切り替えて復帰する"
+    feature: "一時的な混雑からの退避"
+    scenario: "OpenCode→Command Code→Ollama、解除後の上位復帰、各社1回、全社制限時の停止、ローカル暴走ガード維持"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/provider-fallback.mjs]
+    test_file: test/provider-fallback-router.test.mjs
+    issues: [108]
+    notes: "既存の手動固定・GPT・401/403/400/500・ストリーム開始後の非再送を保持。模擬上流のみ。"
+
   - id: TC-090
     title: "分割要約が中断されても検証済みチャンクを再利用する"
     feature: "長い履歴要約の再試行"

@@ -91,10 +91,46 @@ test('単独で残ったOllamaの402も記録する', async t => {
   assert.deepEqual(f.state.candidates(), []); assert.equal(f.calls.length, 1);
 });
 
-for (const status of [400, 401, 403, 429, 500]) test(`${status}の通常エラーは他社へ再送しない`, async t => {
+for (const status of [400, 401, 403, 500]) test(`${status}の通常エラーは他社へ再送しない`, async t => {
   const f = await fixture(t, () => Response.json({ error: { code: 'rate_limit_exceeded', message: 'Too many requests' } }, { status }));
   assert.equal((await f.send()).status, status); assert.equal(f.calls.length, 1);
   assert.equal(f.state.available('opencode'), true);
+});
+
+test('一時429はCommand Codeへ退避しRetry-After後の要求でOpenCodeへ戻る', async t => {
+  let busy=true;
+  const f=await fixture(t,p=>busy&&p==='opencode'
+    ? Response.json({error:{code:'rate_limit_exceeded',message:'Too many requests'}},{status:429,headers:{'retry-after':'45'}})
+    : answer(p));
+  const r=await f.send();assert.equal(r.status,200);await r.text();
+  assert.deepEqual(f.calls.map(c=>c.provider),['opencode','commandcode']);
+  assert.equal(f.state.available('opencode'),false);
+  assert.deepEqual(f.state.snapshot('opencode').windows,{});
+  busy=false;f.advance(44000);
+  await (await f.send()).text();assert.equal(f.calls.at(-1).provider,'commandcode');
+  f.advance(1100);
+  await (await f.send()).text();assert.equal(f.calls.at(-1).provider,'opencode');
+});
+
+test('ローカル暴走ガード429では他社へ逃げず保護を維持する', async t => {
+  const f=await fixture(t,()=>Response.json({error:{type:'rate_limit_exceeded',message:'codex-bridge: このスレッドで1分間に40回を超えました。'}},{status:429}));
+  const r=await f.send();assert.equal(r.status,429);await r.text();
+  assert.equal(f.calls.length,1);assert.equal(f.state.available('opencode'),true);
+});
+
+test('一時429でもモデル表示を同期し全社制限時は各社1回で停止する', async t => {
+  const selected=[];
+  const f=await fixture(t,p=>p!=='ollama'?Response.json({error:{type:'server_error',message:'Upstream request failed: Endpoint is unavailable.'}},{status:429}):answer(p),{
+    cliModelSyncEnabled:true,cliModelSync:{prepare:async()=>({automatic:true}),sync:async(_c,target)=>{selected.push(target);return 'updated';},close(){}},
+  });
+  await (await f.send()).text();
+  assert.deepEqual(f.calls.map(c=>c.provider),['opencode','commandcode','ollama']);
+  assert.deepEqual(selected,['opencode/deepseek-v4.1-flash','auto-commandcode/deepseek-v4.1-flash','auto-ollama/deepseek-v4.1-flash']);
+  const blocked=await fixture(t,()=>Response.json({error:{message:'Too many requests'}},{status:429}));
+  await (await blocked.send()).text();assert.equal(blocked.calls.length,3);
+  const again=await blocked.send();assert.equal(again.status,429);await again.text();
+  assert.equal(again.headers.get('retry-after'),'30');assert.equal(blocked.calls.length,3);
+  blocked.advance(30001);await (await blocked.send()).text();assert.equal(blocked.calls.length,6);
 });
 
 test('ネットワーク障害は再送せず、手動指定と無効化設定を維持する', async t => {
