@@ -73,3 +73,11 @@ test('同じIDのserver requestをRPC応答と混同せず実行も承認もし�
   });
   assert.equal((await f.client.request('model/list',{})).model,'expected');
 });
+
+test('古い接続の遅いclose通知で再接続先を閉じない',async t=>{
+  const f=await fixture(t,(m,s)=>{if(m.method)s.write(frame({id:m.id,result:{ok:true}}));});
+  await f.client.request('model/list',{});const previous=f.client.socket;f.client.close();
+  await f.client.request('model/list',{});previous.emit('close');
+  assert.equal(f.client.ready,true);
+  assert.equal((await f.client.request('model/list',{})).ok,true);
+});

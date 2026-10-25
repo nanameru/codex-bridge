@@ -403,6 +403,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           && !body.input?.some?.(item => item.type === "compaction_trigger")) {
         cliContext = await getModelSync().prepare(cliThreadId(body, request.headers),
           route.provider === "opencode" && route.autoFallback ? CLI_AUTO_MODEL : body.model);
+        if (route.autoFallback) metric.cli_model_sync = cliContext ? "ready" : "unavailable";
       }
       let fallbackRoutes = [];
       if (autoProviderFallback && route.autoFallback && route.transport !== "responses"

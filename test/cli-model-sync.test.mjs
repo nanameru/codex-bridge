@@ -60,3 +60,24 @@ test('自動用2項目は提供元を明示し手動用の固定IDと区別で�
   }
   assert.deepEqual(withManualModels(catalog),catalog);
 });
+
+test('確認RPCが停止しても表示同期の確認期限で終了する',{timeout:2500},async()=>{
+  let updating=false;
+  const control={async request(method,params){
+    if(method==='thread/settings/update'){updating=true;return {};}
+    if(updating)return new Promise(()=>{});
+    return {thread:{id:params.threadId,modelProvider:'openai',model:CLI_AUTO_MODEL,status:{type:'active'}}};
+  }};
+  const sync=new CliModelSync({root:'/not-used',control});const context=await sync.prepare(id,CLI_AUTO_MODEL);
+  const start=performance.now();assert.equal(await sync.sync(context,cc),'unavailable');
+  assert.ok(performance.now()-start<1800);
+});
+test('設定更新が非同期でも確認後に選択モデルを確定する',async()=>{
+  let model=CLI_AUTO_MODEL,writes=0;
+  const control={async request(method,params){
+    if(method==='thread/settings/update'){writes++;setTimeout(()=>{model=params.model;},25);return {};}
+    return {thread:{id:params.threadId,modelProvider:'openai',model,status:{type:'active'}}};
+  }};
+  const sync=new CliModelSync({root:'/not-used',control});const context=await sync.prepare(id,CLI_AUTO_MODEL);
+  assert.equal(await sync.sync(context,cc),'updated');assert.equal(context.model,cc);assert.equal(writes,1);
+});

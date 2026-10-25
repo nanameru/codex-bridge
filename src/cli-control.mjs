@@ -62,8 +62,9 @@ export class CliControl {
             socket.destroy(); reject(new Error('control_handshake')); return;
           }
           socket.setTimeout(0); socket.unref(); this.socket = socket;
-          socket.on('data', data => this.#read(data));
-          socket.on('error', () => this.close()); socket.on('close', () => this.close());
+          socket.on('data', data => { if (this.socket === socket) this.#read(data); });
+          socket.on('error', () => { if (this.socket === socket) this.close(); });
+          socket.on('close', () => { if (this.socket === socket) this.close(); });
           resolve(); if (head.length) this.#read(head);
         });
         request.end();
@@ -79,6 +80,7 @@ export class CliControl {
       this.buffer = Buffer.concat([this.buffer, data]);
       if (this.buffer.length > MAX + 14) throw new Error('control_too_large');
       while (this.buffer.length >= 2) {
+        if (!this.socket || this.socket.destroyed) return;
         const b = this.buffer, opcode = b[0] & 15, fin = Boolean(b[0] & 128);
         if ((b[0] & 0x70) || (b[1] & 128)) throw new Error('control_frame');
         let size = b[1] & 127, offset = 2;
@@ -92,7 +94,7 @@ export class CliControl {
         if (b.length < offset + size) return;
         const payload = b.subarray(offset, offset + size); this.buffer = b.subarray(offset + size);
         if (opcode === 8) { this.close(); return; }
-        if (opcode === 9) { this.socket.write(frame(payload, 10)); continue; }
+        if (opcode === 9) { this.socket?.write(frame(payload, 10)); continue; }
         if (opcode === 10) continue;
         if ((opcode !== 0 && opcode !== 1) || (opcode === 0 && !this.fragments.length)
             || (opcode === 1 && this.fragments.length)) throw new Error('control_frame');

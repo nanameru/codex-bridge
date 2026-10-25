@@ -40,14 +40,23 @@ export class CliModelSync {
       const thread = await this.#read(context.id);
       if (thread.model !== context.model) return 'manual';
       await this.control.request('thread/settings/update', { threadId: context.id, model: target });
-      const deadline = Date.now() + 1000;
-      for (;;) {
-        const after = await this.#read(context.id);
+      const deadline = performance.now() + 1000;
+      while (performance.now() < deadline) {
+        let timer;
+        let after;
+        try {
+          // This is a read-only RPC: a late reply is harmless, but it must not
+          // delay inference beyond the overall confirmation deadline.
+          after = await Promise.race([this.#read(context.id), new Promise(resolve => {
+            timer = setTimeout(() => resolve(null), Math.max(1, deadline - performance.now()));
+          })]);
+        } finally { clearTimeout(timer); }
+        if (!after) return 'unavailable';
         if (after.model === target) { context.model = target; return 'updated'; }
         if (after.model !== context.model) return 'manual';
-        if (Date.now() >= deadline) return 'unavailable';
-        await new Promise(resolve => setTimeout(resolve, 20));
+        await new Promise(resolve => setTimeout(resolve, Math.min(20, Math.max(0, deadline - performance.now()))));
       }
+      return 'unavailable';
     } catch { return 'unavailable'; }
   }
   close() { this.control.close?.(); }
