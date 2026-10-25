@@ -5,6 +5,30 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-087
+    title: "不正な上流ツール引数を実行せずCodexの有限再試行へ返す"
+    feature: "ツール引数の安全な回復"
+    scenario: "不正JSON・非object・混在バッチはserver_error、正常な分割引数は一度だけ実行する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-adapter.mjs]
+    test_file: test/chat-protocol.test.mjs
+    issues: [101]
+    notes: "生の引数・parser例外を出力せずinvalid_tool_argumentsで分類する。customツールのJSONラッパー説明はtest/tool-adapter.test.mjsで検証。"
+
+  - id: TC-088
+    title: "実Codexで不正引数からの回復と永続不正の停止を確認する"
+    feature: "ツール引数の実CLI回復"
+    scenario: "隔離設定と模擬上流で一時不正→正常は1回実行、永続不正は0回実行で停止する"
+    status: done
+    priority: high
+    type: e2e
+    source: [src/chat-protocol.mjs, test/mock-chat-bridge.mjs]
+    test_file: test/chat-bridge-app-e2e.py
+    issues: [101]
+    notes: "CHAT_PROTOCOL_CASES=argumentsで模擬9要求（回復3要求、失敗6要求）。Codex標準のstream retry上限に従い、独自の再送ループを追加しない。外部推論なし。"
+
   - id: TC-023
     title: "OpenCode直結回答: phaseをfinal_answerへ正規化する"
     feature: "応答表示の互換性"

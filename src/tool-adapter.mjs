@@ -74,7 +74,8 @@ export function openCodeBody(body, maxBytes = 32 * 1024 * 1024) {
   if (Array.isArray(body.tools)) {
     result.tools = body.tools.map((tool) => tool.type === "custom" ? {
       type: "function", name: tool.name,
-      description: (tool.description ?? "") + (tool.format ? "\nInput format: " + JSON.stringify(tool.format) : ""),
+      description: (tool.description ?? "") + (tool.format ? "\nFormat of the input string value: " + JSON.stringify(tool.format) : "")
+        + '\nCall this function with a JSON object containing exactly one string field: {"input":"..."}. The original tool instructions and format apply to that string value. JSON-escape newlines, quotes and backslashes inside it; do not send raw code as the function arguments.',
       parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"], additionalProperties: false },
     } : tool);
   }
