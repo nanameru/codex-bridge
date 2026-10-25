@@ -912,7 +912,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const safeCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_SOCKET",
         "ERR_STREAM_PREMATURE_CLOSE", "ERR_STREAM_DESTROYED", "ABORT_ERR"]);
       const errorCode = [error?.code, error?.cause?.code].find(code => safeCodes.has(code));
-      if (errorCode) metric.transport_error_code = errorCode;
+      if (errorCode && !terminationReason.startsWith("client_")) metric.transport_error_code = errorCode;
       const timeout = terminationReason === "deadline_exceeded";
       if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, timeout ? 504 : 502,
         error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,

@@ -1224,6 +1224,7 @@ test("client cancellation stops upstream without recording a provider failure", 
   const metric = await recorded;
   assert.equal(metric.outcome, 'aborted');
   assert.equal(metric.termination_reason, 'client_disconnected');
+  assert.equal(metric.transport_error_code, undefined);
   assert.equal(cancelled, true);
 });
 
