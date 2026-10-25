@@ -1,6 +1,6 @@
 import http from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
-import { Readable, Transform } from "node:stream";
+import { Readable, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -94,6 +94,14 @@ export function routedBody(body, route, maxBytes) {
 function fail(response, status, code, message) {
   if (response.headersSent) {
     if (failHandoffStatus(response, status, code, message)) return;
+    if (!response.destroyed && !response.writableEnded
+        && /^text\/event-stream\b/i.test(String(response.getHeader("content-type")))) {
+      // Keep the HTTP stream alive long enough for Codex to receive the reason.
+      response.end(`\n\nevent: response.failed\ndata: ${JSON.stringify({ type: "response.failed",
+        response: { status: "failed", error: { code: "server_error",
+          message: `${code} (HTTP ${status}): ${message}` } } })}\n\n`);
+      return;
+    }
     response.destroy();
     return;
   }
@@ -320,16 +328,19 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       return;
     }
     const abort = new AbortController();
+    let terminationReason;
+    const stop = reason => { terminationReason ??= reason; abort.abort(); };
     let readingBody = true;
     abort.signal.addEventListener("abort", () => {
-      if (readingBody && !response.destroyed) {
+      if (readingBody && terminationReason === "deadline_exceeded" && !response.destroyed) {
         response.once("finish", () => request.destroy());
         fail(response, 504, "request_timeout", "入力の受信がタイムアウトしました");
       }
     }, { once: true });
-    const timer = setTimeout(() => abort.abort(), timeoutMs);
-    response.on("close", () => { if (!response.writableEnded) abort.abort(); });
-    request.on("aborted", () => abort.abort());
+    const timer = setTimeout(() => stop("deadline_exceeded"), timeoutMs);
+    response.on("close", () => { if (!response.writableEnded) stop("client_disconnected"); });
+    response.on("error", () => stop("client_disconnected"));
+    request.on("aborted", () => stop("client_request_aborted"));
     let handoffStatus;
     const started = performance.now();
     const metric = { event: "router_request", request_id: randomUUID(), path,
@@ -841,7 +852,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       for (const name of ["retry-after", "x-request-id", "x-codex-imagegen-request-id"]) {
         if (upstream.headers.has(name)) responseHeaders[name] = upstream.headers.get(name);
       }
-      if (!handoffStatus.started) response.writeHead(upstream.status, responseHeaders);
+      if (!handoffStatus.started) {
+        for (const [name, value] of Object.entries(responseHeaders)) response.setHeader(name, value);
+        response.writeHead(upstream.status);
+      }
       metric.stage = "upstream_stream";
       const streamStart = performance.now();
       const meter = new Transform({ transform(chunk, _encoding, callback) {
@@ -883,19 +897,35 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       if (upstream.ok && providerNotices.length) streams.push(providerNoticeStream(responseHeaders["content-type"], maxBytes, providerNotices));
       if (handoffStatus.started) streams.push(handoffStatus.stream(responseHeaders["content-type"], maxBytes));
-      await pipeline(...streams, response, { signal: abort.signal });
+      // pipeline destroys its destination on upstream/transform failure. A
+      // separate sink preserves the HTTP response so catch can send a terminal
+      // SSE error, while write callbacks retain backpressure and cancellation.
+      const sink = new Writable({
+        write(chunk, encoding, callback) { response.write(chunk, encoding, callback); },
+        final(callback) { response.end(callback); },
+      });
+      await pipeline(...streams, sink, { signal: abort.signal });
       metric.upstream_stream_ms = Math.round(performance.now() - streamStart);
       metric.stage = "complete";
     } catch (error) {
-      if (!response.destroyed) fail(response, abort.signal.aborted ? 504 : 502,
-        error instanceof HandoffError ? "compaction_handoff_failed" : "upstream_error",
-        error instanceof HandoffError ? error.message : "転送先への接続に失敗しました");
+      terminationReason ??= metric.stage === "upstream_stream" ? "upstream_stream_error" : "upstream_error";
+      const safeCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_SOCKET",
+        "ERR_STREAM_PREMATURE_CLOSE", "ERR_STREAM_DESTROYED", "ABORT_ERR"]);
+      const errorCode = [error?.code, error?.cause?.code].find(code => safeCodes.has(code));
+      if (errorCode && !terminationReason.startsWith("client_")) metric.transport_error_code = errorCode;
+      const timeout = terminationReason === "deadline_exceeded";
+      if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, timeout ? 504 : 502,
+        error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,
+        error instanceof HandoffError ? error.message : timeout ? "応答の待機がタイムアウトしました" : "転送先への接続が中断されました");
     } finally {
       handoffStatus?.dispose();
       clearTimeout(timer);
       metric.total_ms = Math.round(performance.now() - started);
       metric.status = response.statusCode;
-      metric.outcome = abort.signal.aborted ? "aborted" : metric.stage === "complete" ? "complete" : "rejected";
+      if (terminationReason) metric.termination_reason = terminationReason;
+      metric.outcome = terminationReason?.startsWith("client_") ? "aborted"
+        : terminationReason === "deadline_exceeded" ? "timeout"
+        : terminationReason ? "failed" : metric.stage === "complete" ? "complete" : "rejected";
       try { onMetric(metric); } catch {}
     }
   });
