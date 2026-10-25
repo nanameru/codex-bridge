@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-089
+    title: "WhatsToken導入後も共有キャッシュからモデル一覧を再構成する"
+    feature: "共有モデルキャッシュの互換性"
+    scenario: "auto-whatstokenをnativeモデルと誤認せず、元のGPTとOpenCode入力を保持する"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/unified_config.py]
+    test_file: test/test_unified_config.py
+    issues: [103]
+    notes: "既存の混在namespace回帰へauto-whatstokenを追加。元カタログの書換や本番設定変更なし。"
+
   - id: TC-087
     title: "不正な上流ツール引数を実行せずCodexの有限再試行へ返す"
     feature: "ツール引数の安全な回復"

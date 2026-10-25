@@ -314,7 +314,7 @@ class UnifiedConfigTests(unittest.TestCase):
 
     def test_shared_cache_manual_and_auto_models_never_become_native(self):
         native = {"models": [{"slug": "gpt-test"}] + [{"slug": prefix + "/deepseek-v4.1-flash"}
-                    for prefix in ["opencode", "commandcode", "ollama", "auto-commandcode", "auto-ollama"]]}
+                    for prefix in ["opencode", "commandcode", "ollama", "auto-commandcode", "auto-ollama", "auto-whatstoken"]]}
         (self.root / "models_cache.json").write_text(json.dumps(native))
         (self.root / "model-catalog.json").write_text('{"models":[{"slug":"gpt-test"}]}')
         source = self.root / "source"
