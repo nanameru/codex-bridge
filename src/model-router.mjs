@@ -15,9 +15,10 @@ import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFail
 import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
 import { createRequestGuard } from "./request-guard.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
-import { MANUAL_PROVIDERS, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
+import { CHAT_PROVIDERS, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
 import { providerHelp, allProviderHelp, providerNoticeStream } from "./provider-help.mjs";
 import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel } from "./cli-model-sync.mjs";
+import { WhatstokenFreeGate } from "./whatstoken-free.mjs";
 import { AUTO_DEEPSEEK_MODEL, AUTO_DEEPSEEK_PROVIDERS, ProviderFallbackState,
   classifyProviderLimit } from "./provider-fallback.mjs";
 
@@ -35,6 +36,7 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./sync-models.mjs", import.meta.url)))
   .update(readFileSync(new URL("./catalog-safety.mjs", import.meta.url)))
   .update(readFileSync(new URL("./manual-providers.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./whatstoken-free.mjs", import.meta.url)))
   .update(readFileSync(new URL("./provider-fallback.mjs", import.meta.url)))
   .update(readFileSync(new URL("./cli-control.mjs", import.meta.url)))
   .update(readFileSync(new URL("./cli-model-sync.mjs", import.meta.url)))
@@ -48,7 +50,7 @@ const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "o
 export function catalogRoutes(catalog) {
   const routes = new Map();
   for (const model of catalog.models) {
-    if (!model.slug || !["openai", "opencode", ...Object.keys(MANUAL_PROVIDERS)].includes(model.router_provider)) {
+    if (!model.slug || !["openai", "opencode", ...Object.keys(CHAT_PROVIDERS)].includes(model.router_provider)) {
       throw new Error("モデルの転送先が不正です");
     }
     if (routes.has(model.slug)) throw new Error("モデル名が重複しています");
@@ -59,7 +61,7 @@ export function catalogRoutes(catalog) {
         && (!Number.isSafeInteger(model.context_window) || model.context_window < 1024 || model.context_window > 10000000)) {
       throw new Error("モデルのコンテキスト上限が不正です");
     }
-    const manual = MANUAL_PROVIDERS[model.router_provider];
+    const manual = CHAT_PROVIDERS[model.router_provider];
     if (manual && (![manualSlug(model.router_provider), autoManualSlug(model.router_provider)].includes(model.slug) || model.router_model !== manual.model || model.router_transport !== "chat")) {
       throw new Error("手動プロバイダーのモデル定義が不正です");
     }
@@ -228,6 +230,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
   // Accept bounded history before reducing it to the smaller forwarding budget.
   maxRequestBytes = maxBytes * 4,
+  whatstokenFreeEnabled = process.env.CODEX_WHATSTOKEN_FREE === "1", whatstokenFreeGate,
   manualProvidersEnabled = false, manualKey = provider => readManualKey(provider, codexRoot),
   cliModelSync, cliModelSyncEnabled = false,
   providerFallbackState, providerFallbackFile = join(codexRoot, "provider-fallback-state.json"),
@@ -240,7 +243,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   if (![maxBytes, maxRequestBytes].every(n => Number.isSafeInteger(n) && n > 0) || maxRequestBytes < maxBytes) {
     throw new Error("受信上限は送信上限以上の正の整数で指定してください");
   }
-  if (manualProvidersEnabled) catalog = withManualModels(catalog);
+  if (manualProvidersEnabled) catalog = withManualModels(catalog, { whatstoken: whatstokenFreeEnabled });
   let routes = catalogRoutes(catalog);
   let modelSync = cliModelSync;
   const getModelSync = () => modelSync ??= new CliModelSync({ root: codexRoot,
@@ -250,8 +253,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     file: providerFallbackFile, unknownCooldownMs: providerFallbackCooldownMs,
   });
   const manualGuard = createRequestGuard();
+  const freeGate = whatstokenFreeGate ?? new WhatstokenFreeGate({ reserveMs: timeoutMs });
   const commitCatalog = candidate => {
-    if (manualProvidersEnabled) candidate = withManualModels(candidate);
+    if (manualProvidersEnabled) candidate = withManualModels(candidate, { whatstoken: whatstokenFreeEnabled });
     const nextRoutes = catalogRoutes(candidate);
     const models = candidate.models.map(({ router_provider, router_model, router_transport, ...model }) => model);
     const serialized = JSON.stringify({ models });
@@ -286,6 +290,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
         live_catalog: Boolean(catalogProvider),
+        whatstoken_free: { enabled: whatstokenFreeEnabled, configured: Boolean(manualKey('whatstoken')) },
         request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxBytes },
         history_transport: allowDirectResponses ? "model" : "chat",
         direct_header: "x-codex-bridge-direct",
@@ -390,6 +395,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         return;
       }
       let route = nativeTool ? { provider: "openai" } : routes.get(body.model);
+      // A session may retain its automatic ID after the feature is disabled.
+      if (!route && !whatstokenFreeEnabled && body.model === autoManualSlug('whatstoken'))
+        route = routes.get(CLI_AUTO_MODEL);
       if (!route && catalogProvider && typeof body.model === "string"
           && /^(?:opencode\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.model)) {
         const version = typeof request.headers.version === "string" ? request.headers.version.split("-")[0] : undefined;
@@ -427,9 +435,19 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         const providerRoutes = new Map(goRoute ? [["opencode", { ...goRoute, transport: "chat" }]] : []);
         for (const provider of AUTO_DEEPSEEK_PROVIDERS.slice(1)) {
           const candidate = routes.get(autoManualSlug(provider)) ?? routes.get(manualSlug(provider));
-          if (candidate && MANUAL_PROVIDERS[candidate.provider]) providerRoutes.set(provider, candidate);
+          if (candidate && CHAT_PROVIDERS[candidate.provider]) providerRoutes.set(provider, candidate);
         }
-        const available = state.candidates(AUTO_DEEPSEEK_PROVIDERS).filter(provider => providerRoutes.has(provider));
+        let order = AUTO_DEEPSEEK_PROVIDERS;
+        if (whatstokenFreeEnabled && manualKey('whatstoken')) {
+          const eligibility = await freeGate.check(abort.signal);
+          metric.whatstoken_free = eligibility.allowed ? 'eligible' : eligibility.reason;
+          const candidate = routes.get(autoManualSlug('whatstoken'));
+          if (eligibility.allowed && candidate) {
+            providerRoutes.set('whatstoken', candidate);
+            order = ['whatstoken', ...order];
+          }
+        }
+        const available = state.candidates(order).filter(provider => providerRoutes.has(provider));
         const ready = available.filter(provider => provider === "opencode"
           ? Boolean(bridgeKey())
           : Boolean(manualKey(provider)));
@@ -526,7 +544,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           headers.session_id = session;
         }
       }
-      let manual = MANUAL_PROVIDERS[route.provider];
+      let manual = CHAT_PROVIDERS[route.provider];
       if (manual) {
         const key = manualKey(route.provider);
         if (!key) {
@@ -708,11 +726,29 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       metric.stage = "upstream_headers";
       const upstreamStart = performance.now();
-      const makeRouteFetch = (candidateRoute, inputLimit = hardLimitTokens) => MANUAL_PROVIDERS[candidateRoute.provider]
-        ? (url, options) => fetchManualProvider(candidateRoute.provider, url, options, fetcher, maxBytes,
+      const makeRouteFetch = (candidateRoute, inputLimit = hardLimitTokens) => CHAT_PROVIDERS[candidateRoute.provider]
+        ? async (url, options) => {
+          if (candidateRoute.provider === 'whatstoken') {
+            const eligibility = whatstokenFreeEnabled ? await freeGate.check(options.signal) : { allowed: false };
+            const remaining = eligibility.end - Date.now() - 5000;
+            if (!eligibility.allowed || !Number.isSafeInteger(remaining) || remaining <= 0)
+              return Response.json({ error: { code: 'free_window_unavailable' } }, { status: 503 });
+            const deadline = AbortSignal.timeout(Math.min(remaining, timeoutMs));
+            options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, deadline]) : deadline };
+          }
+          try { return await fetchManualProvider(candidateRoute.provider, url, options, fetcher, maxBytes,
           chat => inputLimit <= 0 || estimateInputTokens({ ...chat, messages: undefined, input: chat.messages.map(message => ({ ...message, role: "user",
             content: Array.isArray(message.content) ? message.content.map(part => part.type === "image_url"
-              ? { type: "input_image", image_url: part.image_url } : part) : message.content })) }) <= inputLimit)
+              ? { type: "input_image", image_url: part.image_url } : part) : message.content })) }) <= inputLimit,
+          candidateRoute.provider === 'whatstoken' ? [
+            ...Object.keys(CHAT_PROVIDERS).map(manualKey), bridgeKey(), openCodeKey(),
+            request.headers.authorization?.replace(/^Bearer /i, ''),
+          ] : []); }
+          catch (error) {
+            if (candidateRoute.provider !== 'whatstoken' || options.signal?.aborted) throw error;
+            return Response.json({ error: { code: 'whatstoken_unavailable' } }, { status: 503 });
+          }
+        }
         : fetcher;
       // Bind the provider that owns the transformed request. Recovery retries
       // must continue to use that same provider and conversion path.
@@ -735,7 +771,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         const conversationId = body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id;
         const skipped = [];
         for (;;) {
-          if (upstream.ok || ![402, 429].includes(upstream.status)) break;
+          if (upstream.ok || (route.provider !== 'whatstoken' && ![402, 429].includes(upstream.status))) break;
           const limit = await classifyProviderLimit(upstream, {
             now: state.now(), unknownCooldownMs: providerFallbackCooldownMs,
           });
@@ -743,11 +779,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             try { state.recordLimit(route.provider, limit); }
             catch { metric.provider_state_error = true; } // The in-memory block remains active.
           }
-          if (!limit) break;
-          providerNotices.push(`提供元の利用枠を確認してください。${providerHelp(route.provider)}`);
+          if (!limit && route.provider !== 'whatstoken') break;
+          if (route.provider === 'whatstoken') freeGate.unavailable?.();
+          providerNotices.push(route.provider === 'whatstoken'
+            ? 'WhatsTokenの無料経路が利用できないため、既存の提供元へ切り替えます。' + providerHelp('whatstoken')
+            : `提供元の利用枠を確認してください。${providerHelp(route.provider)}`);
           metric.provider_limit_provider = route.provider;
-          metric.provider_limit_window = limit.window;
-          metric.provider_limit_reset_known = limit.resetKnown;
+          metric.provider_limit_window = limit?.window;
+          metric.provider_limit_reset_known = limit?.resetKnown;
           let next = null;
           while (fallbackRoutes.length) {
             const candidateRoute = fallbackRoutes.shift();
@@ -755,9 +794,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
               skipped.push(candidateRoute.provider);
               continue;
             }
-            const candidateManual = MANUAL_PROVIDERS[candidateRoute.provider];
-            const key = candidateManual ? manualKey(candidateRoute.provider) : null;
-            if (!candidateManual || !key) {
+            const candidateManual = CHAT_PROVIDERS[candidateRoute.provider];
+            const isGo = candidateRoute.provider === 'opencode';
+            const key = isGo ? bridgeKey() : candidateManual ? manualKey(candidateRoute.provider) : null;
+            if ((!candidateManual && !isGo) || !key) {
               skipped.push(candidateRoute.provider);
               continue;
             }
@@ -783,9 +823,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             }
             const nextHeaders = {
               "content-type": "application/json", accept: "text/event-stream, application/json",
-              authorization: "Bearer " + key,
+              ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: "Bearer " + key }),
             };
-            next = { route: candidateRoute, destination: candidateManual.base, headers: nextHeaders,
+            if (isGo) {
+              const session = request.headers.session_id ?? body.client_metadata?.thread_id ?? body.prompt_cache_key;
+              if (typeof session === 'string' && session.length <= 200) {
+                nextHeaders['x-opencode-session'] = session; nextHeaders.session_id = session;
+              }
+            }
+            next = { route: candidateRoute, destination: isGo ? bridge.href.replace(/\/$/, '') : candidateManual.base, headers: nextHeaders,
               routedObject: nextObject, routed: nextSerialized, inputLimit: candidateLimit };
             break;
           }
@@ -795,7 +841,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           }
           await upstream.body?.cancel().catch(() => {});
           route = next.route;
-          manual = MANUAL_PROVIDERS[route.provider];
+          manual = CHAT_PROVIDERS[route.provider];
           destination = next.destination;
           headers = next.headers;
           routedObject = next.routedObject;
@@ -943,7 +989,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     seed: JSON.parse(readFileSync(new URL("./models.json", import.meta.url), "utf8")).models,
     key: readOpenCodeKey, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
   const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
-    catalogProvider, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
+    catalogProvider, manualProvidersEnabled: process.env.CODEX_CHAT_PROVIDERS !== "0",
     cliModelSyncEnabled: process.env.CODEX_CLI_MODEL_SYNC !== "0",
     onMetric: (metric) => console.log(JSON.stringify(metric)) });
   server.listen(Number(process.env.ROUTER_PORT ?? 8790), "127.0.0.1", () => {

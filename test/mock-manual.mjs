@@ -3,20 +3,20 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { createRouter } from '../src/model-router.mjs';
 import { ProviderFallbackState } from '../src/provider-fallback.mjs';
-import { MANUAL_PROVIDERS } from '../src/manual-providers.mjs';
+import { CHAT_PROVIDERS } from '../src/manual-providers.mjs';
 const calls=[];
 const automatic = process.env.CODEX_TEST_FALLBACK === '1';
-let phase = 0, clock = Date.now(), unpaid = '';
+let phase = 0, clock = Date.now(), unpaid = '', free = false;
 
 const providerFallbackState = new ProviderFallbackState({ now: () => clock });
 const servers=[];
 async function listen(server){server.listen(0,'127.0.0.1');await once(server,'listening');servers.push(server);return `http://127.0.0.1:${server.address().port}/v1`;}
 const bases={};
-for(const provider of ['openai','opencode','commandcode','ollama']){
+for(const provider of ['openai','opencode','commandcode','ollama',...(process.env.CODEX_TEST_WHATSTOKEN==='1'?['whatstoken']:[])]){
   bases[provider]=await listen(http.createServer(async(req,res)=>{
     let text='';for await(const c of req)text+=c;
     const body=JSON.parse(text);
-    const manual=provider in MANUAL_PROVIDERS;
+    const manual=provider in CHAT_PROVIDERS;
     const summary=body.instructions?.startsWith('Produce only');
     const compact=body.input?.some(i=>i.type==='compaction_trigger');
     calls.push({provider,model:body.model,summary:Boolean(summary),compact:Boolean(compact),
@@ -47,10 +47,12 @@ for(const provider of ['openai','opencode','commandcode','ollama']){
   }));
 }
 const catalog=JSON.parse(readFileSync(process.env.CODEX_HOME+'/unified-model-catalog.json'));
-const router=createRouter({catalog,providerFallbackState,cliModelSyncEnabled:process.env.CODEX_TEST_CLI_SYNC==='1',manualProvidersEnabled:true,nativeBase:bases.openai,bridgeBase:bases.opencode,allowTestOrigins:true,
+const router=createRouter({catalog,providerFallbackState,
+  whatstokenFreeEnabled:process.env.CODEX_TEST_WHATSTOKEN==='1',
+  whatstokenFreeGate:{check:async()=>({allowed:free,end:Date.now()+3600000,reason:'outside_free_window'}),unavailable(){}},cliModelSyncEnabled:process.env.CODEX_TEST_CLI_SYNC==='1',manualProvidersEnabled:true,nativeBase:bases.openai,bridgeBase:bases.opencode,allowTestOrigins:true,
   bridgeKey:()=> 'fake-bridge-key',manualKey:p=>`fake-${p}-key`,fetcher:async(url,init)=>{
-    if(!Object.values(bases).some(base=>url.startsWith(base+'/')) && !Object.values(MANUAL_PROVIDERS).some(c=>url.startsWith(c.base+'/')))throw new Error('mock_destination_only');
-    for(const[p,config]of Object.entries(MANUAL_PROVIDERS))if(url.startsWith(config.base+'/'))return fetch(url.replace(config.base,bases[p]),init);
+    if(!Object.values(bases).some(base=>url.startsWith(base+'/')) && !Object.values(CHAT_PROVIDERS).some(c=>url.startsWith(c.base+'/')))throw new Error('mock_destination_only');
+    for(const[p,config]of Object.entries(CHAT_PROVIDERS))if(url.startsWith(config.base+'/'))return fetch(url.replace(config.base,bases[p]),init);
     return fetch(url,init);
   }});
 process.stdout.write(JSON.stringify({url:await listen(router)})+'\n');
@@ -60,6 +62,7 @@ process.stdin.on('data',chunk=>{
   while(commands.includes('\n')) {
     const end=commands.indexOf('\n'), command=commands.slice(0,end); commands=commands.slice(end+1);
     if(command.startsWith('unpaid:')) unpaid=command.slice(7);
+    if(command.startsWith('free:')) free=command.slice(5)==='on';
     if(command.startsWith('phase:')) phase=Number(command.slice(6));
     if(command.startsWith('advance:')) clock+=Number(command.slice(8));
     process.stdout.write(JSON.stringify({calls})+'\n');

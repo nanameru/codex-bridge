@@ -7,6 +7,7 @@ import { readUpstreamFailure } from './handoff-status.mjs';
 import { reasoningOptions } from './upstream-options.mjs';
 import { providerHelp } from './provider-help.mjs';
 import { classifyProviderLimit } from './provider-fallback.mjs';
+import { WHATSTOKEN } from './whatstoken-free.mjs';
 
 export const MANUAL_PROVIDERS = Object.freeze({
   commandcode: Object.freeze({ label: 'Command Code', base: 'https://api.commandcode.ai/provider/v1',
@@ -14,10 +15,11 @@ export const MANUAL_PROVIDERS = Object.freeze({
   ollama: Object.freeze({ label: 'Ollama Cloud', base: 'https://ollama.com/v1',
     model: 'deepseek-v4.1-flash', environment: 'OLLAMA_API_KEY', keyFile: 'ollama-api-key', context: 1048576, vision: true }),
 });
+export const CHAT_PROVIDERS = Object.freeze({ ...MANUAL_PROVIDERS, whatstoken: WHATSTOKEN });
 export const manualSlug = provider => provider + '/deepseek-v4.1-flash';
 export const autoManualSlug = provider => 'auto-' + manualSlug(provider);
 export function readManualKey(provider, root = codexRoot(), environment = process.env) {
-  const config = MANUAL_PROVIDERS[provider];
+  const config = CHAT_PROVIDERS[provider];
   if (!config) return null;
   const value = environment[config.environment] ?? readPrivateFile(root, config.keyFile)?.trim();
   return typeof value === 'string' && value.length > 0 && value.length <= 8192 && !/[\s\x00-\x1f\x7f]/.test(value) ? value : null;
@@ -30,19 +32,26 @@ export function manualModels() {
     return { ...model, slug: manualSlug(provider), router_provider: provider, router_model: config.model, router_transport: 'chat' };
   });
 }
-export function automaticModels() {
-  return manualModels().map(model => ({ ...model, slug: autoManualSlug(model.router_provider),
+export function automaticModels({ whatstoken = false } = {}) {
+  const models = manualModels();
+  if (whatstoken) {
+    const model = buildCatalog([{ id: 'deepseek-v4.1-flash', name: 'WhatsToken · DeepSeek V4.1 Flash',
+      desc: '無料時間帯と公開料金を確認できるときだけ優先します。', ctx: WHATSTOKEN.context,
+      out: 32768, compact: 500000, vision: WHATSTOKEN.vision, efforts: ['none','low','medium','high','xhigh','max'], tier: 'balanced' }]).models[0];
+    models.unshift({ ...model, router_provider: 'whatstoken', router_model: WHATSTOKEN.model, router_transport: 'chat' });
+  }
+  return models.map(model => ({ ...model, slug: autoManualSlug(model.router_provider),
     display_name: model.display_name + '（自動切替）',
-    description: 'OpenCode → Command Code → Ollamaの優先順で利用枠に応じて自動切替・復帰します。' }));
+    description: (whatstoken ? '無料時間中のWhatsToken → ' : '') + 'OpenCode → Command Code → Ollamaの優先順で利用枠に応じて自動切替・復帰します。' }));
 }
-export function withManualModels(catalog) {
-  const external = new Set(Object.keys(MANUAL_PROVIDERS));
+export function withManualModels(catalog, options = {}) {
+  const external = new Set(Object.keys(CHAT_PROVIDERS));
   return { ...catalog, models: [...catalog.models.filter(model => !external.has(model.router_provider)), ...manualModels(),
-    ...automaticModels()] };
+    ...automaticModels(options)] };
 }
 
 export function manualChatBody(provider, body) {
-  const config = MANUAL_PROVIDERS[provider];
+  const config = CHAT_PROVIDERS[provider];
   if (!config || body.model !== config.model) throw new Error('manual_model_invalid');
   const result = { model: config.model, messages: chatMessages(body, body.reasoning?.effort !== 'none'), stream: body.stream === true };
   if (result.stream) result.stream_options = { include_usage: true };
@@ -72,16 +81,21 @@ async function boundedJSON(response, maxBytes) {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-export async function fetchManualProvider(provider, url, options, fetcher, maxBytes, maxInputTokens) {
-  const config = MANUAL_PROVIDERS[provider];
+export async function fetchManualProvider(provider, url, options, fetcher, maxBytes, maxInputTokens, credentials = []) {
+  const config = CHAT_PROVIDERS[provider];
   if (!config || url !== config.base + '/responses') throw new Error('manual_destination_invalid');
   const body = JSON.parse(options.body);
   const chat = manualChatBody(provider, body);
-  const serialized = JSON.stringify(chat);
+  let serialized = JSON.stringify(chat);
+  if (provider === 'whatstoken') {
+    // Preserve the local history. Only the outgoing request loses known keys.
+    for (const value of new Set(credentials)) if (typeof value === 'string' && value.length >= 8)
+      serialized = serialized.split(JSON.stringify(value).slice(1, -1)).join('[credential redacted]');
+  }
   // The router checks Responses input before this final Chat wire check.
   // Neither representation is truncated to satisfy a budget.
   if (Buffer.byteLength(serialized) > maxBytes) return Response.json({ error: { type: 'request_too_large', message: 'Chat変換後の入力が送信上限を超えました。履歴は保持しています。' } }, { status: 413 });
-  if (maxInputTokens && maxInputTokens(chat) === false) return Response.json({ error: { type: 'input_budget_exceeded', message: 'Chat変換後の入力がモデル上限を超えました。履歴は保持しています。' } }, { status: 413 });
+  if (maxInputTokens && maxInputTokens(provider === 'whatstoken' ? JSON.parse(serialized) : chat) === false) return Response.json({ error: { type: 'input_budget_exceeded', message: 'Chat変換後の入力がモデル上限を超えました。履歴は保持しています。' } }, { status: 413 });
   const upstream = await fetcher(config.base + '/chat/completions', { method: 'POST', redirect: 'manual', signal: options.signal,
     headers: { authorization: options.headers.authorization, 'content-type': 'application/json', accept: 'text/event-stream, application/json' }, body: serialized });
   if (upstream.status >= 300 && upstream.status < 400) { await upstream.body?.cancel(); return new Response(null, { status: upstream.status }); }

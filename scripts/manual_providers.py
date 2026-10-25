@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVIDERS = {"commandcode": ("CMD_API_KEY", "commandcode-api-key"), "ollama": ("OLLAMA_API_KEY", "ollama-api-key")}
+PROVIDERS = {"commandcode": ("CMD_API_KEY", "commandcode-api-key"), "ollama": ("OLLAMA_API_KEY", "ollama-api-key"), "whatstoken": ("WHATSTOKEN_API_KEY", "whatstoken-api-key")}
 
 
 def private_root(root):
@@ -46,7 +46,7 @@ def save_key(root, provider, key):
     private_write(root / PROVIDERS[provider][1], key + "\n")
 
 
-def install_models(root):
+def install_models(root, whatstoken=False):
     private_root(root)
     path = root / "unified-model-catalog.json"
     if path.is_symlink() or not path.is_file():
@@ -55,11 +55,12 @@ def install_models(root):
     if not isinstance(data.get("models"), list):
         raise ValueError("カタログの形式が不正です")
     result = subprocess.run(["node", "--input-type=module", "-e",
-        "import {withManualModels,MANUAL_PROVIDERS} from './src/manual-providers.mjs'; import {readFileSync} from 'node:fs'; const catalog=JSON.parse(readFileSync(0,'utf8')); process.stdout.write(JSON.stringify(withManualModels(catalog).models.filter(m=>MANUAL_PROVIDERS[m.router_provider])));"],
+        "import {withManualModels,CHAT_PROVIDERS} from './src/manual-providers.mjs'; import {readFileSync} from 'node:fs'; const catalog=JSON.parse(readFileSync(0,'utf8')); process.stdout.write(JSON.stringify(withManualModels(catalog,{whatstoken:process.argv[1]==='1'}).models.filter(m=>CHAT_PROVIDERS[m.router_provider])));", "1" if whatstoken else "0"],
         cwd=ROOT, check=True, capture_output=True, text=True, input=json.dumps(data))
     models = json.loads(result.stdout)
     prior = data["models"]
-    data["models"] = [m for m in prior if m.get("router_provider") not in PROVIDERS] + models
+    managed = set(PROVIDERS) if whatstoken else set(PROVIDERS) - {"whatstoken"}
+    data["models"] = [m for m in prior if m.get("router_provider") not in managed] + models
     if data["models"] != prior:
         backup = path.with_name(path.name + ".bak.manual-providers")
         if not backup.exists():
@@ -74,13 +75,14 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     key = sub.add_parser("set-key", help="非表示入力で公式APIキーを保存する")
     key.add_argument("provider", choices=PROVIDERS)
-    sub.add_parser("install-models", help="DeepSeekの手動/自動選択をカタログへ追加する")
+    models = sub.add_parser("install-models", help="DeepSeekの手動/自動選択をカタログへ追加する")
+    models.add_argument("--with-whatstoken-free", action="store_true")
     args = parser.parse_args()
     if args.command == "set-key":
         save_key(args.codex_home, args.provider, getpass.getpass(f"{args.provider} API key (非表示): "))
         print(f"{args.provider}のAPIキーを本人専用ファイルへ保存しました。キーは表示しません。")
     else:
-        for slug in install_models(args.codex_home):
+        for slug in install_models(args.codex_home, args.with_whatstoken_free):
             print(slug)
         print("稼働ルーターの更新後、Codexを開き直してください。既存CLIは作業終了後に開き直すと一覧を再読込できます。--no-daemonでは表示同期が使えません。")
 

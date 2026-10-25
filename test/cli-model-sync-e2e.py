@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='provider-fallback-e2e-') as directory:
             cache['models'] = [m for m in cache['models'] if m.get('slug') == 'gpt-6.1-sol']
         (home / name).write_text(json.dumps(cache))
     h.prepare(home, ROOT)
-    m.install_models(home)
+    m.install_models(home, os.environ.get("CODEX_TEST_WHATSTOKEN") == "1")
     if os.environ.get('CODEX_TEST_STALE_CATALOG') == '1':
         catalog = home / 'unified-model-catalog.json'
         (home / 'staged-model-catalog.json').write_bytes(catalog.read_bytes())

@@ -68,6 +68,15 @@ try {
       assert.equal(current.model,(manual||provider==='opencode'?'':'auto-')+provider+'/deepseek-v4.1-flash');
       assert.equal(current.modelProvider,process.env.CODEX_TEST_MODEL_PROVIDER||'openai');
     }
+    if(process.env.CODEX_TEST_WHATSTOKEN==='1'){
+      await command('free:on');await turn('whatstoken');await screen('whatstoken','WhatsToken');
+      await command('free:off');await turn('opencode');await screen('free-window-ended','OpenCode');
+      await command('free:on');
+      await control.request('thread/settings/update',{threadId:id,model:'commandcode/deepseek-v4.1-flash'});
+      await turn('commandcode','completed',true);
+      await command('free:off');
+      await control.request('thread/settings/update',{threadId:id,model:'opencode/deepseek-v4.1-flash'});
+    }
     await command('phase:1'); await turn('commandcode');
     assert.ok(events.some(e=>e.method==='thread/settings/updated' && e.params.threadSettings.model==='auto-commandcode/deepseek-v4.1-flash'));
     const changed=await screen('commandcode','Command Code');

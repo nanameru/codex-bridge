@@ -115,3 +115,13 @@ test('実際の待受portを使い、設定検査はcacheして再接続で更�
   config.model_providers['codex-bridge'].base_url='https://outside.invalid/v1';
   assert.equal(await f.sync.prepare(id,CLI_AUTO_MODEL),null);assert.equal(f.configReads,2);
 });
+
+test('WhatsTokenの無料自動IDとOpenCodeの往復でも自動意思と本人の手動選択を保つ',async()=>{
+  const f=fixture();const context=await f.sync.prepare(id,CLI_AUTO_MODEL);
+  const wt='auto-whatstoken/deepseek-v4.1-flash';
+  assert.equal(await f.sync.sync(context,wt),'updated');
+  const resumed=await f.sync.prepare(id,wt);assert.ok(resumed);
+  assert.equal(await f.sync.sync(resumed,CLI_AUTO_MODEL),'updated');
+  f.setModel('commandcode/deepseek-v4.1-flash');
+  assert.equal(await f.sync.sync(resumed,wt),'manual');
+});
