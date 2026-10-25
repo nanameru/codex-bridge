@@ -6,13 +6,13 @@ import { CHAT_PROVIDERS } from '../src/manual-providers.mjs';
 import { ProviderFallbackState } from '../src/provider-fallback.mjs';
 const go='opencode/deepseek-v4.1-flash', wt='auto-whatstoken/deepseek-v4.1-flash';
 const answer=p=>p==='opencode'?Response.json({status:'completed',output:[]}):Response.json({choices:[{index:0,message:{role:'assistant',content:p},finish_reason:'stop'}]});
-async function fixture(t,{enabled=true,key=true,eligible=true,handler=answer,gate}={}) {
+async function fixture(t,{enabled=true,key=true,eligible=true,handler=answer,gate,keys={}}={}) {
   const calls=[],metrics=[];let checks=0;
   const state=new ProviderFallbackState();
   const policy=gate??{check:async()=>{checks++;return{allowed:eligible,end:Date.now()+3600000,reason:'outside_free_window'};},unavailable(){}};
   const server=createRouter({catalog:{models:[{slug:go,router_provider:'opencode',router_model:'deepseek-v4.1-flash',context_window:1000000}]},
     authenticate:()=>true,manualProvidersEnabled:true,whatstokenFreeEnabled:enabled,whatstokenFreeGate:policy,
-    providerFallbackState:state,bridgeKey:()=> 'local-bridge-only',manualKey:p=>p==='whatstoken'&&!key?null:p+'-key',
+    providerFallbackState:state,bridgeKey:()=> 'local-bridge-only',manualKey:p=>p==='whatstoken'&&!key?null:keys[p]??p+'-key',
     onMetric:m=>metrics.push(m),fetcher:async(url,options)=>{
       const provider=Object.entries(CHAT_PROVIDERS).find(([,c])=>url.startsWith(c.base))?.[0]??'opencode';
       calls.push({provider,url,...options,body:JSON.parse(options.body)});return handler(provider,calls.at(-1));
@@ -94,12 +94,13 @@ test('WhatsTokenでもcustom toolの確定イベントと結果履歴を保持�
 });
 
 test('WhatsTokenの送信本文だけから登録済みのAPIキーを伏せ、ローカル履歴を変えない',async t=>{
-  const f=await fixture(t);
-  const input=[{role:'user',content:'The previous key was commandcode-key and native-secret; keep the task.'}];
+  const escaped=String.raw`synthetic-escaped\"key`;
+  const f=await fixture(t,{keys:{commandcode:escaped}});
+  const input=[{role:'user',content:'The previous key was '+escaped+' and native-secret; keep the task.'}];
   const before=structuredClone(input);
   assert.equal((await f.send({input})).status,200);
   const sent=JSON.stringify(f.calls[0].body);
-  assert.doesNotMatch(sent,/commandcode-key|native-secret/);assert.match(sent,/credential redacted/);
+  assert.doesNotMatch(sent,/synthetic-escaped|native-secret/);assert.match(sent,/credential redacted/);
   assert.deepEqual(input,before);assert.equal(f.calls[0].headers.authorization,'Bearer whatstoken-key');
 });
 
