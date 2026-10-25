@@ -134,6 +134,9 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
       || maxSummaryRequests < 1 || maxSummaryRequests > 64) throw new Error("要約の入力予算または要求数上限が不正です");
   const cache = new Map();
   const pending = new Map();
+  // Completed, validated steps survive a cancelled whole-history job. Keep
+  // only hashed identities and bounded summaries, never another transcript.
+  const checkpoints = new Map();
   const summaryLimit = 64 * 1024;
   const clean = item => !isHandoffStatusItem(item) && !["system", "developer"].includes(item.role)
     && (item.type !== "reasoning" || !item.encrypted_content?.startsWith("cxb1:"));
@@ -173,6 +176,8 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
         job = { key: key ?? Symbol(), controller: new AbortController(), waiters: 0 };
         const report = details => { try { diagnose(details); } catch { /* Diagnostics must not affect the request. */ } };
         let requestCount = 0;
+        let checkpointHits = 0;
+        let checkpointChain = scopeFor({ destination, headers, threadId });
         const summaryBody = (items, outputLimit) => ({ model, input: [...items, { role: "user", content: [{ type: "input_text", text:
           "Write a factual handoff summary of the preceding conversation for continuing it with another model. "
           + "Preserve user requirements, decisions, completed changes, test results, unresolved failures, file paths, "
@@ -308,11 +313,28 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
           return summary;
         };
         const generateStep = async (items, signal) => {
+          signal.throwIfAborted();
+          // Chain the prefix identity, not just the lossy carry text. Repeated
+          // fragments at different positions remain distinct; editing any
+          // earlier chunk invalidates every later checkpoint.
+          const checkpointKey = checkpointChain ? createHash('sha256').update(checkpointChain).update('\0')
+            .update(canonical(items)).digest('hex') : null;
+          checkpointChain = checkpointKey;
+          const saved = checkpointKey ? checkpoints.get(checkpointKey) : undefined;
+          if (saved !== undefined) {
+            checkpoints.delete(checkpointKey); checkpoints.set(checkpointKey, saved);
+            report({ summary_checkpoint_hits: ++checkpointHits });
+            return saved;
+          }
           let outputLimit = 8192;
           for (let attempt = 1; attempt <= 2; attempt++) {
             signal.throwIfAborted();
             try {
               const result = await generateOnce(items, signal, attempt, outputLimit);
+              if (checkpointKey) {
+                if (checkpoints.size >= 64) checkpoints.delete(checkpoints.keys().next().value);
+                checkpoints.set(checkpointKey, result);
+              }
               report({ summary_attempts: attempt, summary_retrying: false });
               return result;
             } catch (error) {
