@@ -835,8 +835,8 @@ CODEX_TEST_STALE_CATALOG=1 python3 test/cli-model-sync-e2e.py
 
 ```sh
 python3 scripts/manual_providers.py set-key whatstoken
-python3 scripts/manual_providers.py install-models --with-whatstoken-free
 python3 scripts/install_router_service.py --update-if-idle --wait-idle 900 --enable-whatstoken-free
+python3 scripts/manual_providers.py install-models --with-whatstoken-free
 ```
 
 キーは非表示入力で`~/.codex/whatstoken-api-key`へmode 600で保存します。購入・入金は行いません。トークンはHAをOFFにし、Limit modelsで通常版だけに制限する構成を推奨します。`special`版は対象外です。トークンのquota=0を無料制限とは扱いません。
