@@ -118,6 +118,14 @@ test('ローカル暴走ガード429では他社へ逃げず保護を維持す�
   assert.equal(f.calls.length,1);assert.equal(f.state.available('opencode'),true);
 });
 
+test('次候補がない429は最後の応答本文を消費して呼出元へ返す', async t => {
+  const f=await fixture(t,()=>Response.json({error:{code:'rate_limit_exceeded',message:'Too many requests'}},{status:429}),
+    {manualKey:()=>null});
+  const r=await f.send();assert.equal(r.status,429);
+  assert.deepEqual(await r.json(),{error:{code:'rate_limit_exceeded',message:'Too many requests'}});
+  assert.equal(f.calls.length,1);
+});
+
 test('一時429でもモデル表示を同期し全社制限時は各社1回で停止する', async t => {
   const selected=[];
   const f=await fixture(t,p=>p!=='ollama'?Response.json({error:{type:'server_error',message:'Upstream request failed: Endpoint is unavailable.'}},{status:429}):answer(p),{
