@@ -3,16 +3,17 @@ import test from 'node:test';
 import { CliModelSync, CLI_AUTO_MODEL, cliThreadId } from '../src/cli-model-sync.mjs';
 const id='019a12ab-1234-7654-a123-123456789012';
 const cc='auto-commandcode/deepseek-v4.1-flash', ollama='auto-ollama/deepseek-v4.1-flash';
-function fixture() {
-  let model=CLI_AUTO_MODEL, broken=false; const writes=[];
+function fixture({provider="openai",config={},routerBase}={}) {
+  let model=CLI_AUTO_MODEL, broken=false, configReads=0; const writes=[];
   const control={async request(method,params){
     if(broken)throw new Error('unavailable');
-    if(method==='thread/read')return {thread:{id:params.threadId,modelProvider:'openai',model,status:{type:'active'}}};
+    if(method==='config/read'){configReads++;return {config};}
+    if(method==='thread/read')return {thread:{id:params.threadId,modelProvider:provider,model,status:{type:'active'}}};
     if(method==='thread/settings/update'){writes.push(params);model=params.model;return {};}
     throw new Error('unexpected');
   }};
-  const sync=new CliModelSync({root:'/not-used',control});
-  return {sync,control,writes,setModel:value=>{model=value;},break:()=>{broken=true;}};
+  const sync=new CliModelSync({root:'/not-used',control,routerBase});
+  return {sync,control,writes,get configReads(){return configReads;},setModel:value=>{model=value;},break:()=>{broken=true;}};
 }
 test('自動の選択IDを更新し、再接続しても自動モードが維持される',async()=>{
   const f=fixture();const context=await f.sync.prepare(id,CLI_AUTO_MODEL);
@@ -80,4 +81,37 @@ test('設定更新が非同期でも確認後に選択モデルを確定する',
   }};
   const sync=new CliModelSync({root:'/not-used',control});const context=await sync.prepare(id,CLI_AUTO_MODEL);
   assert.equal(await sync.sync(context,cc),'updated');assert.equal(context.model,cc);assert.equal(writes,1);
+});
+
+test('設定済みのローカルprovider名codex-liveでも選択を同期する',async()=>{
+  const f=fixture({provider:'codex-live',config:{model_providers:{'codex-live':{
+    base_url:'http://127.0.0.1:8790/v1',requires_openai_auth:true}}}});
+  const context=await f.sync.prepare(id,CLI_AUTO_MODEL);
+  assert.equal(context?.automatic,true);
+  assert.equal(await f.sync.sync(context,cc),'updated');
+});
+
+test('外部URL・別port/path・認証不要providerを表示同期へ使わない',async()=>{
+  for(const providerConfig of [
+    {base_url:'https://api.openai.com/v1',requires_openai_auth:true},
+    {base_url:'http://127.0.0.1:8788/v1',requires_openai_auth:true},
+    {base_url:'http://127.0.0.1:8790/other',requires_openai_auth:true},
+    {base_url:'http://127.0.0.1:8790/v1',requires_openai_auth:false},
+    {base_url:'http://user:secret@127.0.0.1:8790/v1',requires_openai_auth:true},
+    {base_url:'http://127.0.0.1:8790/v1?token=secret',requires_openai_auth:true},
+  ]){
+    const f=fixture({provider:'codex-live',config:{model_providers:{'codex-live':providerConfig}}});
+    const reasons=[];
+    assert.equal(await f.sync.prepare(id,CLI_AUTO_MODEL,r=>reasons.push(r)),null);assert.equal(f.writes.length,0);
+    assert.deepEqual(reasons,['thread_provider_unavailable']);
+  }
+});
+test('実際の待受portを使い、設定検査はcacheして再接続で更新する',async()=>{
+  const config={model_providers:{'codex-bridge':{base_url:'http://localhost:19095/v1/',requires_openai_auth:true}}};
+  const f=fixture({provider:'codex-bridge',config,routerBase:'http://127.0.0.1:19095/v1'});
+  assert.equal((await f.sync.prepare(id,CLI_AUTO_MODEL)).automatic,true);
+  assert.equal((await f.sync.prepare(id,CLI_AUTO_MODEL)).automatic,true);assert.equal(f.configReads,1);
+  f.control.epoch=2;
+  config.model_providers['codex-bridge'].base_url='https://outside.invalid/v1';
+  assert.equal(await f.sync.prepare(id,CLI_AUTO_MODEL),null);assert.equal(f.configReads,2);
 });

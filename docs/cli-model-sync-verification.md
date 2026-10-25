@@ -53,3 +53,20 @@ control socketの所有者/権限、RPC期限とサイズ、不正WS frame、逆
 当該分岐を廃止し、自動チェーンのGo候補を必ずChatに固定。
 テストには外部宛送信禁止ガードと、直接APIの認証関数を呼んだら失敗する回帰テストを追加した。
 以降の合格E2Eはガード付き模擬上流のみで実行した。
+
+## Issue #95: 実環境の接続名に関する追加修正
+
+初回検証が`openai`接続名に偏り、実環境の`codex-live` / `codex-bridge`では
+provider固定判定により表示同期が`unavailable`となっていた。推論は200で成功していたが表示同期を修正した。
+
+カスタム接続名はconfig/readの定義を検査し、同じloopback待受port・/v1・native認証有効の場合だけ認める。
+既存openai互換を維持し、外部URL・別port/path・認証不要のproviderを拒否する。
+設定や秘密をcacheせず、検査済みprovider名だけを30秒/接続単位でcacheする。
+
+```sh
+CODEX_TEST_MODEL_PROVIDER=codex-live python3 test/cli-model-sync-e2e.py
+CODEX_TEST_MODEL_PROVIDER=codex-live CODEX_TEST_STALE_CATALOG=1 python3 test/cli-model-sync-e2e.py
+```
+
+上記の実CLI模擬検証が成功し、実環境でも調査時点の22個のloaded DeepSeek接続でprepareの読取検証に成功した。
+この読取検証ではモデル設定の更新・推論要求を送っていない。
