@@ -828,3 +828,31 @@ node --test test/cli-*.test.mjs test/provider-help.test.mjs
 python3 test/cli-model-sync-e2e.py
 CODEX_TEST_STALE_CATALOG=1 python3 test/cli-model-sync-e2e.py
 ```
+
+### WhatsTokenの無料時間帯だけ優先する
+
+通常版`deepseek-v4.1-flash-1017`を、Asia/Singapore（UTC+8）の毎日22:00〜翌08:00だけ自動経路の先頭へ追加できます。時間外・キーなし・無料料金未確認・利用不可時はOpenCode→Command Code→Ollamaへ戻ります。本人が固定指定したCommand Code/OllamaやGPTは切り替えません。
+
+```sh
+python3 scripts/manual_providers.py set-key whatstoken
+python3 scripts/install_router_service.py --update-if-idle --wait-idle 900 --enable-whatstoken-free
+python3 scripts/manual_providers.py install-models --with-whatstoken-free
+```
+
+キーは非表示入力で`~/.codex/whatstoken-api-key`へmode 600で保存します。購入・入金は行いません。トークンはHAをOFFにし、Limit modelsで通常版だけに制限する構成を推奨します。`special`版は対象外です。トークンのquota=0を無料制限とは扱いません。
+
+明示有効化は`CODEX_WHATSTOKEN_FREE=1`です。無料の確認には固定した公式公開料金と運用timezoneを使い、2秒の取得期限・1MiBの上限・リダイレクト拒否・5秒以内の短いcacheを設けています。無料設定の変更、曖昧なモデル、未知の料金ルール、時計ずれ、取得失敗を認めません。無料終了の直前はルーターの要求期限＋5秒の余裕を取ってWhatsTokenへ新規送信しません。判定を通過後も、モデル送信直前と回答再取得時に再確認します。提供元が処理途中に料金や規約を変更した場合の将来請求を保証する契約ではありません。
+
+自動選択中の表示IDは`auto-whatstoken/deepseek-v4.1-flash`です。接続中のCLIの表示も同期し、次の要求で時間外なら既存の上位提供元へ戻ります。ヘッダー受信前のWhatsTokenの認証・残高・レート・通信エラーでは既存経路へ移ります。ストリームを受け取った後は自動再推論を増やしません。
+WhatsTokenのヘッダー前エラー後は、連続失敗を避けるため1分間は無料経路を休止します。利用枠の解除時刻が分かる場合は既存の枠追跡も使います。バックグラウンドの試し推論は行いません。
+
+会話本文、履歴、コード、画像、ツール結果はWhatsTokenと上流へ送信されます。[プライバシーポリシー](https://www.whatstoken.ai/legal/privacy)は処理・第三者転送・ログ保持を認めています。保存国/日数/学習不使用を保証する記載は確認できていません。送信本文から登録済みの提供元キー・現在の認証キーを伏せますが、未知の個人情報や機密情報を自動で匿名化するものではありません。ローカルの履歴は変更しません。
+
+模擬通信の確認:
+
+```sh
+node --test test/whatstoken-free.test.mjs test/whatstoken-router.test.mjs
+CODEX_TEST_WHATSTOKEN=1 CODEX_TEST_MODEL_PROVIDER=codex-live python3 test/cli-model-sync-e2e.py
+```
+
+後者も隔離設定・合成キー・模擬上流のみです。料金や疎通の確認のために有料時間帯の実推論は行いません。

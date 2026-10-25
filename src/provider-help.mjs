@@ -5,6 +5,7 @@ export const PROVIDER_HELP = Object.freeze({
   opencode: Object.freeze({ label: 'OpenCode Go', login: 'https://opencode.ai/console/', billing: 'https://opencode.ai/console/go' }),
   commandcode: Object.freeze({ label: 'Command Code', login: 'https://commandcode.ai/signin', billing: 'https://commandcode.ai/billing' }),
   ollama: Object.freeze({ label: 'Ollama Cloud', login: 'https://ollama.com/signin', billing: 'https://ollama.com/pricing' }),
+  whatstoken: Object.freeze({ label: 'WhatsToken', login: 'https://www.whatstoken.ai/login', billing: 'https://www.whatstoken.ai' }),
 });
 export function providerHelp(provider) {
   const help = Object.hasOwn(PROVIDER_HELP, provider) ? PROVIDER_HELP[provider] : null;

@@ -84,6 +84,7 @@ def install():
     mode.add_argument("--update-if-idle", action="store_true")
     mode.add_argument("--update-now", action="store_true", help="本人の明示指定で通信中でも今更新します")
     parser.add_argument("--wait-idle", type=int, default=0)
+    parser.add_argument("--enable-whatstoken-free", action="store_true", help="WhatsTokenを無料条件確認付きの自動ルートへ追加する")
     arguments = parser.parse_args()
     if not 0 <= arguments.wait_idle <= 1800:
         raise SystemExit("接続待機は0〜1800秒で指定してください")
@@ -98,7 +99,7 @@ def install():
     if not (root / "unified-model-catalog.json").exists():
         raise SystemExit("先にunified_config.py prepareを実行してください")
     ensure_bridge_key(root)
-    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs", "live-catalog.mjs", "make-catalog.mjs", "sync-models.mjs", "catalog-safety.mjs", "manual-providers.mjs", "provider-fallback.mjs", "cli-control.mjs", "cli-model-sync.mjs", "provider-help.mjs", "chat-protocol.mjs", "upstream-options.mjs", "request-guard.mjs", "models.json"]}
+    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs", "live-catalog.mjs", "make-catalog.mjs", "sync-models.mjs", "catalog-safety.mjs", "manual-providers.mjs", "whatstoken-free.mjs", "provider-fallback.mjs", "cli-control.mjs", "cli-model-sync.mjs", "provider-help.mjs", "chat-protocol.mjs", "upstream-options.mjs", "request-guard.mjs", "models.json"]}
     revision = hashlib.sha256(b"".join(modules.values())).hexdigest()
     runtime = root / "router-runtime" / revision
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -122,6 +123,8 @@ def install():
     previous = path.read_bytes() if path.exists() else None
     if previous:
         payload["EnvironmentVariables"] = {**plistlib.loads(previous).get("EnvironmentVariables", {}), "CODEX_HOME": str(root)}
+    if arguments.enable_whatstoken_free:
+        payload["EnvironmentVariables"]["CODEX_WHATSTOKEN_FREE"] = "1"
     replace = previous is not None and plistlib.loads(previous) != payload
     if replace:
         old = plistlib.loads(previous)

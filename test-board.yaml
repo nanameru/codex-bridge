@@ -946,3 +946,50 @@ cases:
     test_file: test/stream-error-e2e.py
     issues: [97]
     notes: "各1回の模擬推論。stream_max_retries=0でCLIの再試行も止め、一般的なstream closedへ理由が失われないことを検証する。"
+
+  - id: TC-083
+    title: "WhatsTokenの無料時間と公開料金の両方を確認する"
+    feature: "無料時間帯の安全判定"
+    scenario: "UTC+8・DST・終了前余裕・料金/運用timezone変更・special除外・不正/過大/古い応答・通信失敗"
+    status: done
+    priority: high
+    type: security
+    source: [src/whatstoken-free.mjs]
+    test_file: test/whatstoken-free.test.mjs
+    issues: [99]
+    notes: "公式URLに認証/会話を付けず照会。条件不明時は無料経路を使わない。"
+
+  - id: TC-084
+    title: "無料条件付きWhatsTokenから既存3社へ自動切替する"
+    feature: "無料経路の自動切替"
+    scenario: "明示有効化・専用鍵・時間外/キーなし・送信前再確認・認証/残高/制限/通信失敗・custom tool・手動優先"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/manual-providers.mjs, src/provider-fallback.mjs]
+    test_file: test/whatstoken-router.test.mjs
+    issues: [99]
+    notes: "WhatsToken→OpenCode→Command Code→Ollama。ヘッダー送信後の再推論なし。"
+
+  - id: TC-085
+    title: "WhatsToken無料自動IDのCLI表示と本人の手動指定を維持する"
+    feature: "無料経路のCLIモデル表示"
+    scenario: "自動WhatsToken→OpenCode復帰と手動指定の上書き防止"
+    status: done
+    priority: high
+    type: integration
+    source: [src/cli-model-sync.mjs, src/manual-providers.mjs]
+    test_file: test/cli-model-sync.test.mjs
+    issues: [99]
+
+  - id: TC-086
+    title: "実CLIの無料WhatsToken表示と時間外復帰を模擬検証する"
+    feature: "無料時間帯の実CLI切替"
+    scenario: "隔離共有server・合成認証・模擬無料ON/OFF・本人手動指定・既存3社の復帰"
+    status: done
+    priority: high
+    type: e2e
+    source: [src/model-router.mjs, src/cli-model-sync.mjs, src/manual-providers.mjs, test/mock-manual.mjs]
+    test_file: test/cli-model-sync-e2e.py
+    issues: [99]
+    notes: "CODEX_TEST_WHATSTOKEN=1、CODEX_TEST_MODEL_PROVIDER=codex-liveで模擬上流30要求。外部推論なし。"

@@ -4,7 +4,7 @@ import { autoManualSlug } from './manual-providers.mjs';
 
 export const CLI_AUTO_MODEL = 'opencode/deepseek-v4.1-flash';
 export const cliProviderModel = provider => provider === 'opencode' ? CLI_AUTO_MODEL : autoManualSlug(provider);
-const MODELS = new Set([CLI_AUTO_MODEL, autoManualSlug('commandcode'), autoManualSlug('ollama')]);
+const MODELS = new Set([CLI_AUTO_MODEL, autoManualSlug('commandcode'), autoManualSlug('ollama'), autoManualSlug('whatstoken')]);
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function cliThreadId(body, headers = {}) {

@@ -88,3 +88,54 @@ const health=await(await fetch('http://127.0.0.1:'+server.address().port+'/healt
 if(!health.model_ids.includes('commandcode/deepseek-v4.1-flash')||!health.model_ids.includes('ollama/deepseek-v4.1-flash'))process.exitCode=1;
 }finally{server.closeAllConnections();server.close();}});"""
             subprocess.run(["node", "--input-type=module", "-e", program, (runtime / "model-router.mjs").as_uri()], check=True, timeout=15)
+
+    def test_whatstoken_key_and_catalog_require_explicit_opt_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / 'unified-model-catalog.json'
+            catalog.write_text(json.dumps({'models': [{'slug': 'gpt-test', 'router_provider': 'openai'}]}))
+            module.save_key(root, 'whatstoken', 'synthetic-whats-key')
+            self.assertEqual((root / 'whatstoken-api-key').stat().st_mode & 0o777, 0o600)
+            self.assertNotIn('auto-whatstoken/deepseek-v4.1-flash', module.install_models(root))
+            self.assertIn('auto-whatstoken/deepseek-v4.1-flash', module.install_models(root, True))
+            before = catalog.read_bytes()
+            module.install_models(root, True)
+            self.assertEqual(catalog.read_bytes(), before)
+            module.install_models(root)
+            self.assertIn('auto-whatstoken/deepseek-v4.1-flash', [m['slug'] for m in json.loads(catalog.read_text())['models']])
+
+    def test_runtime_preserves_existing_manual_provider_opt_out(self):
+        import socket
+        import time
+        import urllib.request
+        for flag in ['0', '1']:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'unified-model-catalog.json').write_text(json.dumps({'models': [{'slug': 'gpt-test', 'router_provider': 'openai'}]}))
+                with socket.socket() as listener:
+                    listener.bind(('127.0.0.1', 0))
+                    port = listener.getsockname()[1]
+                env = {**os.environ, 'CODEX_HOME': directory, 'ROUTER_PORT': str(port),
+                       'CODEX_MANUAL_PROVIDERS': flag, 'CODEX_WHATSTOKEN_FREE': '0'}
+                process = subprocess.Popen(['node', str(ROOT / 'src/model-router.mjs')], env=env,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    deadline = time.monotonic() + 5
+                    while True:
+                        try:
+                            with urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=0.5) as response:
+                                health = json.load(response)
+                            break
+                        except OSError:
+                            if process.poll() is not None or time.monotonic() >= deadline:
+                                self.fail('isolated router did not start')
+                            time.sleep(0.05)
+                    self.assertEqual('commandcode/deepseek-v4.1-flash' in health['model_ids'], flag == '1')
+                    self.assertFalse(health['whatstoken_free']['enabled'])
+                finally:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=3)

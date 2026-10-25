@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export const AUTO_DEEPSEEK_PROVIDERS = Object.freeze(["opencode", "commandcode", "ollama"]);
+export const ALL_FALLBACK_PROVIDERS = Object.freeze(["whatstoken", ...AUTO_DEEPSEEK_PROVIDERS]);
 export const AUTO_DEEPSEEK_MODEL = "deepseek-v4.1-flash";
 export const PROVIDER_STATE_VERSION = 1;
 const WINDOWS = new Set(["short", "weekly", "monthly", "unknown"]);
@@ -218,7 +219,7 @@ function parseState(raw) {
   if (!raw || raw.version !== PROVIDER_STATE_VERSION || !raw.providers
       || typeof raw.providers !== "object" || Array.isArray(raw.providers)) return { version: PROVIDER_STATE_VERSION, providers: {} };
   const providers = {};
-  for (const provider of AUTO_DEEPSEEK_PROVIDERS) {
+  for (const provider of ALL_FALLBACK_PROVIDERS) {
     const windows = raw.providers[provider]?.windows;
     if (!windows || typeof windows !== "object" || Array.isArray(windows)) continue;
     const clean = {};
@@ -315,7 +316,7 @@ export class ProviderFallbackState {
   }
 
   recordLimit(provider, result) {
-    if (!AUTO_DEEPSEEK_PROVIDERS.includes(provider) || !result?.providerLimited) throw new Error("provider_limit_invalid");
+    if (!ALL_FALLBACK_PROVIDERS.includes(provider) || !result?.providerLimited) throw new Error("provider_limit_invalid");
     const window = WINDOWS.has(result.window) ? result.window : "unknown";
     const now = this.now();
     const until = Number.isSafeInteger(result.resetAt) && result.resetAt > now && result.resetAt <= now + MAX_RESET_AHEAD_MS
