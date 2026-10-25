@@ -862,3 +862,51 @@ cases:
     test_file: test/provider-fallback-e2e.py
     issues: [91]
     notes: "隔離CODEX_HOMEと合成認証。模擬上流10要求で圧縮/再開/上位復帰成功。実API0要求。"
+
+  - id: TC-076
+    title: "CLIの自動選択と本人の手動選択を区別してモデル設定を同期する"
+    feature: "CLIのモデル選択同期"
+    scenario: "自動用ID・再接続・手動優先・同じ手動IDへの往復・daemon停止・UUID検証"
+    status: done
+    priority: high
+    type: unit
+    source: [src/cli-model-sync.mjs, src/manual-providers.mjs, src/model-router.mjs]
+    test_file: test/cli-model-sync.test.mjs
+    issues: [93]
+    notes: "自動モードは自動用選択IDで表す。会話ID対応表の永続化やDB編集、thread/resumeによる購読は行わない。"
+
+  - id: TC-077
+    title: "本人専用の共有サーバーへ期限付きRPCで接続する"
+    feature: "CLIのcontrol socket接続"
+    scenario: "private socket・WS handshake・分割・ping・期限切れ・不正frame・逆方向request"
+    status: done
+    priority: high
+    type: security
+    source: [src/cli-control.mjs]
+    test_file: test/cli-control.test.mjs
+    issues: [93]
+    notes: "socket所有者/権限を確認。本文を記録せず、tool/承認requestを実行・承認しない。"
+
+  - id: TC-078
+    title: "利用不可時に公式ログインと支払い先を表示する"
+    feature: "提供元の利用再開案内"
+    scenario: "401/402/403・全社制限・安全な固定URL・切替継続時のcommentary・履歴からの除外"
+    status: done
+    priority: high
+    type: integration
+    source: [src/provider-help.mjs, src/manual-providers.mjs, src/model-router.mjs]
+    test_file: test/provider-help.test.mjs
+    issues: [93]
+    notes: "上流のURL・キーを使わず固定公式リンクだけを表示。購入・契約・自動ブラウザ操作なし。"
+
+  - id: TC-079
+    title: "実CLIで自動切替と復帰の選択表示と402リンクを確認する"
+    feature: "実CLIのモデル表示同期"
+    scenario: "OpenCode→Command Code→Ollama→復帰・手動選択往復・未課金402・旧カタログ"
+    status: done
+    priority: high
+    type: e2e
+    source: [src/cli-model-sync.mjs, src/cli-control.mjs, src/model-router.mjs]
+    test_file: test/cli-model-sync-e2e.py
+    issues: [93]
+    notes: "隔離CODEX_HOME/合成APIキー/模擬上流/専用tmuxで実CLI footerを検証。旧カタログ時のID表記も区別する。"

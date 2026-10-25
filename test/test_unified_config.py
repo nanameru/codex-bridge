@@ -312,6 +312,17 @@ class UnifiedConfigTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "models_cache.json").read_text()), native)
         self.assertEqual(json.loads((self.root / "model-catalog.json").read_text()), opencode)
 
+    def test_shared_cache_manual_and_auto_models_never_become_native(self):
+        native = {"models": [{"slug": "gpt-test"}] + [{"slug": prefix + "/deepseek-v4.1-flash"}
+                    for prefix in ["opencode", "commandcode", "ollama", "auto-commandcode", "auto-ollama"]]}
+        (self.root / "models_cache.json").write_text(json.dumps(native))
+        (self.root / "model-catalog.json").write_text('{"models":[{"slug":"gpt-test"}]}')
+        source = self.root / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src/models.json").write_text('{"models":[{"id":"gpt-test"}]}')
+        result = json.loads(unified_config.prepare(self.root, source).read_text())
+        self.assertEqual([m["slug"] for m in result["models"]], ["gpt-test", "opencode/gpt-test"])
+
     def test_pins_frequent_models_at_top_without_reordering_the_rest(self):
         native = {"models": [{"slug": "gpt-other", "display_name": "Other"},
                             {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol"}]}

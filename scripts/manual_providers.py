@@ -55,8 +55,8 @@ def install_models(root):
     if not isinstance(data.get("models"), list):
         raise ValueError("カタログの形式が不正です")
     result = subprocess.run(["node", "--input-type=module", "-e",
-        "import {manualModels} from './src/manual-providers.mjs'; process.stdout.write(JSON.stringify(manualModels()));"],
-        cwd=ROOT, check=True, capture_output=True, text=True)
+        "import {withManualModels,MANUAL_PROVIDERS} from './src/manual-providers.mjs'; import {readFileSync} from 'node:fs'; const catalog=JSON.parse(readFileSync(0,'utf8')); process.stdout.write(JSON.stringify(withManualModels(catalog).models.filter(m=>MANUAL_PROVIDERS[m.router_provider])));"],
+        cwd=ROOT, check=True, capture_output=True, text=True, input=json.dumps(data))
     models = json.loads(result.stdout)
     prior = data["models"]
     data["models"] = [m for m in prior if m.get("router_provider") not in PROVIDERS] + models
@@ -74,7 +74,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     key = sub.add_parser("set-key", help="非表示入力で公式APIキーを保存する")
     key.add_argument("provider", choices=PROVIDERS)
-    sub.add_parser("install-models", help="DeepSeekの手動選択2件だけをカタログへ追加する")
+    sub.add_parser("install-models", help="DeepSeekの手動/自動選択をカタログへ追加する")
     args = parser.parse_args()
     if args.command == "set-key":
         save_key(args.codex_home, args.provider, getpass.getpass(f"{args.provider} API key (非表示): "))
@@ -82,7 +82,7 @@ def main():
     else:
         for slug in install_models(args.codex_home):
             print(slug)
-        print("稼働ルーターの更新後、Codexを開き直してください。既存CLIはcodex resume <thread-id> --no-daemonで一覧を再読込できます。")
+        print("稼働ルーターの更新後、Codexを開き直してください。既存CLIは作業終了後に開き直すと一覧を再読込できます。--no-daemonでは表示同期が使えません。")
 
 
 if __name__ == "__main__":

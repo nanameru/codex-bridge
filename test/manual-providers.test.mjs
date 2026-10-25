@@ -25,7 +25,7 @@ async function fixture(t, extra = {}) {
 test('DeepSeekの手動宛先と認証を分離し同名OpenCodeと共存する', async t => {
   const { calls, send, base } = await fixture(t);
   const models = await (await fetch(base + '/v1/models')).json();
-  assert.equal(models.data.length,4);
+  assert.equal(models.data.length,6);
   for (const provider of ['commandcode','ollama']) {
     const body = { model: provider + '/deepseek-v4.1-flash', input: [{ role:'user',content:'latest' }],
       tools:[{ type:'function',name:'read',parameters:{type:'object'} }], reasoning:{effort:'high'} };
@@ -137,7 +137,7 @@ test('動的カタログ更新でも追加した2つの手動モデルが残る'
   const f=await fixture(t,{catalogProvider:{get:async()=>catalog}});
   const response=await fetch(f.base+'/codex/models?client_version=0.164.0',{headers:{authorization:'Bearer synthetic'}});
   const listed=await response.json();assert.equal(response.status,200);
-  assert.equal(listed.models.length,4);
+  assert.equal(listed.models.length,6);
   assert.ok(listed.models.some(m=>m.slug==='commandcode/deepseek-v4.1-flash'));
   assert.ok(listed.models.some(m=>m.slug==='ollama/deepseek-v4.1-flash'));
   assert.ok(listed.models.every(m=>!m.router_provider));

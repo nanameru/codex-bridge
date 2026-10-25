@@ -604,7 +604,7 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 キーは`CODEX_HOME/commandcode-api-key`と`CODEX_HOME/ollama-api-key`へ本人専用の0600権限で保存します。
 専用環境変数`CMD_API_KEY` / `OLLAMA_API_KEY`がある場合はそちらを優先します。
 共有権限・symlink・hardlinkの鍵ファイルは読みません。OpenAIログインと他社のキーを混ぜません。
-設定コマンドは既定モデルや既存会話を書き換えず、モデル一覧のバックアップを作り、2件だけ追加します。
+設定コマンドは既定モデルや既存会話を書き換えず、モデル一覧のバックアップを作ります。手動用2項目と自動用2項目を追加します。
 常駐ルーターはキーの変更を要求ごとに読み込むので、キーの登録/更新だけなら再起動不要です。
 
 Codex Appは会話を完了してから開き直し、CLIで一覧が古い場合は
@@ -750,7 +750,7 @@ Command Codeで画像入力は提供しないため、画像付き要求の能�
 OllamaからOpenCodeへ直接戻ることもできます。バックグラウンド推論・定期ポーリングは行いません。
 全社制限中は`provider_limits_exhausted`と`Retry-After`で停止します。キー未登録候補は飛ばし、認証拒否を枯渇と推測しません。
 
-選択モデル名はOpenCodeのままで、要求ごとの実提供元をメトリクス`provider`と`fallback_providers`へ記録します。
+共有サーバーに接続するCLIでは選択モデルも実提供元へ追従します（次項）。要求ごとの実提供元をメトリクス`provider`と`fallback_providers`へ記録します。
 ヘッダー確定前なら応答の`x-codex-bridge-provider`でも確認できます。
 状態は`CODEX_HOME/provider-fallback-state.json`へ0600・atomic replaceで保存し、再起動後も復元します。
 保存するのは固定の提供元名・窓・期限・HTTP分類だけで、APIキー・会話ID・本文は保存しません。
@@ -769,4 +769,52 @@ OllamaからOpenCodeへ直接戻ることもできます。バックグラウン
 ```bash
 node --test test/provider-fallback*.test.mjs
 python3 test/provider-fallback-e2e.py
+```
+
+### CLIの選択モデルも連動させる
+
+通常起動のCodex CLI（0.164.0の共有app-server）では、切替・復帰時に
+`thread/settings/update`で選択モデルを更新し、footerとモデル選択状態も追従します。
+
+| 選択ID | 動作 |
+| --- | --- |
+| `opencode/deepseek-v4.1-flash` | OpenCodeを優先する自動切替の開始点 |
+| `auto-commandcode/deepseek-v4.1-flash` | 「自動切替」付きCommand Code。解除後は上位へ戻る |
+| `auto-ollama/deepseek-v4.1-flash` | 「自動切替」付きOllama。解除後は上位へ戻る |
+| `commandcode/deepseek-v4.1-flash` | 本人が選ぶ固定経路 |
+| `ollama/deepseek-v4.1-flash` | 本人が選ぶ固定経路 |
+
+固定項目を手動で選び直すと自動切替を停止します。自動用項目なら利用可能な最上位から再開します。
+Codex自身が選択IDを保存するため、会話ID対応表を作らずに保存再開後も同じ動作を維持します。
+進行中turnを中断せず、承認やsandbox設定も変更しません。更新直前に現在のモデルを再確認し、
+観測済みの手動変更を上書きしません。設定APIにcompare-and-swapはないため、複数clientの完全同時操作はサーバーの適用順に従います。
+
+control socketは所有者・0600権限・親ディレクトリを検証します。読取/モデル設定更新だけを使い、
+本文・秘密・会話IDを新たに保存せず、threadの購読やtool/承認requestへの応答も行いません。
+接続できなくても推論ルートを維持し、同期失敗は`cli_model_sync`へ記録します。
+`CODEX_CLI_MODEL_SYNC=0`で表示同期を無効化できます。`--no-daemon`のCLIやAppの表示同期は対象外です。
+
+項目の追加は`python3 scripts/manual_providers.py install-models`で行います。
+起動済みのCLI/共有サーバーが古いカタログを保持する場合も選択IDは変わりますが、新項目は
+`auto-commandcode/...`のようなID表記になります。表示名の取り込みは全チャットの作業完了後、
+共有サーバーとCLIを再起動した際に行われます。設定ツールは他チャットを止める再起動を行いません。
+
+### クレジット・認証エラーの案内
+
+402、明確な利用枠429、401/403、APIキー未登録の場合は、公式ログインとプラン/支払いリンクを表示します。
+無料プランか残高不足かはHTTP状態だけで断定しません。全社制限中は3社のリンクをまとめます。
+切替で継続できた場合も、枠に達した提供元のリンクをbridge commentaryでCLIへ表示し、次の推論入力から除きます。
+
+| 提供元 | ログイン | プラン・支払い |
+| --- | --- | --- |
+| OpenCode | https://opencode.ai/console/ | https://opencode.ai/console/go |
+| Command Code | https://commandcode.ai/signin | https://commandcode.ai/billing |
+| Ollama | https://ollama.com/signin | https://ollama.com/pricing |
+
+固定の公式URLだけを使い、上流URLやAPIキーは表示しません。ブラウザの自動操作、購入、契約、auto reload設定変更は行いません。
+
+```bash
+node --test test/cli-*.test.mjs test/provider-help.test.mjs
+python3 test/cli-model-sync-e2e.py
+CODEX_TEST_STALE_CATALOG=1 python3 test/cli-model-sync-e2e.py
 ```

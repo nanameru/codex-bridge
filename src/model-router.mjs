@@ -15,7 +15,9 @@ import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFail
 import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
 import { createRequestGuard } from "./request-guard.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
-import { MANUAL_PROVIDERS, manualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
+import { MANUAL_PROVIDERS, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
+import { providerHelp, allProviderHelp, providerNoticeStream } from "./provider-help.mjs";
+import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel } from "./cli-model-sync.mjs";
 import { AUTO_DEEPSEEK_MODEL, AUTO_DEEPSEEK_PROVIDERS, ProviderFallbackState,
   classifyProviderLimit } from "./provider-fallback.mjs";
 
@@ -34,6 +36,9 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./catalog-safety.mjs", import.meta.url)))
   .update(readFileSync(new URL("./manual-providers.mjs", import.meta.url)))
   .update(readFileSync(new URL("./provider-fallback.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./cli-control.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./cli-model-sync.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./provider-help.mjs", import.meta.url)))
   .update(readFileSync(new URL("./chat-protocol.mjs", import.meta.url)))
   .update(readFileSync(new URL("./upstream-options.mjs", import.meta.url)))
   .update(readFileSync(new URL("./request-guard.mjs", import.meta.url)))
@@ -55,13 +60,14 @@ export function catalogRoutes(catalog) {
       throw new Error("モデルのコンテキスト上限が不正です");
     }
     const manual = MANUAL_PROVIDERS[model.router_provider];
-    if (manual && (model.slug !== manualSlug(model.router_provider) || model.router_model !== manual.model || model.router_transport !== "chat")) {
+    if (manual && (![manualSlug(model.router_provider), autoManualSlug(model.router_provider)].includes(model.slug) || model.router_model !== manual.model || model.router_transport !== "chat")) {
       throw new Error("手動プロバイダーのモデル定義が不正です");
     }
     routes.set(model.slug, { provider: model.router_provider, model: model.router_model ?? model.slug,
       ...(model.context_window !== undefined ? { contextWindow: model.context_window } : {}),
       ...(model.router_transport ? { transport: model.router_transport } : {}),
-      ...(model.router_provider === "opencode" && (model.router_model ?? model.slug) === AUTO_DEEPSEEK_MODEL ? { autoFallback: true } : {}) });
+      ...((model.router_provider === "opencode" && (model.router_model ?? model.slug) === AUTO_DEEPSEEK_MODEL)
+        || (manual && model.slug === autoManualSlug(model.router_provider)) ? { autoFallback: true } : {}) });
   }
   for (const model of catalog.models) {
     if (model.router_provider === "opencode" && model.router_model && !routes.has(model.router_model)) {
@@ -215,6 +221,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   // Accept bounded history before reducing it to the smaller forwarding budget.
   maxRequestBytes = maxBytes * 4,
   manualProvidersEnabled = false, manualKey = provider => readManualKey(provider, codexRoot),
+  cliModelSync, cliModelSyncEnabled = false,
   providerFallbackState, providerFallbackFile = join(codexRoot, "provider-fallback-state.json"),
   providerFallbackCooldownMs = envLimit("CODEX_PROVIDER_FALLBACK_COOLDOWN_MS", 300000),
   autoProviderFallback = manualProvidersEnabled && process.env.CODEX_AUTO_PROVIDER_FALLBACK !== "0",
@@ -227,6 +234,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   }
   if (manualProvidersEnabled) catalog = withManualModels(catalog);
   let routes = catalogRoutes(catalog);
+  let modelSync = cliModelSync;
+  const getModelSync = () => modelSync ??= new CliModelSync({ root: codexRoot });
   let fallbackState = providerFallbackState;
   const getFallbackState = () => fallbackState ??= new ProviderFallbackState({
     file: providerFallbackFile, unknownCooldownMs: providerFallbackCooldownMs,
@@ -388,28 +397,36 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         route = { ...route, transport: "chat" };
       }
       const requestedProvider = route.provider;
+      const providerNotices = [];
+      let cliContext;
+      if (cliModelSyncEnabled && autoProviderFallback && route.transport !== "responses" && path === "/v1/responses"
+          && !body.input?.some?.(item => item.type === "compaction_trigger")) {
+        cliContext = await getModelSync().prepare(cliThreadId(body, request.headers),
+          route.provider === "opencode" && route.autoFallback ? CLI_AUTO_MODEL : body.model);
+      }
       let fallbackRoutes = [];
       if (autoProviderFallback && route.autoFallback && route.transport !== "responses"
           && path === "/v1/responses" && !body.input?.some?.(item => item.type === "compaction_trigger")) {
         const state = getFallbackState();
-        const providerRoutes = new Map([["opencode", route]]);
+        const goRoute = routes.get(CLI_AUTO_MODEL) ?? (route.provider === "opencode" ? route : null);
+        const providerRoutes = new Map(goRoute ? [["opencode", { ...goRoute, transport: "chat" }]] : []);
         for (const provider of AUTO_DEEPSEEK_PROVIDERS.slice(1)) {
-          const candidate = routes.get(manualSlug(provider));
+          const candidate = routes.get(autoManualSlug(provider)) ?? routes.get(manualSlug(provider));
           if (candidate && MANUAL_PROVIDERS[candidate.provider]) providerRoutes.set(provider, candidate);
         }
         const available = state.candidates(AUTO_DEEPSEEK_PROVIDERS).filter(provider => providerRoutes.has(provider));
         const ready = available.filter(provider => provider === "opencode"
-          ? Boolean(route.transport === "responses" ? openCodeKey() : bridgeKey())
+          ? Boolean(bridgeKey())
           : Boolean(manualKey(provider)));
         if (!ready.length) {
           if (!available.length) {
             const earliest = state.earliestUnblockAt(AUTO_DEEPSEEK_PROVIDERS);
             if (earliest) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
             fail(response, 429, "provider_limits_exhausted",
-              "DeepSeek V4.1 Flashの全提供元が利用枠制限中です。制限解除後に同じ要求を再試行してください");
+              "DeepSeek V4.1 Flashの全提供元が利用枠制限中です。制限解除を待つか、利用枠・支払い設定を確認してください。" + allProviderHelp());
           } else {
             fail(response, 503, "auto_provider_credentials_required",
-              "自動切替候補の認証情報を準備してください。選択モデルと会話履歴は保持しています");
+              "自動切替候補の認証情報を準備してください。選択モデルと会話履歴は保持しています。" + allProviderHelp());
           }
           return;
         }
@@ -498,7 +515,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       if (manual) {
         const key = manualKey(route.provider);
         if (!key) {
-          fail(response, 503, "provider_key_required", `${manual.label}のAPIキーを安全な設定に登録してください。選択モデルは保持しています`);
+          fail(response, 503, "provider_key_required", `${manual.label}のAPIキーを安全な設定に登録してください。選択モデルは保持しています${providerHelp(route.provider)}`);
           return;
         }
         const guarded = manualGuard.check(body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id);
@@ -687,6 +704,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       let routeFetch = makeRouteFetch(route);
       let send = route.provider === "opencode"
         ? (url, options) => fetchWithAvailabilityRetry(fetcher, url, options, () => { metric.upstream_retries = 1; }) : routeFetch;
+      const syncSelection = async () => {
+        if (cliContext) {
+          metric.cli_model_sync = await getModelSync().sync(cliContext,
+            cliProviderModel(route.provider));
+        }
+      };
+      await syncSelection();
       let upstream = await send(destination.replace(/\/$/, "") + suffix, {
         method: "POST", headers, body: routed,
         signal: abort.signal, redirect: "manual",
@@ -705,6 +729,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             catch { metric.provider_state_error = true; } // The in-memory block remains active.
           }
           if (!limit) break;
+          providerNotices.push(`提供元の利用枠を確認してください。${providerHelp(route.provider)}`);
           metric.provider_limit_provider = route.provider;
           metric.provider_limit_window = limit.window;
           metric.provider_limit_reset_known = limit.resetKnown;
@@ -768,6 +793,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           metric.fallback_providers = [...(metric.fallback_providers ?? []), route.provider];
           metric.fallback_attempts = (metric.fallback_attempts ?? 0) + 1;
           metric.stage = "upstream_headers";
+          await syncSelection();
           upstream = await routeFetch(destination.replace(/\/$/, "") + "/responses", {
             method: "POST", headers, body: routed,
             signal: abort.signal, redirect: "manual",
@@ -783,18 +809,27 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 502, "upstream_redirect", "転送先のリダイレクトを拒否しました");
         return;
       }
-      if (!upstream.body) {
-        fail(response, 502, "empty_upstream", "転送先から応答がありません");
-        return;
-      }
       if (metric.auto_fallback && upstream.ok) {
         const state = getFallbackState();
         try { state.recordSuccess(route.provider); } catch { metric.provider_state_error = true; }
       }
+      if (!upstream.ok && route.provider === "opencode" && [401, 402, 403, 429].includes(upstream.status)) {
+        const limit = await classifyProviderLimit(upstream);
+        if (limit || [401, 402, 403].includes(upstream.status)) {
+          const detail = upstream.body ? await readUpstreamFailure(upstream) : { code: "unknown_error" };
+          upstream = Response.json({ error: { type: "provider_error", code: detail.code,
+            message: `${route.provider}が要求を拒否しました（HTTP ${upstream.status}）。利用枠と認証設定を確認してください。${providerHelp(route.provider)}` } },
+          { status: upstream.status, headers: upstream.headers.has("retry-after") ? { "retry-after": upstream.headers.get("retry-after") } : {} });
+        }
+      }
+      if (!upstream.body) {
+        fail(response, 502, "empty_upstream", "転送先から応答がありません");
+        return;
+      }
       if (handoffStatus.started && !upstream.ok) {
         const detail = await readUpstreamFailure(upstream);
         Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
-        fail(response, upstream.status, "upstream_error", `履歴の準備後、選択したサービスが要求を拒否しました（理由: ${detail.code}、種別: ${detail.type}、詳細取得: ${detail.read}）`);
+        fail(response, upstream.status, "upstream_error", `履歴の準備後、選択したサービスが要求を拒否しました（理由: ${detail.code}、種別: ${detail.type}、詳細取得: ${detail.read}）${providerHelp(route.provider)}`);
         return;
       }
       const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store" };
@@ -842,6 +877,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       } else if (route.provider === "opencode" && directResponses && upstream.ok) {
         streams.push(normalizeResponseStream(responseHeaders["content-type"], maxBytes));
       }
+      if (upstream.ok && providerNotices.length) streams.push(providerNoticeStream(responseHeaders["content-type"], maxBytes, providerNotices));
       if (handoffStatus.started) streams.push(handoffStatus.stream(responseHeaders["content-type"], maxBytes));
       await pipeline(...streams, response, { signal: abort.signal });
       metric.upstream_stream_ms = Math.round(performance.now() - streamStart);
@@ -859,6 +895,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       try { onMetric(metric); } catch {}
     }
   });
+  server.once("close", () => modelSync?.close?.());
   server.on("upgrade", (_request, socket) => {
     socket.end("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
   });
@@ -873,6 +910,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     key: readOpenCodeKey, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
   const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
     catalogProvider, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
+    cliModelSyncEnabled: process.env.CODEX_CLI_MODEL_SYNC !== "0",
     onMetric: (metric) => console.log(JSON.stringify(metric)) });
   server.listen(Number(process.env.ROUTER_PORT ?? 8790), "127.0.0.1", () => {
     console.log("Unified model router listening on loopback");

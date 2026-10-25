@@ -5,6 +5,7 @@ import { buildCatalog } from './make-catalog.mjs';
 import { chatMessages, chatToResponses, pipeChatStream } from './chat-protocol.mjs';
 import { readUpstreamFailure } from './handoff-status.mjs';
 import { reasoningOptions } from './upstream-options.mjs';
+import { providerHelp } from './provider-help.mjs';
 import { classifyProviderLimit } from './provider-fallback.mjs';
 
 export const MANUAL_PROVIDERS = Object.freeze({
@@ -14,6 +15,7 @@ export const MANUAL_PROVIDERS = Object.freeze({
     model: 'deepseek-v4.1-flash', environment: 'OLLAMA_API_KEY', keyFile: 'ollama-api-key', context: 1048576, vision: true }),
 });
 export const manualSlug = provider => provider + '/deepseek-v4.1-flash';
+export const autoManualSlug = provider => 'auto-' + manualSlug(provider);
 export function readManualKey(provider, root = codexRoot(), environment = process.env) {
   const config = MANUAL_PROVIDERS[provider];
   if (!config) return null;
@@ -28,9 +30,15 @@ export function manualModels() {
     return { ...model, slug: manualSlug(provider), router_provider: provider, router_model: config.model, router_transport: 'chat' };
   });
 }
+export function automaticModels() {
+  return manualModels().map(model => ({ ...model, slug: autoManualSlug(model.router_provider),
+    display_name: model.display_name + '（自動切替）',
+    description: 'OpenCode → Command Code → Ollamaの優先順で利用枠に応じて自動切替・復帰します。' }));
+}
 export function withManualModels(catalog) {
   const external = new Set(Object.keys(MANUAL_PROVIDERS));
-  return { ...catalog, models: [...catalog.models.filter(model => !external.has(model.router_provider)), ...manualModels()] };
+  return { ...catalog, models: [...catalog.models.filter(model => !external.has(model.router_provider)), ...manualModels(),
+    ...automaticModels()] };
 }
 
 export function manualChatBody(provider, body) {
@@ -83,7 +91,7 @@ export async function fetchManualProvider(provider, url, options, fetcher, maxBy
     const retryAfter = upstream.headers.get('retry-after');
     return Response.json({ error: { type: 'provider_error', code: limit ? 'usage_exceeded' : detail.code,
       ...(limit ? { window: limit.window, ...(limit.resetKnown ? { resets_at: new Date(limit.resetAt).toISOString() } : {}), reset_known: limit.resetKnown } : {}),
-      message: `${config.label}が要求を拒否しました（HTTP ${upstream.status}、${detail.code}）。利用枠と認証設定を確認してください。` } },
+      message: `${config.label}が要求を拒否しました（HTTP ${upstream.status}、${detail.code}）。利用枠と認証設定を確認してください。${limit || [401,403].includes(upstream.status) ? providerHelp(provider) : ''}` } },
     { status: upstream.status, headers: /^\d{1,6}$/.test(retryAfter ?? '') ? { 'retry-after': retryAfter } : {} });
   }
   if (!upstream.body) throw new Error('manual_empty_response');

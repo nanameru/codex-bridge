@@ -50,12 +50,27 @@ class ManualProvidersTests(unittest.TestCase):
             before = catalog.read_bytes()
             ids = module.install_models(root)
             after = catalog.read_bytes()
-            self.assertEqual(len(ids), 2)
-            self.assertEqual(len(json.loads(after)["models"]), 4)
+            self.assertEqual(len(ids), 4)
+            self.assertEqual(len(json.loads(after)["models"]), 6)
             module.install_models(root)
             self.assertEqual(catalog.read_bytes(), after)
             self.assertEqual(config.read_text(), 'model="gpt-test"\n')
             self.assertEqual((root / "unified-model-catalog.json.bak.manual-providers").read_bytes(), before)
+
+    def test_auto_entries_are_added_alongside_opencode_deepseek(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            path = root / "unified-model-catalog.json"
+            path.write_text(json.dumps({"models":[{"slug":"gpt-test","router_provider":"openai"},
+                {"slug":"opencode/deepseek-v4.1-flash","router_provider":"opencode","router_model":"deepseek-v4.1-flash"}]}))
+            ids = module.install_models(root)
+            self.assertEqual(len(ids), 4)
+            self.assertIn("auto-commandcode/deepseek-v4.1-flash", ids)
+            self.assertIn("auto-ollama/deepseek-v4.1-flash", ids)
+            before = path.read_bytes()
+            module.install_models(root)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(len(json.loads(before)["models"]), 6)
 
     def test_packaged_runtime_contains_all_imports_and_exposes_both_models(self):
         tree = ast.parse((ROOT / "scripts/install_router_service.py").read_text())

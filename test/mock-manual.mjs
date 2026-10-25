@@ -6,7 +6,8 @@ import { ProviderFallbackState } from '../src/provider-fallback.mjs';
 import { MANUAL_PROVIDERS } from '../src/manual-providers.mjs';
 const calls=[];
 const automatic = process.env.CODEX_TEST_FALLBACK === '1';
-let phase = 0, clock = Date.now();
+let phase = 0, clock = Date.now(), unpaid = '';
+
 const providerFallbackState = new ProviderFallbackState({ now: () => clock });
 const servers=[];
 async function listen(server){server.listen(0,'127.0.0.1');await once(server,'listening');servers.push(server);return `http://127.0.0.1:${server.address().port}/v1`;}
@@ -21,6 +22,9 @@ for(const provider of ['openai','opencode','commandcode','ollama']){
     calls.push({provider,model:body.model,summary:Boolean(summary),compact:Boolean(compact),
       expectedKey:manual?req.headers.authorization===`Bearer fake-${provider}-key`:true,
       nativeLeak:manual?Boolean(req.headers['chatgpt-account-id']||req.headers['x-codex-bridge-auth']||req.headers.authorization==='Bearer fake-native'):false});
+    if (provider === unpaid) {
+      res.writeHead(402, {'content-type':'application/json'});res.end(JSON.stringify({error:{message:'Subscription inactive. Add credits.'}}));return;
+    }
     if (automatic && !summary && !compact && ((provider === 'opencode' && phase >= 1) || (provider === 'commandcode' && phase >= 2))) {
       res.writeHead(429, {'content-type':'application/json'});
       res.end(JSON.stringify({error:{code:'usage_exceeded',window:provider === 'opencode'?'monthly':'weekly',resets_at:new Date(clock+60000).toISOString()}}));
@@ -43,8 +47,9 @@ for(const provider of ['openai','opencode','commandcode','ollama']){
   }));
 }
 const catalog=JSON.parse(readFileSync(process.env.CODEX_HOME+'/unified-model-catalog.json'));
-const router=createRouter({catalog,providerFallbackState,manualProvidersEnabled:true,nativeBase:bases.openai,bridgeBase:bases.opencode,allowTestOrigins:true,
+const router=createRouter({catalog,providerFallbackState,cliModelSyncEnabled:process.env.CODEX_TEST_CLI_SYNC==='1',manualProvidersEnabled:true,nativeBase:bases.openai,bridgeBase:bases.opencode,allowTestOrigins:true,
   bridgeKey:()=> 'fake-bridge-key',manualKey:p=>`fake-${p}-key`,fetcher:async(url,init)=>{
+    if(!Object.values(bases).some(base=>url.startsWith(base+'/')) && !Object.values(MANUAL_PROVIDERS).some(c=>url.startsWith(c.base+'/')))throw new Error('mock_destination_only');
     for(const[p,config]of Object.entries(MANUAL_PROVIDERS))if(url.startsWith(config.base+'/'))return fetch(url.replace(config.base,bases[p]),init);
     return fetch(url,init);
   }});
@@ -54,6 +59,7 @@ process.stdin.on('data',chunk=>{
   commands+=chunk;
   while(commands.includes('\n')) {
     const end=commands.indexOf('\n'), command=commands.slice(0,end); commands=commands.slice(end+1);
+    if(command.startsWith('unpaid:')) unpaid=command.slice(7);
     if(command.startsWith('phase:')) phase=Number(command.slice(6));
     if(command.startsWith('advance:')) clock+=Number(command.slice(8));
     process.stdout.write(JSON.stringify({calls})+'\n');
