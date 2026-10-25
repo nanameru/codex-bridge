@@ -453,7 +453,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           : Boolean(manualKey(provider)));
         if (!ready.length) {
           if (!available.length) {
-            const earliest = state.earliestUnblockAt(AUTO_DEEPSEEK_PROVIDERS);
+            const earliest = state.earliestUnblockAt(order);
             if (earliest) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
             fail(response, 429, "provider_limits_exhausted",
               "DeepSeek V4.1 Flashの全提供元が利用枠制限中です。制限解除を待つか、利用枠・支払い設定を確認してください。" + allProviderHelp());

@@ -8,10 +8,11 @@ const go='opencode/deepseek-v4.1-flash', wt='auto-whatstoken/deepseek-v4.1-flash
 const answer=p=>p==='opencode'?Response.json({status:'completed',output:[]}):Response.json({choices:[{index:0,message:{role:'assistant',content:p},finish_reason:'stop'}]});
 async function fixture(t,{enabled=true,key=true,eligible=true,handler=answer,gate}={}) {
   const calls=[],metrics=[];let checks=0;
+  const state=new ProviderFallbackState();
   const policy=gate??{check:async()=>{checks++;return{allowed:eligible,end:Date.now()+3600000,reason:'outside_free_window'};},unavailable(){}};
   const server=createRouter({catalog:{models:[{slug:go,router_provider:'opencode',router_model:'deepseek-v4.1-flash',context_window:1000000}]},
     authenticate:()=>true,manualProvidersEnabled:true,whatstokenFreeEnabled:enabled,whatstokenFreeGate:policy,
-    providerFallbackState:new ProviderFallbackState(),bridgeKey:()=> 'local-bridge-only',manualKey:p=>p==='whatstoken'&&!key?null:p+'-key',
+    providerFallbackState:state,bridgeKey:()=> 'local-bridge-only',manualKey:p=>p==='whatstoken'&&!key?null:p+'-key',
     onMetric:m=>metrics.push(m),fetcher:async(url,options)=>{
       const provider=Object.entries(CHAT_PROVIDERS).find(([,c])=>url.startsWith(c.base))?.[0]??'opencode';
       calls.push({provider,url,...options,body:JSON.parse(options.body)});return handler(provider,calls.at(-1));
@@ -20,9 +21,9 @@ async function fixture(t,{enabled=true,key=true,eligible=true,handler=answer,gat
   t.after(()=>{server.closeAllConnections();return new Promise(r=>server.close(r));});
   const send=async(extra={})=>{
     const r=await fetch(`http://127.0.0.1:${server.address().port}/v1/responses`,{method:'POST',headers:{authorization:'Bearer native-secret','chatgpt-account-id':'private-account','content-type':'application/json'},body:JSON.stringify({model:go,input:[{role:'user',content:'synthetic only'}],...extra})});
-    return{status:r.status,body:await r.text()};
+    return{status:r.status,body:await r.text(),retryAfter:r.headers.get('retry-after')};
   };
-  return{send,calls,metrics,checks:()=>checks};
+  return{send,calls,metrics,state,checks:()=>checks};
 }
 
 test('明示有効化と無料確認時だけWhatsToken通常モデルを専用の鍵で使う',async t=>{
@@ -106,4 +107,11 @@ test('無料判定の注入clockと送信前の残時間判定に同じ時刻を
   const clock=Date.parse('2026-01-01T22:30:00+08:00');
   const f=await fixture(t,{gate:{now:()=>clock,check:async()=>({allowed:true,end:clock+3600000}),unavailable(){}}});
   assert.equal((await f.send()).status,200);assert.deepEqual(f.calls.map(c=>c.provider),['whatstoken']);
+});
+
+test('全社制限時の再開時刻に無料WhatsTokenの既知の解除も含める',async t=>{
+  const f=await fixture(t);
+  for(const provider of ['whatstoken','opencode','commandcode','ollama'])
+    f.state.recordLimit(provider,{providerLimited:true,window:'short',resetAt:Date.now()+(provider==='whatstoken'?60000:600000),status:429,resetKnown:true});
+  const r=await f.send();assert.equal(r.status,429);assert.ok(Number(r.retryAfter)<=60);assert.equal(f.calls.length,0);
 });
