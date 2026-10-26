@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
-import { chatToResponses, pipeChatStream } from '../src/chat-protocol.mjs';
+import { chatToResponses, pipeChatStream, chatMessages } from '../src/chat-protocol.mjs';
 const call = { id: 'call_1', type: 'function', function: { name: 'probe', arguments: '{"query":"status"}' } };
 const chat = (finish, calls = []) => ({ choices: [{ message: { content: 'Checking', tool_calls: calls }, finish_reason: finish }] });
 function response() {
@@ -98,4 +98,47 @@ test('empty and whitespace-only final answers have a machine-readable recovery r
   const output=await stream([frame({choices:[{delta:{content:text,reasoning_content:'fixture'}}]}),frame({choices:[{delta:{},finish_reason:'stop'}]})]);
   assert.equal(output.at(-1).type,'response.failed');assert.equal(output.at(-1).response.error.reason,'empty_output');
  }
+});
+
+const serverSearchHistory = [
+  {type:'tool_search_call',execution:'server',call_id:null,status:'completed',arguments:{paths:['synthetic']}},
+  {type:'tool_search_output',execution:'server',call_id:null,status:'completed',tools:[]},
+];
+const historicalCall = call_id => ({type:'function_call',call_id,name:'probe',arguments:'{}'});
+const historicalOutput = call_id => ({type:'function_call_output',call_id,output:'synthetic result ' + call_id});
+
+test('inert server search history waits until the ordinary tool exchange is complete', () => {
+  const input=[historicalCall('ordinary'),...serverSearchHistory,historicalOutput('ordinary')];
+  const before=structuredClone(input),messages=chatMessages({input});
+  assert.deepEqual(messages.map(message=>message.role),['assistant','tool','user','user']);
+  assert.equal(messages[0].tool_calls[0].id,'ordinary');
+  assert.equal(messages[1].tool_call_id,'ordinary');
+  assert.ok(messages[2].content.endsWith(JSON.stringify(serverSearchHistory[0])));
+  assert.ok(messages[3].content.endsWith(JSON.stringify(serverSearchHistory[1])));
+  assert.deepEqual(input,before);
+});
+
+test('parallel tool batches retain inert server history in order after every matching output', () => {
+  const input=[historicalCall('first'),historicalCall('second'),serverSearchHistory[0],
+    historicalOutput('first'),serverSearchHistory[1],historicalOutput('second'),
+    {type:'message',role:'user',content:'synthetic continuation'}];
+  const messages=chatMessages({input});
+  assert.deepEqual(messages.map(message=>message.role),['assistant','tool','tool','user','user','user']);
+  assert.deepEqual(messages[0].tool_calls.map(call=>call.id),['first','second']);
+  assert.deepEqual(messages.slice(1,3).map(message=>message.tool_call_id),['first','second']);
+  assert.ok(messages[3].content.endsWith(JSON.stringify(serverSearchHistory[0])));
+  assert.ok(messages[4].content.endsWith(JSON.stringify(serverSearchHistory[1])));
+  assert.equal(messages[5].content,'synthetic continuation');
+});
+
+test('unfinished tool batches fail instead of dropping queued server history', () => {
+  for (const input of [
+    [historicalCall('missing'),...serverSearchHistory],
+    [historicalCall('first'),historicalCall('missing'),...serverSearchHistory,historicalOutput('first')],
+  ]) {
+    const before=structuredClone(input);
+    assert.throws(()=>chatMessages({input}),error=>error.constructor.name==='ProtocolError'
+      && !error.message.includes('synthetic'));
+    assert.deepEqual(input,before);
+  }
 });

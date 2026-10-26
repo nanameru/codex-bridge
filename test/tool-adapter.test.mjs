@@ -210,3 +210,16 @@ test("does not release a tool call on a truncated or failed reasoning stream", a
   assert.match(text, /response.failed/);
   assert.doesNotMatch(text, /"type":"function_call"/);
 });
+
+test('custom history and forced choices retain their namespace without changing namespace schemas', () => {
+  const schema = { type: 'custom', name: 'exec', description: 'execute synthetic code', format: { type: 'text' } };
+  const namespace = { type: 'namespace', name: 'functions', tools: [schema] };
+  const call = { type: 'custom_tool_call', id: 'ctc_namespaced', call_id: 'call_namespaced', namespace: 'functions', name: 'exec', input: 'synthetic code' };
+  const body = { tools: [namespace], tool_choice: { type: 'custom', namespace: 'functions', name: 'exec' }, input: [call] };
+  const original = structuredClone(body);
+  const converted = openCodeBody(body);
+  assert.deepEqual(converted.tools, [namespace]);
+  assert.deepEqual(converted.input[0], { type: 'function_call', id: 'fc_namespaced', call_id: 'call_namespaced', namespace: 'functions', name: 'exec', arguments: '{"input":"synthetic code"}' });
+  assert.deepEqual(converted.tool_choice, { type: 'function', namespace: 'functions', function: { name: 'exec' } });
+  assert.deepEqual(body, original);
+});

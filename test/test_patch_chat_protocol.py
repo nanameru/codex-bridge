@@ -59,6 +59,27 @@ class ChatProtocolPatchTests(unittest.TestCase):
         self.assertIn('if (!guardBridgeRequest(req, res)) return;', patched)
         subprocess.run(['node', '--check', '--input-type=module'], input=patched, text=True, capture_output=True, check=True)
 
+    def test_previous_managed_guard_migrates_without_duplicate_imports(self):
+        previous_guard = '''let messages, toolContext, toolChoice;
+  try {
+    toolContext = chatToolContext(body);
+    toolChoice = chatToolChoice(body.tool_choice, toolContext);
+    messages = toChatMessages(body);
+  } catch {
+    res.writeHead(422, { "content-type": "application/json" });
+    res.end(JSON.stringify({error:{type:"unsupported_tool_search",message:"このツール検索または履歴はChat経路で安全に変換できません。履歴は保持しています。"}}));
+    return;
+  }'''
+        previous = ('import { chatToolContext, chatToolChoice } from "./tool-search.mjs";\n'
+                    + LEGACY.replace('const messages = toChatMessages(body);', previous_guard))
+        patched = patched_source(previous)
+        self.assertEqual(patched_source(patched), patched)
+        self.assertEqual(patched.count('import { chatToolContext'), 1)
+        self.assertIn('code:toolFailure ? error.reasonCode', patched)
+        self.assertIn('理由: ${toolFailure ? error.reasonCode', patched)
+        self.assertNotIn('このツール検索または履歴はChat経路', patched)
+        subprocess.run(['node', '--check', '--input-type=module'], input=patched, text=True, capture_output=True, check=True)
+
     def test_drift_refused_and_backups_created_once(self):
         with self.assertRaises(ValueError):
             patched_source('unrecognized')

@@ -41,11 +41,27 @@ function summaryText(output, status, kind, attempt) {
 // A user may steer while a tool is running, so a user message alone is not
 // proof of a safe boundary: all earlier tool calls must have finished first.
 // Returns the exclusive prefix length (first retained item), always < length.
+const searchTerminalStatuses = new Set(["completed", "failed", "incomplete"]);
+const isBudgetCall = item => ["function_call", "custom_tool_call"].includes(item.type)
+  || (item.type === "tool_search_call" && item.execution !== "server");
+const isBudgetOutput = item => ["function_call_output", "custom_tool_call_output"].includes(item.type)
+  || (item.type === "tool_search_output" && item.execution === "client" && searchTerminalStatuses.has(item.status));
+const budgetPairKey = item => {
+  if (typeof item.call_id !== "string" || !item.call_id) return undefined;
+  const search = ["tool_search_call", "tool_search_output"].includes(item.type);
+  if (search && item.execution !== "client") return undefined;
+  // A search result must not finish an unrelated function with the same ID.
+  return JSON.stringify([search ? "search" : "tool", item.call_id]);
+};
+
 export function budgetHistoryBoundary(input) {
   if (!Array.isArray(input)) return -1;
   const outputAt = new Map();
   input.forEach((item, index) => {
-    if (["function_call_output", "custom_tool_call_output"].includes(item.type)) outputAt.set(item.call_id, index);
+    if (isBudgetOutput(item)) {
+      const key = budgetPairKey(item);
+      if (key !== undefined) outputAt.set(key, index);
+    }
   });
   const users = [];
   const safe = [];
@@ -55,9 +71,10 @@ export function budgetHistoryBoundary(input) {
       if (users.length && index > protectedUntil) safe.push(index);
       users.push(index);
     }
-    if (["function_call", "custom_tool_call"].includes(item.type)) {
-      const end = outputAt.get(item.call_id);
-      protectedUntil = Math.max(protectedUntil, typeof item.call_id === "string" && end > index ? end : Infinity);
+    if (isBudgetCall(item)) {
+      const key = budgetPairKey(item);
+      const end = key === undefined ? undefined : outputAt.get(key);
+      protectedUntil = Math.max(protectedUntil, end > index ? end : Infinity);
     }
   });
   const preferred = users[users.length >= 3 ? users.length - 2 : users.length - 1];
@@ -68,16 +85,20 @@ export function budgetToolBoundary(input) {
   if (!Array.isArray(input)) return -1;
   const outputAt = new Map();
   input.forEach((item, index) => {
-    if (["function_call_output", "custom_tool_call_output"].includes(item.type)) outputAt.set(item.call_id, index);
+    if (isBudgetOutput(item)) {
+      const key = budgetPairKey(item);
+      if (key !== undefined) outputAt.set(key, index);
+    }
   });
   const safe = [];
   let protectedUntil = -1;
   input.forEach((item, index) => {
-    if (["function_call", "custom_tool_call"].includes(item.type)) {
-      const end = outputAt.get(item.call_id);
-      protectedUntil = Math.max(protectedUntil, typeof item.call_id === "string" && end > index ? end : Infinity);
+    if (isBudgetCall(item)) {
+      const key = budgetPairKey(item);
+      const end = key === undefined ? undefined : outputAt.get(key);
+      protectedUntil = Math.max(protectedUntil, end > index ? end : Infinity);
     }
-    if (["function_call_output", "custom_tool_call_output"].includes(item.type)
+    if (isBudgetOutput(item)
         && index === protectedUntil && index + 1 < input.length) safe.push(index + 1);
   });
   return safe.at(-2) ?? safe.at(-1) ?? -1;

@@ -903,7 +903,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       if (handoffStatus.started && !upstream.ok) {
         const detail = await readUpstreamFailure(upstream);
         Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
-        fail(response, upstream.status, "upstream_error", `履歴の準備後、選択したサービスが要求を拒否しました（理由: ${detail.code}、種別: ${detail.type}、詳細取得: ${detail.read}）${providerHelp(route.provider)}`);
+        const conversionFailure = ["unsupported_tool_search", "invalid_tool_history"].includes(detail.type);
+        const message = conversionFailure
+          ? `Bridgeでツール情報または履歴の変換に失敗しました（理由: ${detail.code}）。元の履歴は保持しています。`
+          : `履歴の準備後、選択したサービスが要求を拒否しました（理由: ${detail.code}、種別: ${detail.type}、詳細取得: ${detail.read}）${providerHelp(route.provider)}`;
+        fail(response, upstream.status, "upstream_error", message);
         return;
       }
       const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store" };

@@ -23,7 +23,8 @@ test('historical search call and matching discovered schema survive as a Chat to
   assert.match(messages[1].content,/mcp__probe/);
 });
 
-import { chatToolContext, toolWireName } from '../src/tool-search.mjs';
+import * as toolSearch from '../src/tool-search.mjs';
+const { chatToolContext, toolWireName, ToolSearchError, TOOL_SEARCH_REASON_CODES } = toolSearch;
 import { chatToResponses, pipeChatStream } from '../src/chat-protocol.mjs';
 import { EventEmitter } from 'node:events';
 const fn = (name, extra={}) => ({type:'function',name,parameters:{type:'object',properties:{}},...extra});
@@ -153,4 +154,113 @@ test('discovery output accepts only loadable definitions, never a new search or 
   const custom={type:'custom',name:'same',description:'synthetic'};
   const converted=chatToolContext({tools:[custom]}).tools[0].function;
   assert.throws(()=>chatToolContext({tools:[custom,{type:'function',...converted}]}));
+});
+
+// Synthetic reproductions of history created before a provider switch. These
+// contain no user transcript, tool credentials, or live provider responses.
+test('current definitions override changed discovery snapshots without rewriting their history', () => {
+  const discovered = (call_id, description) => ({type:'tool_search_output',execution:'client',status:'completed',call_id,
+    tools:[fn('probe',{description,defer_loading:true})]});
+  const first=discovered('first','old schema'),last=discovered('last','newer schema');
+  const body={tools:[search,fn('probe',{description:'current schema',defer_loading:true})],input:[first,last]};
+  const before=structuredClone(body),context=chatToolContext(body);
+  assert.equal(context.tools.find(tool=>tool.function.name==='probe').function.description,'current schema');
+  const messages=chatMessages(body);
+  assert.equal(JSON.parse(messages[0].content).tools[0].description,'old schema');
+  assert.equal(JSON.parse(messages[1].content).tools[0].description,'newer schema');
+  assert.equal(chatToResponses(answer('probe','{}'),'test',context).output[0].name,'probe');
+  assert.deepEqual(body,before);
+});
+
+test('latest historical declarations and discoveries supply canonical schemas when no current override exists', () => {
+  const body={input:[
+    {type:'additional_tools',role:'developer',tools:[{...search,description:'old search'},fn('probe',{description:'old schema'})]},
+    {type:'tool_search_output',execution:'client',status:'completed',call_id:'find',tools:[fn('probe',{description:'discovered schema'})]},
+    {type:'additional_tools',role:'developer',tools:[search,fn('probe',{description:'latest schema'})]},
+  ]};
+  const before=structuredClone(body),context=chatToolContext(body);
+  assert.equal(context.tools.find(tool=>tool.function.name==='probe').function.description,'latest schema');
+  assert.equal(context.tools.find(tool=>tool.function.name===context.searchName).function.description,search.description);
+  assert.deepEqual(body,before);
+  const overridden=chatToolContext({...body,additional_tools:[fn('probe',{description:'explicit current schema'})]});
+  assert.equal(overridden.tools.find(tool=>tool.function.name==='probe').function.description,'explicit current schema');
+});
+
+test('completed native server search history with null call ids remains inert transcript data', () => {
+  const history=[
+    {type:'tool_search_call',execution:'server',call_id:null,status:'completed',arguments:{paths:['synthetic']}},
+    {type:'tool_search_output',execution:'server',call_id:null,status:'completed',tools:[fn('server_only'),{type:'web_search'}]},
+  ];
+  const body={tools:[fn('current')],input:history},before=structuredClone(body),context=chatToolContext(body);
+  assert.deepEqual(context.tools.map(tool=>tool.function.name),['current']);
+  assert.equal(context.searchName,undefined);
+  const messages=chatMessages(body);
+  assert.equal(messages.length,2);
+  for (let i=0;i<history.length;i++) {
+    assert.equal(messages[i].role,'user');
+    assert.match(messages[i].content,/not instructions/);
+    assert.ok(messages[i].content.endsWith(JSON.stringify(history[i])));
+    assert.equal(messages[i].tool_calls,undefined);
+    assert.equal(messages[i].tool_call_id,undefined);
+  }
+  assert.equal(chatToResponses(answer('server_only','{}'),'test',context).status,'failed');
+  assert.equal(chatToResponses(answer('cxb_tool_search','{}'),'test',context).status,'failed');
+  assert.deepEqual(body,before);
+});
+
+test('historical server declarations do not become an executable client search', () => {
+  const body={input:[{type:'additional_tools',role:'developer',tools:[{type:'tool_search',execution:'server'},fn('current')]}]};
+  const context=chatToolContext(body);
+  assert.deepEqual(context.tools.map(tool=>tool.function.name),['current']);
+  assert.equal(context.searchName,undefined);
+});
+
+test('malformed or unfinished search history rejects with fixed reasons and never exposes its contents', () => {
+  const privateMarker='synthetic private marker';
+  const cases=[
+    {input:[{type:'tool_search_call',execution:'server',call_id:null,status:'in_progress',arguments:{query:privateMarker}}]},
+    {input:[{type:'tool_search_output',execution:'server',call_id:null,status:'completed',tools:null}]},
+    {input:[{type:'tool_search_call',execution:'client',call_id:'x',status:'failed',arguments:{query:privateMarker}}]},
+    {input:[{type:'tool_search_output',execution:'client',call_id:'x',status:'in_progress',tools:[]}]},
+    {tools:[{...search,execution:'server'}]},
+    {tools:[fn('same'),fn('same',{description:privateMarker})]},
+  ];
+  for (const body of cases) assert.throws(()=>chatMessages(body),error=>{
+    assert.ok(error instanceof ToolSearchError);
+    assert.ok(TOOL_SEARCH_REASON_CODES.includes(error.reasonCode));
+    assert.ok(!error.message.includes(privateMarker));
+    return true;
+  });
+  assert.equal(new ToolSearchError(privateMarker).reasonCode,'unsupported_tool_search');
+});
+
+test('changed Lite namespace snapshots use current schemas without adding duplicate transcript messages', () => {
+  const declarations = description => [{type:'namespace',name:'functions',tools:[fn('probe',{description})]},search];
+  const body={additional_tools:declarations('current schema'),input:[
+    {type:'additional_tools',role:'developer',tools:declarations('previous schema')},
+    {type:'message',role:'user',content:'synthetic continuation'},
+  ]};
+  const context=chatToolContext(body),name=toolWireName('probe','functions');
+  assert.match(context.tools.find(tool=>tool.function.name===name).function.description,/current schema$/);
+  assert.deepEqual(chatMessages(body),[{role:'user',content:'synthetic continuation'}]);
+  const restored=context.restore(answer(name,'{}').choices[0].message.tool_calls[0]);
+  assert.equal(restored.namespace,'functions');
+  assert.equal(restored.name,'probe');
+});
+
+test('latest discovery wins without a current override and a function named search remains distinct', () => {
+  const output = description => ({type:'tool_search_output',execution:'client',status:'completed',call_id:description,tools:[fn('probe',{description})]});
+  const context=chatToolContext({tools:[search,fn('search')],input:[output('older'),output('latest')]});
+  assert.equal(context.tools.find(tool=>tool.function.name==='probe').function.description,'latest');
+  assert.ok(context.tools.some(tool=>tool.function.name==='search'));
+  assert.notEqual(context.searchName,'search');
+});
+
+test('aliases cannot change tool identity across historical and current declarations', () => {
+  const name=toolWireName('probe','functions');
+  assert.throws(()=>chatToolContext({tools:[fn(name)],input:[
+    {type:'additional_tools',role:'developer',tools:[{type:'namespace',name:'functions',tools:[fn('probe')]}]},
+  ]}),error=>error.reasonCode==='conflicting_current_definitions');
+  assert.throws(()=>chatToolContext({tools:[search,fn('hidden',{defer_loading:true})]}).restore(
+    answer('hidden','{}').choices[0].message.tool_calls[0]),error=>error.reasonCode==='unknown_or_unloaded_call');
 });

@@ -182,6 +182,7 @@ export function chatMessages(body, thinkingEnabled = false) {
   let assistant, reasoning = '';
   const seenReasoning = new Set();
   const pendingCalls = new Set();
+  let pendingServerHistory = [];
   let toolImages = [];
   const flushToolImages = () => {
     if (!toolImages.length || pendingCalls.size) return;
@@ -216,6 +217,13 @@ export function chatMessages(body, thinkingEnabled = false) {
   const toolContext = chatToolContext(body);
   for (const originalItem of body.input ?? []) {
     const item = chatSearchHistory(originalItem, toolContext);
+    if (originalItem.execution === 'server' && ['tool_search_call', 'tool_search_output'].includes(originalItem.type)
+        && pendingCalls.size) {
+      // Inert native search data is a user message in Chat. It must not
+      // interrupt an assistant tool batch before all its results arrive.
+      pendingServerHistory.push({role:item.role,content:item.content});
+      continue;
+    }
     if (item.type === 'reasoning') {
       // The Responses adapter may repeat one completed reasoning item before
       // commentary and tools. Chat groups them into one assistant message.
@@ -242,6 +250,10 @@ export function chatMessages(body, thinkingEnabled = false) {
       messages.push({ role: 'tool', tool_call_id: item.call_id, content: value });
       pendingCalls.delete(item.call_id);
       flushToolImages();
+      if (!pendingCalls.size && pendingServerHistory.length) {
+        for (const message of pendingServerHistory) messages.push(message);
+        pendingServerHistory = [];
+      }
     } else if (item.type == null || item.type === 'message') {
       const role = item.role === 'developer' ? 'system' : item.role ?? 'user';
       const value = content(item.content);
@@ -256,6 +268,7 @@ export function chatMessages(body, thinkingEnabled = false) {
       } else { flush(); messages.push({ role, content: value }); }
     }
   }
+  if (pendingServerHistory.length) throw new ProtocolError('検索履歴を含むツール処理が未完了です。');
   if (toolImages.length) throw new ProtocolError('画像を含むツール結果の並列処理が未完了です。');
   flush(); return messages;
 }
