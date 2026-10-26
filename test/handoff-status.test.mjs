@@ -312,3 +312,20 @@ test("message-only upstream failures produce fixed reason categories without ech
     assert.doesNotMatch(JSON.stringify(detail), /PRIVATE|sk-secret/);
   }
 });
+
+
+test('waiting summaries emit bounded progress and stop updates after completion', async () => {
+ const frames=[];
+ const response={destroyed:false,writableEnded:false,writeHead(){},flushHeaders(){},write(s){frames.push(s);}};
+ const status=new HandoffStatus(response,{model:'test',enabled:true,progressIntervalMs:5});
+ status.update({summary_requests:2,summary_checkpoint_hits:3});
+ status.begin();
+ try {
+  await new Promise(r=>setTimeout(r,20));
+  assert.match(frames.join(''),/経過.*要約要求2回.*再利用3件/);
+  status.ready();
+  const count=frames.length;
+  await new Promise(r=>setTimeout(r,20));
+  assert.equal(frames.length,count);
+ } finally {status.dispose();}
+});

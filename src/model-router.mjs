@@ -577,7 +577,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       handoffStatus = new HandoffStatus(response, { model: body.model,
         enabled: body.stream === true && route.provider !== "openai" && !directResponses, delayMs: handoffStatusDelayMs });
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
-        diagnose: details => Object.assign(metric, details),
+        diagnose: details => { Object.assign(metric, details); handoffStatus.update(details); },
         threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id };
       const summaryContext = routes.get(summaryModel)?.contextWindow;
       const summaryBudget = Math.min(summaryInputLimitTokens, summaryContext ? Math.floor(summaryContext * 0.8) : summaryInputLimitTokens);

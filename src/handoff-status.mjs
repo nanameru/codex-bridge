@@ -16,11 +16,13 @@ export function isHandoffStatusItem(item) {
 
 // Only used after authenticated requests actually wait for a cache miss/shared job.
 export class HandoffStatus {
-  constructor(response, { model, enabled, delayMs = 1000 }) {
+  constructor(response, { model, enabled, delayMs = 1000, progressIntervalMs = 15000 }) {
     this.response = response;
     this.model = model;
     this.enabled = enabled;
     this.delayMs = delayMs;
+    this.progressIntervalMs = progressIntervalMs;
+    this.progress = {};
     this.sequence = 0;
     this.started = false;
     this.finished = false;
@@ -54,6 +56,9 @@ export class HandoffStatus {
   begin() {
     if (this.started || this.response.destroyed || this.response.writableEnded) return;
     this.started = true;
+    this.waitStarted = performance.now();
+    this.progressTimer = setInterval(() => this.pulse(), this.progressIntervalMs);
+    this.progressTimer.unref?.();
     this.text = this.reason === "budget" ? BUDGET_TEXT : WAIT_TEXT;
     if (this.shared) this.text += "・共有処理の完了待ち";
     active.set(this.response, this);
@@ -66,8 +71,21 @@ export class HandoffStatus {
       part: { type: "summary_text", text: "" } });
     this.emit({ type: "response.reasoning_summary_text.delta", item_id: this.itemId, output_index: 0, summary_index: 0, delta: this.text });
   }
+  update(details) {
+    for (const key of ["summary_requests", "summary_checkpoint_hits"]) {
+      if (Number.isSafeInteger(details[key]) && details[key] >= 0) this.progress[key] = details[key];
+    }
+  }
+  pulse() {
+    if (!this.started || this.finished || this.response.destroyed || this.response.writableEnded) return;
+    const elapsed = Math.floor((performance.now() - this.waitStarted) / 1000);
+    const suffix = `\n経過${elapsed}秒・要約要求${this.progress.summary_requests ?? 0}回・再利用${this.progress.summary_checkpoint_hits ?? 0}件`;
+    this.text += suffix;
+    this.emit({ type: "response.reasoning_summary_text.delta", item_id: this.itemId, output_index: 0, summary_index: 0, delta: suffix });
+  }
   ready() { this.finish(this.reason === "budget" ? "\nモデルの応答待ち（要約完了）" : READY_TEXT); }
   finish(suffix) {
+    clearInterval(this.progressTimer);
     clearTimeout(this.timer);
     this.timer = null;
     if (!this.started || this.finished) return;
@@ -151,7 +169,7 @@ export class HandoffStatus {
       },
     });
   }
-  dispose() { clearTimeout(this.timer); active.delete(this.response); }
+  dispose() { clearInterval(this.progressTimer); clearTimeout(this.timer); active.delete(this.response); }
 }
 
 export function failHandoffStatus(response, status, code, message) {

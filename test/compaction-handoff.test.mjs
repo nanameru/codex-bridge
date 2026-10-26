@@ -428,3 +428,39 @@ test('connection recovery never retries cancellation, unknown transport errors o
   assert.equal(calls,1,scenario);
  }
 });
+
+
+test('EPIPE before headers retries once with safe diagnostics and preserves input/cache', async () => {
+ for (const mode of ['recover', 'persistent', 'cancel', 'stream']) {
+  let calls=0; const diagnostics=[]; const abort=new AbortController();
+  const original=structuredClone(body);
+  const failure=()=>new TypeError('PRIVATE HOST TOKEN',{cause:{code:'EPIPE'}});
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
+   calls++;
+   if(mode==='stream')return new Response(new ReadableStream({start(c){c.error(failure());}}));
+   if(calls===1 || (mode==='persistent' && calls===2))throw failure();
+   return completed();
+  }});
+  const opts={...options(),signal:abort.signal,diagnose:d=>{
+   diagnostics.push(d); if(mode==='cancel'&&d.summary_retrying)abort.abort();
+  }};
+  if(mode==='recover') {
+   await expand(body,opts); await expand(body,options()); assert.equal(calls,2);
+  } else if(mode==='cancel') {
+   await assert.rejects(expand(body,opts),{name:'AbortError'}); assert.equal(calls,1);
+  } else {
+   await assert.rejects(expand(body,opts),e=>{
+    assert.equal(e.upstreamCode,'summary_connection_closed');
+    assert.equal(e.failureStage,mode==='stream'?'stream':'connect');
+    assert.equal(e.attempts,mode==='stream'?1:2);
+    assert.equal(e.upstreamStatus,mode==='stream'?200:undefined);
+    assert.doesNotMatch(e.message,/PRIVATE|HOST|TOKEN/); return true;
+   });
+   assert.equal(calls,mode==='stream'?1:2);
+   if(mode==='persistent'){await expand(body,options());assert.equal(calls,3);}
+  }
+  assert.deepEqual(body,original);
+  assert.ok(diagnostics.some(d=>d.summary_error_code==='summary_connection_closed'));
+  assert.doesNotMatch(JSON.stringify(diagnostics),/PRIVATE|HOST|TOKEN/);
+ }
+});
