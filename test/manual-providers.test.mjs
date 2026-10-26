@@ -25,7 +25,7 @@ async function fixture(t, extra = {}) {
 test('DeepSeekの手動宛先と認証を分離し同名OpenCodeと共存する', async t => {
   const { calls, send, base } = await fixture(t);
   const models = await (await fetch(base + '/v1/models')).json();
-  assert.equal(models.data.length,6);
+  assert.equal(models.data.length,7);
   for (const provider of ['commandcode','ollama']) {
     const body = { model: provider + '/deepseek-v4.1-flash', input: [{ role:'user',content:'latest' }],
       tools:[{ type:'function',name:'read',parameters:{type:'object'} }], reasoning:{effort:'high'} };
@@ -101,7 +101,7 @@ test('鍵はprivate fileまたは専用envだけから読みsymlinkや公開権�
 });
 
 test('reasoningの宛先別形式と手動カタログの固定IDを確認する', () => {
-  assert.equal(manualModels().length,2);
+  assert.equal(manualModels().length,3);
   for(const [provider,config] of Object.entries(MANUAL_PROVIDERS)) {
     const chat=manualChatBody(provider,{model:config.model,input:[],reasoning:{effort:'high'}});
     assert.equal(chat.reasoning_effort,'high');
@@ -133,11 +133,11 @@ test('custom toolの結果をChatへ再送し古い履歴を予算内で要約�
   assert.ok(!JSON.stringify(sent).includes('x'.repeat(40000)));
 });
 
-test('動的カタログ更新でも追加した2つの手動モデルが残る', async t => {
+test('動的カタログ更新でもDeepSeekとKimiの手動モデルが残る', async t => {
   const f=await fixture(t,{catalogProvider:{get:async()=>catalog}});
   const response=await fetch(f.base+'/codex/models?client_version=0.164.0',{headers:{authorization:'Bearer synthetic'}});
   const listed=await response.json();assert.equal(response.status,200);
-  assert.equal(listed.models.length,6);
+  assert.equal(listed.models.length,7);
   assert.ok(listed.models.some(m=>m.slug==='commandcode/deepseek-v4.1-flash'));
   assert.ok(listed.models.some(m=>m.slug==='ollama/deepseek-v4.1-flash'));
   assert.ok(listed.models.every(m=>!m.router_provider));
@@ -169,4 +169,23 @@ test('既存の入力予算無効化設定でも手動接続が常に413にな�
   const response=await f.send({model:'ollama/deepseek-v4.1-flash',input:'hello'});
   assert.equal(response.status,200,await response.text());
   assert.equal(f.calls.length,1);
+});
+
+test('Kimi K3.1 Proを一覧から選び正式なCommand Code IDへ送り、ツールとusageを往復する', async t => {
+  const sent=[];
+  const slug='commandcode/moonshotai/Kimi-K3.1-Pro';
+  const {send,base}=await fixture(t,{fetcher:async(url,options)=>{
+    sent.push({url,...options,body:JSON.parse(options.body)});
+    const tool=JSON.parse(options.body).messages.some(m=>m.role==='tool');
+    const chunk={choices:[{index:0,delta:tool?{content:'KIMI_OK'}:{tool_calls:[{index:0,id:'kimi_call',function:{name:'read',arguments:'{}'}}]},finish_reason:tool?'stop':'tool_calls'}]};
+    return new Response('data: '+JSON.stringify(chunk)+'\n\ndata: '+JSON.stringify({choices:[],usage:{prompt_tokens:20,completion_tokens:4}})+'\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});
+  }});
+  const listed=await(await fetch(base+'/v1/models')).json();
+  assert.ok(listed.data.some(m=>m.id===slug));
+  const tools=[{type:'function',name:'read',parameters:{type:'object'}}];
+  const first=await(await send({model:slug,input:'read',tools,stream:true,reasoning:{effort:'medium'}})).text();
+  assert.match(first,/response.completed/);assert.match(first,/"call_id":"kimi_call"/);
+  const second=await(await send({model:slug,stream:true,tools,input:[{role:'user',content:'read'},{type:'function_call',call_id:'kimi_call',name:'read',arguments:'{}'},{type:'function_call_output',call_id:'kimi_call',output:'result'}]})).text();
+  assert.match(second,/KIMI_OK/);assert.match(second,/"input_tokens":20/);
+  for(const s of sent){assert.equal(s.url,MANUAL_PROVIDERS.commandcode.base+'/chat/completions');assert.equal(s.body.model,'moonshotai/Kimi-K3.1-Pro');assert.equal(s.headers.authorization,'Bearer commandcode-key');assert.equal(s.body.temperature,undefined);assert.equal(s.body.reasoning_effort,undefined);assert.ok(!JSON.stringify(s).includes('native-secret'));}
 });

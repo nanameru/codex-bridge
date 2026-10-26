@@ -5,6 +5,28 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-104
+    title: "通常起動でKimiとDeepSeekを表示し選択した提供元で使う"
+    feature: "Kimiの手動選択と起動入口"
+    scenario: "正式ID・ツール往復・usage・認証分離・既存PATHと新zsh・公式更新後の起動・実Codexの応答"
+    status: done
+    priority: high
+    type: regression
+    source: [src/manual-providers.mjs, src/model-router.mjs, scripts/install_fresh_cli.py, scripts/unified_config.py]
+    test_file: test/manual-providers.test.mjs
+    issues: [120]
+    notes: "test/test_install_fresh_cli.pyとtest/manual-providers-e2e.py併用。実/modelにKimi/DeepSeekを確認。新8791経路で各HTTP200、実Codexでも両モデルcompleted/OK。旧8790は既存通信のため保持。Kimiを含む共有cacheからのprepare再生成と配布runtimeの一覧も検証。docs/kimi-deepseek-rollout.mdとdocs/distribution-setup.md参照。"
+  - id: TC-100
+    title: "通常のcodex起動で最新モデル一覧を表示する"
+    feature: "CLIの設定再読込"
+    scenario: "plain/prompt/resume/forkで専用serverを使い、remote/非TUI/未知option/既存flagを保持。公式visible entry更新後も安定した入口を使用する"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/codex_fresh.py]
+    test_file: test/test_codex_fresh.py
+    issues: [120]
+    notes: "旧引数0限定条件では22subcase失敗を再現。回帰7methods成功。実subprocessでargv/exitstatus/特殊文字/公式entry置換/real更新追従/自己参照拒否を検証。新zshと実Herdrに加え、本人の既存paneでfooter DeepSeek/一覧GPT7件を再現。承認後に対象のみarchive/unarchiveし、同じID・model/high・rollout SHA256完全一致で再接続。追加flagなしのresume実行と実/modelのOpenCode(current)/GPT/他社を確認。未保存liveIDの復元とは別。docs/cli-model-reconnect.md参照。"
   - id: TC-101
     title: "定義が変わったツールを含む過去会話をChat経路で再開する"
     feature: "ツール履歴の互換性"

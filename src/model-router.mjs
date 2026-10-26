@@ -16,7 +16,7 @@ import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFail
 import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
 import { createRequestGuard } from "./request-guard.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
-import { CHAT_PROVIDERS, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
+import { CHAT_PROVIDERS, KIMI_MODEL, KIMI_SLUG, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
 import { providerHelp, allProviderHelp, providerNoticeStream } from "./provider-help.mjs";
 import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel } from "./cli-model-sync.mjs";
 import { WhatstokenFreeGate } from "./whatstoken-free.mjs";
@@ -65,7 +65,8 @@ export function catalogRoutes(catalog) {
       throw new Error("モデルのコンテキスト上限が不正です");
     }
     const manual = CHAT_PROVIDERS[model.router_provider];
-    if (manual && (![manualSlug(model.router_provider), autoManualSlug(model.router_provider)].includes(model.slug) || model.router_model !== manual.model || model.router_transport !== "chat")) {
+    const kimi = model.router_provider === 'commandcode' && model.slug === KIMI_SLUG && model.router_model === KIMI_MODEL;
+    if (manual && ((!kimi && (![manualSlug(model.router_provider), autoManualSlug(model.router_provider)].includes(model.slug) || model.router_model !== manual.model)) || model.router_transport !== "chat")) {
       throw new Error("手動プロバイダーのモデル定義が不正です");
     }
     routes.set(model.slug, { provider: model.router_provider, model: model.router_model ?? model.slug,

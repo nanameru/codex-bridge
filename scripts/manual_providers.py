@@ -1,4 +1,4 @@
-"""DeepSeekの手動プロバイダー設定。APIキーを表示せずprivate fileへ保存する。"""
+"""DeepSeekとKimiの手動プロバイダー設定。APIキーを表示せずprivate fileへ保存する。"""
 import argparse
 import getpass
 import json
@@ -75,7 +75,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     key = sub.add_parser("set-key", help="非表示入力で公式APIキーを保存する")
     key.add_argument("provider", choices=PROVIDERS)
-    models = sub.add_parser("install-models", help="DeepSeekの手動/自動選択をカタログへ追加する")
+    models = sub.add_parser("install-models", help="DeepSeekの手動/自動選択とKimiをカタログへ追加する")
     models.add_argument("--with-whatstoken-free", action="store_true")
     args = parser.parse_args()
     if args.command == "set-key":
