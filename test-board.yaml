@@ -29,6 +29,18 @@ cases:
     issues: [118]
     notes: "元データを変更せず検証済みフィールドだけを公開。不正usageだけで正常な回答を止めない。請求額を推定しない。"
 
+  - id: TC-096
+    title: "巨大履歴の要約前処理を有界な計測回数で実行し内容と順序を保つ"
+    feature: "巨大入力の遅延改善"
+    scenario: "4096件の選択、旧greedyと同じ境界、Unicode分割、暗号化itemの停止、圧縮設定の安全適用"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, scripts/latency_config.py]
+    test_file: test/summary-chunk.test.mjs
+    issues: [116]
+    notes: "node --test test/summary-chunk.test.mjs と python3 -m unittest discover -s test -p test_latency_config.py。性能実測は node scripts/benchmark-summary-chunk.mjs。"
+
   - id: TC-094
     title: "履歴要約の直接EHOSTUNREACHを一時接続障害として1回だけ回復する"
     feature: "要約の接続失敗回復"

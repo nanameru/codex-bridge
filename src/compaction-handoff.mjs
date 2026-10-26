@@ -103,13 +103,30 @@ function transcriptFragments(input) {
   });
 }
 
-function takeSummaryChunk(queue, carry, fits) {
-  const chunk = [];
+export function takeSummaryChunk(queue, carry, fits) {
+  let chunk = [];
   const prefix = carry ? [{ role: "user", content: "Summary of earlier transcript fragments (context only):\n" + carry }] : [];
-  while (queue.length) {
+  // fits is monotone: the caller measures additive text tokens and JSON bytes.
+  // Probe growing prefixes, then bisect the first failing range. Measuring each
+  // appended item reserialized the complete prefix and made long histories O(n²).
+  let count = 0;
+  let upper = 1;
+  while (upper <= queue.length && fits([...prefix, ...queue.slice(0, upper)])) {
+    count = upper;
+    if (count === queue.length) break;
+    upper = Math.min(queue.length, upper * 2);
+  }
+  if (count < queue.length) {
+    let high = upper - 1;
+    while (count < high) {
+      const middle = Math.ceil((count + high) / 2);
+      if (fits([...prefix, ...queue.slice(0, middle)])) count = middle;
+      else high = middle - 1;
+    }
+  }
+  if (count) chunk = queue.splice(0, count);
+  if (!count && queue.length) {
     const item = queue[0];
-    if (fits([...prefix, ...chunk, item])) { chunk.push(queue.shift()); continue; }
-    if (chunk.length) break;
     if (typeof item.content !== "string" || item.encrypted_content) {
       throw new HandoffError("暗号化履歴または画像item単体が要約上限を超えています。分割せず履歴を保持して停止しました");
     }
@@ -125,7 +142,6 @@ function takeSummaryChunk(queue, carry, fits) {
     if (!low) throw new HandoffError("要約または保護itemが要約上限を超えています。履歴は保持しています");
     chunk.push({ ...item, content: text.slice(0, low) });
     queue[0] = { ...item, content: text.slice(low) };
-    break;
   }
   return { chunk, input: [...prefix, ...chunk] };
 }
