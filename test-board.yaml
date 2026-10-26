@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-105
+    title: "remote compactionの容量を実際のOpenAI転送形式で判定する"
+    feature: "圧縮後の413回復"
+    scenario: "Bridge reasoningの除外・不要な追加要約の回避・native暗号化reasoningと指示/最新依頼/未完了ツールの保持"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [124, 87]
+    notes: "修正前の要約完了後413と不要な要約要求を再現。対象会話のローカルコピーでも413→200を確認し、実Codexで圧縮完了→モデル指定なしのDeepSeek応答を検証。本文や認証情報は外部へ送信しない。docs/remote-compaction-wire-budget.md参照。"
   - id: TC-097
     title: "履歴処理完了後に通常のWorking表示へ戻す"
     feature: "履歴処理の表示解除"

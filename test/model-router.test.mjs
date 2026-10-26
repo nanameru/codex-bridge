@@ -1132,6 +1132,55 @@ test('巨大なremote compactionを上限内で処理し通常会話のOpenCode�
   assert.equal(calls.at(-1).body.model, 'deepseek-test');
 });
 
+test('remote compactionは送信しないBridge reasoningを除いて要約後の容量を判定する', async context => {
+  const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', summaryInputLimitTokens: 40000,
+    upstreamResponse: async ({ provider, response, body }) => {
+      assert.equal(provider, 'openai');
+      assert.ok(estimateInputTokens(body) + 16384 < 40000);
+      assert.ok(!body.input.some(item => item.type === 'reasoning' && item.encrypted_content?.startsWith('cxb1:')));
+      const compact = body.input.some(item => item.type === 'compaction_trigger');
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ status: 'completed', output: compact
+        ? [{ type: 'compaction', encrypted_content: 'native-checkpoint' }]
+        : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'bounded summary' }] }] }));
+      return true;
+    } });
+  const nativeReasoning = { type: 'reasoning', encrypted_content: 'native-opaque-content', summary: [] };
+  const latest = { role: 'user', content: 'latest task ' + 'x'.repeat(20000) };
+  const pending = { type: 'function_call', call_id: 'pending', name: 'read', arguments: '{}' };
+  const input = [{ role: 'developer', content: 'Keep this instruction.' },
+    { role: 'user', content: 'x'.repeat(450000) }, { role: 'assistant', content: 'finished work' },
+    latest, { type: 'reasoning', encrypted_content: 'cxb1:' + 'x'.repeat(80000), summary: [] },
+    nativeReasoning, pending, { type: 'compaction_trigger' }];
+  const response = await send({ model: 'opencode/deepseek-test', input });
+  assert.equal(response.status, 200, await response.text());
+  assert.ok(calls.length > 1, 'genuine history still needs bounded summarization');
+  assert.deepEqual(calls.at(-1).body.input.slice(-4), [latest, nativeReasoning, pending, { type: 'compaction_trigger' }]);
+  assert.deepEqual(calls.at(-1).body.input[0], input[0]);
+});
+
+test('Bridge専用reasoningだけの肥大化でremote compactionの追加要約を発生させない', async context => {
+  const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', summaryInputLimitTokens: 40000 });
+  const latest = { role: 'user', content: 'continue' };
+  const response = await send({ model: 'opencode/deepseek-test', input: [
+    { role: 'user', content: 'completed work' }, latest,
+    { type: 'reasoning', encrypted_content: 'cxb1:' + 'x'.repeat(200000), summary: [] },
+    { type: 'compaction_trigger' }] });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(calls.length, 1, 'no extra model call for data that is not sent');
+  assert.deepEqual(calls[0].body.input, [{ role: 'user', content: 'completed work' }, latest, { type: 'compaction_trigger' }]);
+});
+
+test('OpenAI固有の暗号化reasoningはremote compactionの容量判定から除外しない', async context => {
+  const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', summaryInputLimitTokens: 40000 });
+  const response = await send({ model: 'opencode/deepseek-test', input: [
+    { role: 'user', content: 'latest task' },
+    { type: 'reasoning', encrypted_content: 'native-' + 'x'.repeat(110000), summary: [] },
+    { type: 'compaction_trigger' }] });
+  assert.equal(response.status, 413, await response.text());
+  assert.equal(calls.length, 0, 'native opaque data must not be silently discarded to fit');
+});
+
 test('remote compactionの保護指示だけで要約予算を超えた場合は上流へ送らない', async context => {
   const { calls, send } = await fixture(context, { summaryModel: 'gpt-test', summaryInputLimitTokens: 40000 });
   const response = await send({ model: 'opencode/deepseek-test', instructions: 'x'.repeat(200000),
