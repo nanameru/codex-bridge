@@ -618,6 +618,7 @@ Codex Appは会話を完了してから開き直し、CLIで一覧が古い場�
 通常の`codex`でも古い一覧が出る場合、画面が既存の共有app-serverへ再接続している可能性があります。
 `scripts/codex-fresh-launcher.sh`は引数なしの起動に公式`--no-daemon`を付け、最新設定を読む専用serverを使います。
 standalone版の`~/.codex/packages/standalone/current/bin/codex`を呼ぶため、releaseの固定はしません。
+このlauncherは本人の絶対配置先を記録しています。他の環境へ配置する際は`codex_binary`をその環境の公式current/binへ合わせてください。
 本人の`~/.local/bin/codex`がこの公式binaryへのsymlinkであることを確認し、元symlinkをバックアップしてから配置する用途です。
 既存の独自launcherは上書きしないでください。
 引数付きの`codex <prompt>`、`resume`、各subcommandは全引数をそのまま渡します。
