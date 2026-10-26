@@ -18,7 +18,8 @@ const mock = (provider) => http.createServer(async (request, response) => {
   const compact = compactEndpoint || (compactionTrigger && provider === "openai");
   calls.push({ provider, summary, compact, compactEndpoint, compactionTrigger, hasNativeAuth: Boolean(request.headers.authorization),
     outputLimit: body.max_output_tokens,
-    statusReplayed: JSON.stringify(body.input).includes(WAIT_TEXT), inputTypes: body.input?.map((item) => item.type) });
+    statusReplayed: JSON.stringify(body.input).includes(WAIT_TEXT), inputTypes: body.input?.map((item) => item.type),
+    ...(process.env.MOCK_HANDOFF_TOOLS === "1" ? { toolResults: body.input?.filter(item => item.type === "function_call_output" && JSON.stringify(item.output).includes("BRIDGE_STATUS_TOOL_OK")).length } : {}) });
   if (summary) {
     await new Promise((resolve) => setTimeout(resolve, Number(process.env.MOCK_HANDOFF_DELAY_MS ?? 160)));
     if (process.env.MOCK_HANDOFF_FAIL === "1") {
@@ -44,6 +45,30 @@ const mock = (provider) => http.createServer(async (request, response) => {
     }
   }
   const id = "resp_mock_" + calls.length;
+  if (provider === "opencode" && process.env.MOCK_HANDOFF_TOOLS === "1") {
+    const hasResult = (body.input ?? []).some(item => item.type === "function_call_output");
+    const round = hasResult ? 1 : 0;
+    const reasoning = { id: "rs_mock_" + round, type: "reasoning", summary: [] };
+    const item = !hasResult
+      ? { id: "fc_mock_" + round, type: "function_call", call_id: "call_mock_" + round,
+        name: "exec_command", arguments: JSON.stringify({ cmd: "printf BRIDGE_STATUS_TOOL_OK", max_output_tokens: 100 }) }
+      : { id: "msg_mock_final", type: "message", role: "assistant", phase: "final_answer", status: "completed",
+        content: [{ type: "output_text", text: "opencode_OK", annotations: [] }] };
+    const result = { id, object: "response", model: body.model, status: "completed", output: [reasoning, item] };
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    let sequence = 0;
+    const emit = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...data })}\n\n`);
+    emit("response.created", { response: { ...result, status: "in_progress", output: [] } });
+    emit("response.output_item.added", { output_index: 0, item: reasoning });
+    emit("response.output_item.done", { output_index: 0, item: reasoning });
+    // Leave time for the real TUI to restore its heading after an empty summary.
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    emit("response.output_item.added", { output_index: 1, item });
+    emit("response.output_item.done", { output_index: 1, item });
+    emit("response.completed", { response: result });
+    response.end();
+    return;
+  }
   const item = compact ? { id: "cmp_mock", type: "compaction", encrypted_content: "mock-native-compaction" }
     : { id: "msg_mock_" + calls.length, type: "message", role: "assistant", phase: "final_answer", status: "completed",
       content: [{ type: "output_text", text: summary ? "PORTABLE SUMMARY" : provider + "_OK", annotations: [] }] };

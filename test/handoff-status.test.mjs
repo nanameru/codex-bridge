@@ -116,7 +116,7 @@ test("cache hits, immediate handoffs and native requests do not inject status", 
   const { gate, send, calls } = await fixture(context, { router: { handoffStatusDelayMs: 50 } });
   gate.resolve();
   for (const body of [requestBody, requestBody, { model: "gpt-test", stream: true, input: [{ role: "user", content: "native" }] }]) {
-    assert.doesNotMatch(await (await send(body)).text(), /接続ステータス/);
+    assert.doesNotMatch(await (await send(body)).text(), /rs_bridge_handoff_|msg_bridge_handoff_/);
   }
   assert.equal(calls.filter((c) => c.body.instructions?.startsWith("Produce only")).length, 1);
 });
@@ -143,6 +143,7 @@ test("a failed handoff sends a terminal failure after status without dropping hi
   assert.match(stream.at(-1).response.error.message, /compaction_handoff_failed/);
   assert.equal(stream.at(-1).response.error.code, "invalid_prompt");
   assert.doesNotMatch(text, /PRIVATE/);
+  assert.doesNotMatch(text, /Working|履歴変換完了|要約完了/);
   assert.equal(calls.length, 2);
   assert.equal(requestBody.input[0].encrypted_content, "native-private-history");
 });
@@ -334,4 +335,29 @@ test("handoff identifies a local conversion failure without billing or login gui
   assert.match(text,/conflicting_current_definitions/);
   assert.doesNotMatch(text,/PRIVATE|sk-secret|ログイン|支払い|console\/go/);
   assert.equal(events(text).at(-1).type,'response.failed');
+});
+
+
+test("ready restores Working for both handoff modes and keeps completion in history", () => {
+  for (const reason of ["budget", "handoff"]) {
+    const frames = [];
+    const response = { destroyed: false, writableEnded: false, writeHead() {}, flushHeaders() {},
+      write(frame) { frames.push(frame); } };
+    const status = new HandoffStatus(response, { model: "test", enabled: true });
+    status.reason = reason;
+    try {
+      status.begin();
+      status.ready();
+      const output = events(frames.join(""));
+      const deltas = output.filter(event => event.type === "response.reasoning_summary_text.delta");
+      assert.equal(deltas.at(-1).delta, "\nWorking");
+      const done = output.find(event => event.type === "response.output_item.done");
+      const text = done.item.summary[0].text;
+      assert.match(text, reason === "budget" ? /要約完了/ : /履歴変換完了/);
+      assert.doesNotMatch(text, /モデルの応答待ち/);
+      const count = frames.length;
+      status.ready();
+      assert.equal(frames.length, count);
+    } finally { status.dispose(); }
+  }
 });

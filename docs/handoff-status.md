@@ -8,10 +8,12 @@
 
 - 暗号化された履歴の変換: `履歴を変換中（bridge）`
 - 入力予算・容量のための要約: `会話履歴を要約中（bridge）`
-- 要約後、上流の待機中: `モデルの応答待ち（要約完了）`など
+- 完了時: `履歴変換完了`または`要約完了`を記録し、実行中の行を`Working`に戻す
 - 同一処理への同時要求: `共有処理の完了待ち`
 
 実行時間とEscによる中断表示はCLIが描画する。これはモデルの思考内容ではなくbridgeの状態で、識別子にもbridge専用prefixを使う。実app-serverの`item/reasoning/summaryTextDelta`で受信し、実CLIで変換中の表示と回答後の消去を確認した。Appも同じ通知を受けるが、Appの実際の描画は未確認。reasoning詳細の閲覧には処理履歴が残り得る。旧commentaryと新しいbridge処理項目はモデルへの再送から除く。
+
+Codex 0.164.0は最後のreasoning summaryの見出しを、ツール実行後や空のreasoning項目でも再利用する。以前は`モデルの応答待ち（履歴変換完了）`が後続処理中にも残っていた。完了文と`Working`を別deltaで順に送り、完了記録を保持しながら通常の表示へ戻す。モデル自身の新しい見出しやコマンド実行表示はその後も通常どおり更新される。`Working`はターンが継続中という表示であり、横の時間は要約専用の計測値ではない。すでに別接続から描画された古い見出しは、この修正を含む応答を受けるまで残り得る。
 
 ## 追加入力時の再利用
 
@@ -78,6 +80,8 @@ Codex AppやCLIを強制終了しない。更新を待機させた場合は、�
 node --test test/handoff-status.test.mjs
 python3 test/handoff-app-e2e.py
 python3 test/handoff-app-e2e.py --fail
+# 実TUI。pyteは端末テスト専用で、Bridgeの実行時依存には追加しない。
+uv run --no-project --with pyte python test/handoff-tui-e2e.py
 ```
 
 実Codex＋偽認証＋模擬上流で、native remote compactionからの切替、App共通の待機/完了通知、cache hit、再起動resume、失敗時の停止、認証分離、表示文の上流非送信を確認する。単体では分割UTF-8 SSE、JSON上流、ツール変換、429、タイムアウト、キャンセル、同時要求も検証する。

@@ -104,11 +104,14 @@ def run(fail=False):
             if fail:
                 assert status == "failed", status
                 assert not any("opencode_OK" in text for _i, text in deltas)
+                assert not any("Working" in text for _i, text in progress)
             else:
                 assert status == "completed", status
                 waiting = next(i for i, text in progress if "履歴を変換中" in text)
                 answer = next(i for i, text in deltas if "opencode_OK" in text)
-                assert waiting < answer
+                restored = next(i for i, text in progress if text == "\nWorking")
+                assert waiting < restored < answer
+                assert not any("モデルの応答待ち" in text for _i, text in progress)
                 assert any("履歴変換完了" in text for _i, text in progress)
                 # The selected model remains OpenCode; a second compaction must
                 # still use the native Responses model for the required item.
