@@ -9,6 +9,8 @@ const SAFE_FAILURE_CODES = new Set(["server_error", "rate_limit_exceeded", "inva
   "invalid_encrypted_content", "context_length_exceeded", "insufficient_quota", "invalid_image", "invalid_image_format",
   "invalid_base64_image", "invalid_image_url", "image_too_large", "failed_to_download_image", "content_filter", "empty_summary", "summary_stream_truncated", "summary_max_output_tokens",
   "summary_incomplete", "summary_too_large", "summary_invalid_response", "summary_unexpected_item", "summary_connect_timeout"]);
+const TRANSIENT_CONNECTION_CODES = new Set(["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+  "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EHOSTDOWN", "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "EAI_AGAIN"]);
 function summaryFailure(code, status, stage, attempts) {
   const safeCode = SAFE_FAILURE_CODES.has(code) ? code : "unknown_error";
   const http = status === undefined ? "上流HTTP応答なし" : `HTTP ${status}`;
@@ -302,8 +304,9 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             if (error instanceof HandoffError || signal.aborted) throw error;
             if (error instanceof SyntaxError) throw summaryFailure("summary_invalid_response", upstreamStatus ?? 200, "format", attempt);
             const codes = [error?.code, error?.cause?.code,
-              ...(Array.isArray(error?.cause?.errors) ? error.cause.errors.slice(0, 16).map(e => e?.code) : [])];
-            if (upstreamStatus === undefined && codes.some(code => ["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(code))) {
+              ...[error?.errors, error?.cause?.errors].filter(Array.isArray).flatMap(errors =>
+                errors.slice(0, 16).map(item => item?.code))];
+            if (upstreamStatus === undefined && codes.some(code => TRANSIENT_CONNECTION_CODES.has(code))) {
               throw summaryFailure("summary_connect_timeout", undefined, "connect", attempt);
             }
             const category = [error?.name, error?.cause?.code].filter((value) => typeof value === "string" && /^[A-Za-z_]+$/.test(value)).join("/");

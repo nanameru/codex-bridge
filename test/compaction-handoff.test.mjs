@@ -370,8 +370,11 @@ test('completed items never bypass terminal status, item validation, or authorit
  }
 });
 
-test('pre-response connection timeouts recover once within the shared summary attempt budget', async () => {
- for (const cause of [{code:'ETIMEDOUT'}, {code:'UND_ERR_CONNECT_TIMEOUT'}, {errors:[{code:'EHOSTUNREACH'},{code:'ETIMEDOUT'}]}]) {
+test('pre-response transient connection failures recover once within the shared summary attempt budget', async () => {
+ for (const cause of [{code:'ETIMEDOUT'}, {code:'UND_ERR_CONNECT_TIMEOUT'}, {code:'UND_ERR_HEADERS_TIMEOUT'},
+  {code:'EHOSTUNREACH'}, {code:'ENETUNREACH'}, {code:'ENETDOWN'}, {code:'EHOSTDOWN'},
+  {code:'ECONNREFUSED'}, {code:'ECONNRESET'}, {code:'ECONNABORTED'}, {code:'EAI_AGAIN'},
+  {errors:[{code:'EHOSTUNREACH'},{code:'ETIMEDOUT'}]}]) {
   let calls=0;const diagnostics=[];
   const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
    if(++calls===1)throw new TypeError('PRIVATE HOST',{cause});return completed();
@@ -383,16 +386,34 @@ test('pre-response connection timeouts recover once within the shared summary at
  }
 });
 
-test('two connection timeouts stop without HTTP status or poisoned cache', async () => {
- let calls=0;
- const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
-  if(++calls<=2)throw new TypeError('PRIVATE HOST',{cause:{code:'ETIMEDOUT'}});return completed();
- }});
- await assert.rejects(expand(body,options()),e=>{
-  assert.equal(e.attempts,2);assert.equal(e.upstreamCode,'summary_connect_timeout');
-  assert.equal(e.upstreamStatus,undefined);assert.doesNotMatch(e.message,/PRIVATE|HTTP undefined|HTTP 0/);return true;
- });
- await expand(body,options());assert.equal(calls,3);
+test('top-level codes and AggregateError connection failures recover once', async () => {
+ for (const failure of [
+  Object.assign(new TypeError('PRIVATE HOST'), {code:'EHOSTUNREACH'}),
+  new AggregateError([Object.assign(new Error('PRIVATE HOST'), {code:'ENETUNREACH'})], 'PRIVATE HOST'),
+ ]) {
+  let calls=0;const diagnostics=[];
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
+   if(++calls===1)throw failure;return completed();
+  }});
+  await expand(body,{...options(),diagnose:d=>diagnostics.push(d)});
+  assert.equal(calls,2);
+  assert.ok(diagnostics.some(d=>d.summary_error_code==='summary_connect_timeout'&&d.summary_retrying));
+  assert.doesNotMatch(JSON.stringify(diagnostics),/PRIVATE|EHOSTUNREACH|ENETUNREACH/);
+ }
+});
+
+test('two transient connection failures stop without HTTP status or poisoned cache', async () => {
+ for(const code of ['ETIMEDOUT','EHOSTUNREACH']){
+  let calls=0;
+  const expand=compactionHandoff({model:'gpt-test',maxBytes:100000,retryDelayMs:0,fetcher:async()=>{
+   if(++calls<=2)throw new TypeError('PRIVATE HOST',{cause:{code}});return completed();
+  }});
+  await assert.rejects(expand(body,options()),e=>{
+   assert.equal(e.attempts,2);assert.equal(e.upstreamCode,'summary_connect_timeout');
+   assert.equal(e.upstreamStatus,undefined);assert.doesNotMatch(e.message,/PRIVATE|HTTP undefined|HTTP 0/);return true;
+  });
+  await expand(body,options());assert.equal(calls,3,code);
+ }
 });
 
 test('connection recovery never retries cancellation, unknown transport errors or failures after HTTP headers', async () => {

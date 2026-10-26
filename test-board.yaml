@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-094
+    title: "履歴要約の直接EHOSTUNREACHを一時接続障害として1回だけ回復する"
+    feature: "要約の接続失敗回復"
+    scenario: "直接EHOSTUNREACH等のHTTP前接続失敗、2回停止、cache非汚染、未知・取消・HTTP後失敗の非再試行"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [110]
+    notes: "修正前のTypeError/EHOSTUNREACH/unknownによる1回停止を再現。直接cause・トップレベルcode・AggregateErrorの既知接続エラーを既存の合計最大2試行へ追加。ホスト名・例外本文は診断へ出さない。"
+
   - id: TC-092
     title: "一時429の短い待機を利用枠切れと分離する"
     feature: "一時制限の状態管理"
