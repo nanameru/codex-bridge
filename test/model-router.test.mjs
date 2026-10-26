@@ -1307,3 +1307,20 @@ test("aborting an incomplete request body is classified as client input cancella
   assert.equal(metric.termination_reason, 'client_request_aborted');
   assert.equal(calls.length, 0);
 });
+
+
+test('summary EPIPE recovers before forwarding and exposes safe diagnostics', async context=>{
+ const metrics=[];let calls=0;
+ const {send}=await fixture(context,{summaryModel:'gpt-test',allowDirectResponses:false,onMetric:m=>metrics.push(m),fetcher:async(_url,init)=>{
+  calls++;
+  const sent=JSON.parse(init.body);
+  if(calls===1){assert.deepEqual(sent.tools,[]);assert.equal(sent.store,false);throw new TypeError('PRIVATE HOST',{cause:{code:'EPIPE'}});}
+  return Response.json({status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:calls===2?'handoff':'answer'}]}]});
+ }});
+ const response=await send({model:'deepseek-test',input:[{type:'compaction',encrypted_content:'opaque'},{role:'user',content:'latest'}]});
+ assert.equal(response.status,200);assert.match(await response.text(),/answer/);
+ assert.equal(calls,3);assert.equal(metrics[0].summary_attempts,2);
+ assert.equal(metrics[0].summary_error_code,'summary_connection_closed');
+ assert.equal(metrics[0].summary_failure_stage,'connect');
+ assert.doesNotMatch(JSON.stringify(metrics),/PRIVATE|opaque/);
+});

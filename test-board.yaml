@@ -5,6 +5,27 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-095
+    title: "履歴要約EPIPEの有限回復と応答後の非再送"
+    feature: "要約通信回復"
+    scenario: "1回復帰・2回停止・取消・cache・応答後stream診断・router往復"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, src/model-router.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [112]
+    notes: "test/model-router.test.mjsでもtoolsなし要約の再試行から回答まで検証。"
+  - id: TC-096
+    title: "要約待機の経過と要求数を表示し終了時に更新停止"
+    feature: "要約待機表示"
+    scenario: "待機更新・診断値制限・完了後タイマー停止"
+    status: done
+    priority: high
+    type: regression
+    source: [src/handoff-status.mjs, src/model-router.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [112]
   - id: TC-094
     title: "履歴要約の直接EHOSTUNREACHを一時接続障害として1回だけ回復する"
     feature: "要約の接続失敗回復"

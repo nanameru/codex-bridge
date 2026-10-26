@@ -8,7 +8,7 @@ export class HandoffError extends Error {}
 const SAFE_FAILURE_CODES = new Set(["server_error", "rate_limit_exceeded", "invalid_prompt", "invalid_request_error",
   "invalid_encrypted_content", "context_length_exceeded", "insufficient_quota", "invalid_image", "invalid_image_format",
   "invalid_base64_image", "invalid_image_url", "image_too_large", "failed_to_download_image", "content_filter", "empty_summary", "summary_stream_truncated", "summary_max_output_tokens",
-  "summary_incomplete", "summary_too_large", "summary_invalid_response", "summary_unexpected_item", "summary_connect_timeout"]);
+  "summary_incomplete", "summary_too_large", "summary_invalid_response", "summary_unexpected_item", "summary_connect_timeout", "summary_connection_closed"]);
 const TRANSIENT_CONNECTION_CODES = new Set(["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
   "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EHOSTDOWN", "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "EAI_AGAIN"]);
 function summaryFailure(code, status, stage, attempts) {
@@ -16,7 +16,7 @@ function summaryFailure(code, status, stage, attempts) {
   const http = status === undefined ? "上流HTTP応答なし" : `HTTP ${status}`;
   const error = new HandoffError(`OpenAIの引き継ぎ要約に失敗しました（${safeCode}、${http}、試行${attempts}回）。履歴は保持しています。`);
   Object.assign(error, { upstreamCode: safeCode, upstreamStatus: status, failureStage: stage, attempts,
-    retryable: safeCode === "server_error" || safeCode === "rate_limit_exceeded" || ["empty_summary", "summary_stream_truncated", "summary_max_output_tokens", "summary_connect_timeout"].includes(safeCode) || (stage === "http" && [408,500,502,503,504].includes(status)) });
+    retryable: (safeCode === "summary_connection_closed" && stage === "connect") || safeCode === "server_error" || safeCode === "rate_limit_exceeded" || ["empty_summary", "summary_stream_truncated", "summary_max_output_tokens", "summary_connect_timeout"].includes(safeCode) || (stage === "http" && [408,500,502,503,504].includes(status)) });
   return error;
 }
 
@@ -306,6 +306,12 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             const codes = [error?.code, error?.cause?.code,
               ...[error?.errors, error?.cause?.errors].filter(Array.isArray).flatMap(errors =>
                 errors.slice(0, 16).map(item => item?.code))];
+            // Summary generation has no tools or stored server state. A lost
+            // response may still duplicate inference, so keep the shared two-attempt cap.
+            if (codes.includes("EPIPE")) {
+              throw summaryFailure("summary_connection_closed", upstreamStatus,
+                upstreamStatus === undefined ? "connect" : "stream", attempt);
+            }
             if (upstreamStatus === undefined && codes.some(code => TRANSIENT_CONNECTION_CODES.has(code))) {
               throw summaryFailure("summary_connect_timeout", undefined, "connect", attempt);
             }

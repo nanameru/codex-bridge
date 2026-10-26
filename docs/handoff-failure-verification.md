@@ -29,3 +29,10 @@
 2026-10-26T00:26:19Zのセッション `01a17198-6f32-7d90-8a12-9ffd73bfec6a` で、HTTP応答前の `TypeError`（`cause.code=EHOSTUNREACH`）が既存の接続回復対象外となり、`summary_attempts=1` で停止した。従来の判定は `ETIMEDOUT` と `UND_ERR_CONNECT_TIMEOUT` だけを対象にしていた。
 
 固定許可リストへ `EHOSTUNREACH`、`ENETUNREACH`、`ENETDOWN`、`EHOSTDOWN`、`ECONNREFUSED`、`ECONNRESET`、`ECONNABORTED`、`EAI_AGAIN`、`UND_ERR_HEADERS_TIMEOUT` を追加した。直接cause、トップレベルcode、AggregateError内の固定コードを対象にする。HTTP応答前だけを対象とし、既存の合計最大2試行、成功時のみcache、取消・未知コード・HTTP応答後失敗の非再試行は変更しない。直接 `EHOSTUNREACH` の回帰テストは修正前に失敗し、修正後に成功した。
+
+
+## EPIPEと待機表示（Issue #112）
+
+HTTPヘッダー受信前のEPIPEはsummary_connection_closedへ分類し、各要約ステップ最大2試行内で1回だけ再試行する。要約はtools=[]、store=false。応答消失時は上流で要約推論が重複し得る。応答後のEPIPEはstream段階として停止し、部分要約を確定しない。元履歴・成功cache・取消を維持する。
+
+要約中に15秒ごとに経過秒、要求数、checkpoint再利用数を表示する。経過秒は通信成功の証明ではない。routerの全体期限は既存の5分を維持し、完了/失敗/切断後は表示更新timerを解放する。ログに104〜265秒で完了する要約があるため、長い待機とdeadlockを区別する。全チャットの実復帰は別途確認が必要。
