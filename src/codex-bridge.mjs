@@ -21,6 +21,7 @@
  */
 
 import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.mjs";
+import { chatToolContext, chatToolChoice } from "./tool-search.mjs";
 import http from "node:http";
 import { guardBridgeRequest, validateOpenCodeBase, fetchOpenCode, readOpenCodeApiKey } from "./local-security.mjs";
 import { randomUUID } from "node:crypto";
@@ -166,27 +167,12 @@ function toChatMessages(body) {
 
 /** Responses API の tools → chat/completions の tools */
 function toChatTools(body) {
-  const tools = body.tools;
-  if (!Array.isArray(tools) || tools.length === 0) return undefined;
-
-  // Responses の組み込みツール（web_search 等）は chat API では表現できないので落とす
-  const fns = tools
-    .filter((t) => t.type === "function" || t.function)
-    .map((t) => ({
-      type: "function",
-      function: t.function ?? {
-        name: t.name,
-        description: t.description ?? "",
-        parameters: t.parameters ?? { type: "object", properties: {} },
-      },
-    }));
-
-  return fns.length ? fns : undefined;
+  return chatToolContext(body).tools;
 }
 
 /** chat/completions のレスポンス → Responses API のレスポンス */
-function toResponsesPayload(chat, model) {
-  return chatToResponses(chat, model);
+function toResponsesPayload(chat, model, toolContext) {
+  return chatToResponses(chat, model, toolContext);
 }
 
 // ------------------------------------------------------------ SSE
@@ -196,8 +182,8 @@ function sse(res, event, data) {
 }
 
 /** chat/completions の stream を Responses API のイベント列に変換する */
-async function pipeStream(upstreamRes, res, model, threadId) {
-  return pipeChatStream(upstreamRes, res, model, threadId, { recordUsage });
+async function pipeStream(upstreamRes, res, model, threadId, toolContext) {
+  return pipeChatStream(upstreamRes, res, model, threadId, { recordUsage, toolContext });
 }
 
 // ------------------------------------------------------------ HTTP
@@ -307,7 +293,16 @@ const server = http.createServer(async (req, res) => {
     };
     const hint = EFFORT_HINT[effort] ?? "";
 
-    const messages = toChatMessages(body);
+    let messages, toolContext, toolChoice;
+    try {
+      toolContext = chatToolContext(body);
+      toolChoice = chatToolChoice(body.tool_choice, toolContext);
+      messages = toChatMessages(body);
+    } catch {
+      res.writeHead(422, { "content-type": "application/json" });
+      res.end(JSON.stringify({error:{type:"unsupported_tool_search",message:"このツール検索または履歴はChat経路で安全に変換できません。履歴は保持しています。"}}));
+      return;
+    }
     if (hint) {
       const sys = messages.find((m) => m.role === "system");
       if (sys) sys.content = `${sys.content}\n\n${hint}`;
@@ -329,7 +324,7 @@ const server = http.createServer(async (req, res) => {
       if (body[field] != null) chatBody[field] = body[field];
       else delete chatBody[field];
     }
-    if (body.tool_choice) chatBody.tool_choice = body.tool_choice;
+    if (toolChoice !== undefined) chatBody.tool_choice = toolChoice;
 
     dbg("→", model, "messages:", chatBody.messages.length, "tools:", chatBody.tools?.length ?? 0);
 
@@ -409,11 +404,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (body.stream) {
-      await pipeStream(upstream, res, model, threadId);
+      await pipeStream(upstream, res, model, threadId, toolContext);
     } else {
       const chat = await upstream.json();
       if (chat.usage) recordUsage(threadId, model, chat.usage.prompt_tokens ?? 0, chat.usage.completion_tokens ?? 0);
-      const payload = toResponsesPayload(chat, model);
+      const payload = toResponsesPayload(chat, model, toolContext);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(payload));
     }

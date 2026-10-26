@@ -5,6 +5,30 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-098
+    title: "BridgeがCodexのclientツール検索と名前空間を往復し遅延ロードを保つ"
+    feature: "検索の通信互換性"
+    scenario: "native/Lite/Code Modeで検索→必要schema→MCP実行、未知・未ロード・hosted検索拒否、依存配置とrollback"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-search.mjs, src/chat-protocol.mjs, src/codex-bridge.mjs, src/manual-providers.mjs, src/model-router.mjs, scripts/patch_chat_protocol.py, scripts/install_router_service.py, scripts/install_chat_protocol_service.py]
+    test_file: test/tool-search.test.mjs
+    issues: [118]
+    notes: "実Codex模擬E2Eは python3 test/codex-tool-search-e2e.py と --lite / --code-mode。本人認証・実APIなし。旧版はMCP未実行で失敗、修正版は対象1件のみ取得・実行。"
+
+  - id: TC-099
+    title: "Chatの実usageをcacheとreasoning内訳ごとResponsesへ保持する"
+    feature: "使用量の通信互換性"
+    scenario: "JSON/SSEで内訳保持、正当な0、欠落と不正値の非捏造、合計とcache-hit/miss整合"
+    status: done
+    priority: high
+    type: regression
+    source: [src/usage.mjs, src/chat-protocol.mjs]
+    test_file: test/usage.test.mjs
+    issues: [118]
+    notes: "元データを変更せず検証済みフィールドだけを公開。不正usageだけで正常な回答を止めない。請求額を推定しない。"
+
   - id: TC-094
     title: "履歴要約の直接EHOSTUNREACHを一時接続障害として1回だけ回復する"
     feature: "要約の接続失敗回復"

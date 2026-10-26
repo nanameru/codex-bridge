@@ -1,5 +1,7 @@
 /** Chat -> Responses: execute tools only after an explicit, valid completion. */
 import { randomUUID } from 'node:crypto';
+import { chatToolContext, chatSearchHistory } from './tool-search.mjs';
+import { chatUsageToResponses } from './usage.mjs';
 const id = prefix => prefix + randomUUID().replaceAll('-', '');
 const encodeReasoning = text => 'cxb1:' + Buffer.from(text).toString('base64url');
 class ProtocolError extends Error {}
@@ -27,17 +29,19 @@ function validate(reason, calls) {
     try { const args = JSON.parse(call.function.arguments); if (!args || Array.isArray(args) || typeof args !== 'object') throw new Error('object required'); } catch { throw Object.assign(new ProtocolError('上流モデルのツール引数が不正です。ツールは実行していません。'), { reason: 'invalid_tool_arguments' }); }
   }
 }
-function items(message) {
+function items(message, toolContext) {
   const output = [];
   const calls = message.tool_calls ?? [];
   if (message.reasoning_content) output.push({ type: 'reasoning', id: id('rs_'), summary: [], encrypted_content: encodeReasoning(message.reasoning_content) });
   if (message.content || !calls.length) output.push({ type: 'message', id: id('msg_'), status: 'completed', role: 'assistant',
     phase: calls.length ? 'commentary' : 'final_answer', content: [{ type: 'output_text', text: message.content ?? '', annotations: [] }] });
-  for (const call of calls) output.push({ type: 'function_call', id: id('fc_'), status: 'completed', call_id: call.id,
-    name: call.function.name, arguments: call.function.arguments });
+  for (const call of calls) {
+    const item = toolContext ? toolContext.restore(call) : {type:'function_call',status:'completed',call_id:call.id,name:call.function.name,arguments:call.function.arguments};
+    output.push({...item,id:id(item.type === 'tool_search_call' ? 'tsc_' : item.type === 'custom_tool_call' ? 'ctc_' : 'fc_')});
+  }
   return output;
 }
-export function chatToResponses(chat, model) {
+export function chatToResponses(chat, model, toolContext) {
   const envelope = { id: id('resp_'), object: 'response', created_at: Math.floor(Date.now()/1000), model, output: [] };
   try {
     const choice = primaryChoice(chat);
@@ -45,9 +49,8 @@ export function chatToResponses(chat, model) {
     validate(choice?.finish_reason, choice?.message?.tool_calls ?? []);
     if (!choice.message?.content?.trim() && !choice.message?.tool_calls?.length) throw Object.assign(new ProtocolError('Chat最終回答が空です。'), { reason: 'empty_output' });
     optionalString(choice.message?.content); optionalString(choice.message?.reasoning_content);
-    const usage = chat.usage ?? {};
-    return { ...envelope, status: 'completed', output: items(choice.message ?? {}), usage: {
-      input_tokens: usage.prompt_tokens ?? 0, output_tokens: usage.completion_tokens ?? 0, total_tokens: usage.total_tokens ?? 0 } };
+    const usage = chatUsageToResponses(chat.usage);
+    return { ...envelope, status: 'completed', output: items(choice.message ?? {}, toolContext), ...(usage ? { usage } : {}) };
   } catch (error) {
     return { ...envelope, status: 'failed', error: { code: errorCode(error), ...(error.reason ? { reason: error.reason } : {}), message: error instanceof ProtocolError ? error.message : 'Chat応答の形式が不正です。' } };
   }
@@ -147,17 +150,20 @@ export async function pipeChatStream(upstream, response, model, threadId, option
       emit('response.content_part.done', { item_id: item.id, output_index: textItem.index, content_index: 0, part });
       emit('response.output_item.done', { output_index: textItem.index, item }); output.push([textItem.index,item]);
     }
-    for (const item of toolCalls.length ? items({ tool_calls: toolCalls }) : []) {
+    // Validate and restore the complete batch before exposing any executable tool.
+    const restoredCalls = toolCalls.length ? items({ tool_calls: toolCalls }, options.toolContext) : [];
+    for (const item of restoredCalls) {
       const index = nextIndex++;
       emit('response.output_item.added', { output_index: index, item });
       emit('response.output_item.done', { output_index: index, item }); output.push([index,item]);
     }
-    if (usage) {
-      try { recordUsage(threadId, model, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0); }
+    const normalizedUsage = chatUsageToResponses(usage);
+    if (normalizedUsage) {
+      try { recordUsage(threadId, model, normalizedUsage.input_tokens, normalizedUsage.output_tokens, normalizedUsage); }
       catch { /* Usage telemetry must not change an already validated completion. */ }
     }
     emit('response.completed', { response: { ...envelope, status: 'completed', output: output.sort((a,b)=>a[0]-b[0]).map(([,item])=>item),
-      usage: usage ? { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens, total_tokens: usage.total_tokens } : undefined } });
+      ...(normalizedUsage ? { usage: normalizedUsage } : {}) } });
     response.end();
   } catch (error) {
     emit('response.failed', { response: { ...envelope, status: 'failed', output: [], error: { code: error instanceof ProtocolError ? errorCode(error) : 'server_error',
@@ -207,7 +213,9 @@ export function chatMessages(body, thinkingEnabled = false) {
     });
     return parts.some(part=>part.type==='image_url') ? parts : parts.map(part=>part.text).join('\n');
   };
-  for (const item of body.input ?? []) {
+  const toolContext = chatToolContext(body);
+  for (const originalItem of body.input ?? []) {
+    const item = chatSearchHistory(originalItem, toolContext);
     if (item.type === 'reasoning') {
       // The Responses adapter may repeat one completed reasoning item before
       // commentary and tools. Chat groups them into one assistant message.
