@@ -9,7 +9,7 @@ import time
 from switch_config import atomic_write
 
 IMPORT = 'import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.mjs";'
-TOOL_IMPORT = 'import { chatToolContext, chatToolChoice } from "./tool-search.mjs";'
+TOOL_IMPORT = 'import { chatToolContext, chatToolChoice, ToolSearchError } from "./tool-search.mjs";'
 HELPERS = ('chat-protocol.mjs', 'tool-search.mjs', 'usage.mjs')
 MANIFEST = '.chat-protocol.sha256'
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,8 +24,13 @@ def patched_source(source):
             raise ValueError('未対応のbridge形式です')
         source = source.replace('import http from "node:http";', IMPORT + '\nimport http from "node:http";', 1)
     if TOOL_IMPORT not in source:
-        old = 'import { chatToolContext } from "./tool-search.mjs";'
-        source = source.replace(old, TOOL_IMPORT) if old in source else source.replace(IMPORT, IMPORT + '\n' + TOOL_IMPORT, 1)
+        for old in ['import { chatToolContext } from "./tool-search.mjs";',
+                    'import { chatToolContext, chatToolChoice } from "./tool-search.mjs";']:
+            if old in source:
+                source = source.replace(old, TOOL_IMPORT)
+                break
+        else:
+            source = source.replace(IMPORT, IMPORT + '\n' + TOOL_IMPORT, 1)
     messages = 'function toChatMessages(body) {\n  return chatMessages(body, reasoningOptions(body.model ?? DEFAULT_MODEL, body.reasoning?.effort).thinking?.type === "enabled");\n}\n'
     tools = 'function toChatTools(body) {\n  return chatToolContext(body).tools;\n}\n'
     payload = 'function toResponsesPayload(chat, model, toolContext) {\n  return chatToResponses(chat, model, toolContext);\n}\n'
@@ -49,14 +54,33 @@ def patched_source(source):
             lines = ['let messages, toolContext, toolChoice;', 'try {',
                      '  toolContext = chatToolContext(body);',
                      '  toolChoice = chatToolChoice(body.tool_choice, toolContext);',
-                     '  messages = toChatMessages(body);', '} catch {',
+                     '  messages = toChatMessages(body);', '} catch (error) {',
                      '  res.writeHead(422, { "content-type": "application/json" });',
-                     '  res.end(JSON.stringify({error:{type:"unsupported_tool_search",message:"このツール検索または履歴はChat経路で安全に変換できません。履歴は保持しています。"}}));',
+                     '  const toolFailure = error instanceof ToolSearchError;',
+                     '  res.end(JSON.stringify({error:{type:toolFailure ? "unsupported_tool_search" : "invalid_tool_history",',
+                     '    code:toolFailure ? error.reasonCode : "chat_history_conversion_failed",',
+                     '    message:`ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`}}));',
                      '  return;', '}']
             return '\n'.join(indent + line for line in lines)
         source, count = re.subn(pattern, guard, source)
         if count != 1:
             raise ValueError('bridgeの入力変換境界が一致しません')
+    # Upgrade the previous managed catch without touching unrelated guards.
+    previous_failure = (r'(?m)^([ \t]*)} catch \{\n\1  '
+                        + re.escape('res.writeHead(422, { "content-type": "application/json" });')
+                        + r'\n\1  '
+                        + re.escape('res.end(JSON.stringify({error:{type:"unsupported_tool_search",message:"このツール検索または履歴はChat経路で安全に変換できません。履歴は保持しています。"}}));'))
+    def improve_failure(match):
+        lines = ['} catch (error) {',
+                 '  res.writeHead(422, { "content-type": "application/json" });',
+                 '  const toolFailure = error instanceof ToolSearchError;',
+                 '  res.end(JSON.stringify({error:{type:toolFailure ? "unsupported_tool_search" : "invalid_tool_history",',
+                 '    code:toolFailure ? error.reasonCode : "chat_history_conversion_failed",',
+                 '    message:`ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`}}));']
+        return '\n'.join(match[1] + line for line in lines)
+    source = re.sub(previous_failure, improve_failure, source)
+    if source.count('const toolFailure = error instanceof ToolSearchError;') != 1:
+        raise ValueError('bridgeの診断境界が一致しません')
     raw_choice = 'if (body.tool_choice) chatBody.tool_choice = body.tool_choice;'
     desired_choice = 'if (toolChoice !== undefined) chatBody.tool_choice = toolChoice;'
     if raw_choice in source:

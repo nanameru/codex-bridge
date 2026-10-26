@@ -21,7 +21,7 @@
  */
 
 import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.mjs";
-import { chatToolContext, chatToolChoice } from "./tool-search.mjs";
+import { chatToolContext, chatToolChoice, ToolSearchError } from "./tool-search.mjs";
 import http from "node:http";
 import { guardBridgeRequest, validateOpenCodeBase, fetchOpenCode, readOpenCodeApiKey } from "./local-security.mjs";
 import { randomUUID } from "node:crypto";
@@ -298,9 +298,12 @@ const server = http.createServer(async (req, res) => {
       toolContext = chatToolContext(body);
       toolChoice = chatToolChoice(body.tool_choice, toolContext);
       messages = toChatMessages(body);
-    } catch {
+    } catch (error) {
       res.writeHead(422, { "content-type": "application/json" });
-      res.end(JSON.stringify({error:{type:"unsupported_tool_search",message:"このツール検索または履歴はChat経路で安全に変換できません。履歴は保持しています。"}}));
+      const toolFailure = error instanceof ToolSearchError;
+      res.end(JSON.stringify({error:{type:toolFailure ? "unsupported_tool_search" : "invalid_tool_history",
+        code:toolFailure ? error.reasonCode : "chat_history_conversion_failed",
+        message:`ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`}}));
       return;
     }
     if (hint) {

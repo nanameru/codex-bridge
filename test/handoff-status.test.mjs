@@ -61,7 +61,7 @@ async function fixture(context, options = {}) {
         if (options.failSummary) return new Response("PRIVATE upstream error", { status: 503 });
         return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "PORTABLE SUMMARY" }] }] });
       }
-      if (options.upstreamError) return Response.json(options.upstreamError, { status: 400 });
+      if (options.upstreamError) return Response.json(options.upstreamError, { status: options.upstreamStatus ?? 400 });
       if (options.failUpstream) return new Response("PRIVATE upstream error", { status: 429 });
       if (options.jsonUpstream) return Response.json({ id: "resp_json", status: "completed", output: [
         { id: "msg_json", type: "message", role: "assistant", content: [{ type: "output_text", text: "ANSWER" }] }] });
@@ -311,4 +311,27 @@ test("message-only upstream failures produce fixed reason categories without ech
     assert.equal(detail.code, expected);
     assert.doesNotMatch(JSON.stringify(detail), /PRIVATE|sk-secret/);
   }
+});
+
+test("bridge conversion failures retain fixed reasons without forwarding private detail", async () => {
+  for (const code of ['conflicting_current_definitions', 'unsupported_live_search', 'invalid_search_history']) {
+    const detail = await readUpstreamFailure(Response.json({error:{type:'unsupported_tool_search', code,
+      message:'PRIVATE user history Bearer sk-secret'}}));
+    assert.deepEqual(detail, {code, type:'unsupported_tool_search', read:'parsed'});
+    assert.doesNotMatch(JSON.stringify(detail), /PRIVATE|Bearer|sk-secret/);
+  }
+  const detail = await readUpstreamFailure(Response.json({error:{type:'unsupported_tool_search', code:'private-user-value'}}));
+  assert.deepEqual(detail, {code:'unknown_error', type:'unsupported_tool_search', read:'parsed'});
+});
+
+test("handoff identifies a local conversion failure without billing or login guidance", async context => {
+  const {gate,send}=await fixture(context,{upstreamStatus:422,upstreamError:{error:{
+    type:'unsupported_tool_search',code:'conflicting_current_definitions',message:'PRIVATE sk-secret',
+  }}});
+  const early=await prefix(await send());gate.resolve();
+  const text=early.text+await remainder(early.reader);
+  assert.match(text,/Bridgeでツール情報または履歴の変換に失敗/);
+  assert.match(text,/conflicting_current_definitions/);
+  assert.doesNotMatch(text,/PRIVATE|sk-secret|ログイン|支払い|console\/go/);
+  assert.equal(events(text).at(-1).type,'response.failed');
 });

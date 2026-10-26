@@ -16,6 +16,41 @@ cases:
     test_file: test/test_codex_fresh.py
     issues: [120]
     notes: "旧引数0限定条件では22subcase失敗を再現。回帰7methods成功。実subprocessでargv/exitstatus/特殊文字/公式entry置換/real更新追従/自己参照拒否を検証。新zshと実Herdrに加え、本人の既存paneでfooter DeepSeek/一覧GPT7件を再現。承認後に対象のみarchive/unarchiveし、同じID・model/high・rollout SHA256完全一致で再接続。追加flagなしのresume実行と実/modelのOpenCode(current)/GPT/他社を確認。未保存liveIDの復元とは別。docs/cli-model-reconnect.md参照。"
+  - id: TC-101
+    title: "定義が変わったツールを含む過去会話をChat経路で再開する"
+    feature: "ツール履歴の互換性"
+    scenario: "current定義優先、過去snapshot更新、server/null履歴の非実行保持、同SIDでV1からV2へ検索と実行"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-search.mjs, test/mock-tool-search-bridge.mjs, test/mock-tool-search-mcp.py]
+    test_file: test/tool-search.test.mjs
+    issues: [122]
+    notes: "実Codex E2Eはtest/codex-tool-search-e2e.py --history-evolution。通常/Lite/CodeMode/両方で6要求・2実行。旧版は2回目検索後422、修正版完了。新規4モードも維持。"
+
+  - id: TC-102
+    title: "検索の呼出結果ペアとcustomツールの名前空間を保つ"
+    feature: "履歴境界とツール識別"
+    scenario: "user steering、未完了とserver検索、圧縮境界、customcallとforcedchoiceのnamespace保持"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs, src/tool-adapter.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [122]
+    notes: "test/tool-adapter.test.mjsも実行。既存のfunction/customペア・要約・router/checkpoint回帰を含む。"
+
+  - id: TC-103
+    title: "履歴変換の固定理由コードを保持し管理済みbackendへ移行する"
+    feature: "変換エラーの診断"
+    scenario: "handoff後も固定分類、秘密非転記、任意コード拒否、旧import/guard移行とidempotence"
+    status: done
+    priority: high
+    type: security
+    source: [src/codex-bridge.mjs, src/handoff-status.mjs, scripts/patch_chat_protocol.py]
+    test_file: test/handoff-status.test.mjs
+    issues: [122]
+    notes: "test/test_patch_chat_protocol.pyを併用。raw upstream messageは返さずallowlistだけを伝える。"
 
   - id: TC-098
     title: "BridgeがCodexのclientツール検索と名前空間を往復し遅延ロードを保つ"

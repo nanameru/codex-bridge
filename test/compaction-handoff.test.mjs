@@ -428,3 +428,48 @@ test('connection recovery never retries cancellation, unknown transport errors o
   assert.equal(calls,1,scenario);
  }
 });
+
+test('budget boundaries keep client tool search paired across user steering and parallel tools', () => {
+  const user = content => ({ role: 'user', content });
+  const search = call_id => ({ type: 'tool_search_call', execution: 'client', status: 'completed', call_id, arguments: { query: 'probe' } });
+  const found = (call_id, status = 'completed') => ({ type: 'tool_search_output', execution: 'client', status, call_id, tools: [] });
+  const call = { type: 'function_call', call_id: 'ordinary', name: 'read', arguments: '{}' };
+  const output = { type: 'function_call_output', call_id: 'ordinary', output: 'ok' };
+  assert.equal(budgetHistoryBoundary([user('old'), search('a'), user('steering'), found('a'), user('latest')]), -1);
+  assert.equal(budgetHistoryBoundary([user('old'), user('recent'), search('a'), user('steering'), found('a'), user('latest')]), 1);
+  assert.equal(budgetToolBoundary([user('old'), search('a'), found('a'), user('latest')]), 3);
+  assert.equal(budgetToolBoundary([user('old'), call, search('a'), output, user('steering'), found('a'), search('pending')]), 6);
+  assert.equal(budgetToolBoundary([user('old'), search('pending'), call, output, user('latest')]), -1);
+  for (const status of ['completed', 'failed', 'incomplete']) {
+    assert.equal(budgetToolBoundary([user('old'), search('a'), found('a', status), user('latest')]), 3);
+  }
+  for (const status of ['in_progress', 'searching', 'unknown']) {
+    assert.equal(budgetToolBoundary([user('old'), search('a'), found('a', status), user('latest')]), -1);
+  }
+});
+
+test('hosted search history is inert while malformed client searches stay protected', () => {
+  const user = { role: 'user', content: 'continue' };
+  const hostedCall = { type: 'tool_search_call', execution: 'server', status: 'completed', call_id: null, arguments: { query: 'old' } };
+  const hostedOutput = { type: 'tool_search_output', execution: 'server', status: 'completed', call_id: null, tools: [] };
+  assert.equal(budgetHistoryBoundary([user, hostedCall, hostedOutput, user, user]), 3);
+  assert.equal(budgetToolBoundary([user, hostedCall, hostedOutput, user]), -1);
+  const call = { type: 'function_call', call_id: 'ordinary', name: 'read', arguments: '{}' };
+  const output = { type: 'function_call_output', call_id: 'ordinary', output: 'ok' };
+  for (const invalid of [
+    { type: 'tool_search_call', execution: 'client', call_id: undefined },
+    { type: 'tool_search_call', execution: 'client', call_id: '' },
+    { type: 'tool_search_call', execution: 'unknown', call_id: 'ordinary' },
+  ]) {
+    assert.equal(budgetHistoryBoundary([user, invalid, user]), -1);
+    assert.equal(budgetToolBoundary([user, invalid, call, output, user]), -1);
+  }
+});
+
+test('search outputs cannot complete ordinary tools with an accidentally reused call id', () => {
+  const user = { role: 'user', content: 'continue' };
+  const call = { type: 'function_call', call_id: 'shared', name: 'read', arguments: '{}' };
+  const output = { type: 'tool_search_output', execution: 'client', status: 'completed', call_id: 'shared', tools: [] };
+  assert.equal(budgetHistoryBoundary([user, call, output, user]), -1);
+  assert.equal(budgetToolBoundary([user, call, output, user]), -1);
+});

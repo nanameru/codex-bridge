@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Transform } from "node:stream";
+import { TOOL_SEARCH_REASON_CODES } from "./tool-search.mjs";
 
 const active = new WeakMap();
 const ITEM_PREFIX = "msg_bridge_handoff_";
@@ -165,7 +166,8 @@ const SAFE_UPSTREAM_CODES = new Set(["invalid_request_error", "invalid_prompt", 
   "rate_limit_exceeded", "insufficient_quota", "usage_exceeded", "quota_exceeded", "insufficient_credits",
   "credits_exhausted", "billing_hard_limit_reached", "monthly_limit_exceeded", "weekly_limit_exceeded",
   "authentication_error", "permission_error", "server_error",
-  "content_filter", "invalid_api_key", "not_found_error", "overloaded_error"]);
+  "content_filter", "invalid_api_key", "not_found_error", "overloaded_error", "invalid_tool_history",
+  "chat_history_conversion_failed", ...TOOL_SEARCH_REASON_CODES]);
 export async function readUpstreamFailure(response, { maxBytes = 16384, timeoutMs = 1000 } = {}) {
   const reader = response.body.getReader();
   let timer;
