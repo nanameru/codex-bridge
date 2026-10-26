@@ -264,3 +264,17 @@ test('aliases cannot change tool identity across historical and current declarat
   assert.throws(()=>chatToolContext({tools:[search,fn('hidden',{defer_loading:true})]}).restore(
     answer('hidden','{}').choices[0].message.tool_calls[0]),error=>error.reasonCode==='unknown_or_unloaded_call');
 });
+
+test('current tool kind and schema stay aligned when historical representation changes', () => {
+  const custom={type:'custom',name:'probe',description:'current text input'};
+  const ordinary=fn('probe',{parameters:{type:'object',properties:{revision:{type:'integer'}},required:['revision']}});
+  const body=(current,old)=>({tools:[current],input:[{type:'additional_tools',role:'developer',tools:[old]}]});
+  const functionContext=chatToolContext(body(ordinary,custom));
+  assert.deepEqual(functionContext.tools[0].function.parameters,ordinary.parameters);
+  assert.equal(functionContext.restore(answer('probe','{"revision":2}').choices[0].message.tool_calls[0]).type,'function_call');
+  const customContext=chatToolContext(body(custom,ordinary));
+  assert.deepEqual(customContext.tools[0].function.parameters.required,['input']);
+  const restored=customContext.restore(answer('probe','{"input":"current input"}').choices[0].message.tool_calls[0]);
+  assert.equal(restored.type,'custom_tool_call');
+  assert.equal(restored.input,'current input');
+});
