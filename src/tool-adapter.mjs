@@ -65,6 +65,7 @@ export function openCodeBody(body, maxBytes = 32 * 1024 * 1024) {
     result.input = orderedBridgeHistory(input.map((item) => {
       if (item.type === "custom_tool_call") {
         return normalizeToolCallId({ type: "function_call", id: item.id, call_id: item.call_id, name: item.name,
+          ...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
           arguments: JSON.stringify({ input: item.input }) });
       }
       if (item.type === "custom_tool_call_output") return { ...item, type: "function_call_output" };
@@ -80,7 +81,8 @@ export function openCodeBody(body, maxBytes = 32 * 1024 * 1024) {
     } : tool);
   }
   if (["custom", "function"].includes(body.tool_choice?.type) && body.tool_choice.name) {
-    result.tool_choice = { type: "function", function: { name: body.tool_choice.name } };
+    result.tool_choice = { type: "function", function: { name: body.tool_choice.name },
+      ...(body.tool_choice.namespace !== undefined ? { namespace: body.tool_choice.namespace } : {}) };
   }
   return result;
 }

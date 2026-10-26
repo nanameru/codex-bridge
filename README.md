@@ -1,6 +1,7 @@
 # codex-bridge
 
 Bridge経由のツール検索と使用量の保持については[通信互換性の修正と検証](docs/tool-search-compatibility.md)を参照してください。
+古い会話を切り替えた際の422については[履歴のツール定義と検索結果の互換性](docs/history-tool-search-422.md)を参照してください。
 
 長い会話でのCPU負荷と自動圧縮の設定は[巨大入力の遅延対策](docs/input-latency.md)を参照してください。
 
