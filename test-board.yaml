@@ -15,7 +15,7 @@ cases:
     source: [scripts/codex_fresh.py]
     test_file: test/test_codex_fresh.py
     issues: [120]
-    notes: "旧引数0限定条件では22subcase失敗を再現。回帰7methods成功。実subprocessでargv/exitstatus/特殊文字/公式entry置換/real更新追従/自己参照拒否を検証。新zshのinteractive/noninteractive関数経由と実Herdr agent start→/modelでOpenCode/GPT/他社表示を確認。未保存liveIDは別serverへ復元できない。"
+    notes: "旧引数0限定条件では22subcase失敗を再現。回帰7methods成功。実subprocessでargv/exitstatus/特殊文字/公式entry置換/real更新追従/自己参照拒否を検証。新zshと実Herdrに加え、本人の既存paneでfooter DeepSeek/一覧GPT7件を再現。承認後に対象のみarchive/unarchiveし、同じID・model/high・rollout SHA256完全一致で再接続。追加flagなしのresume実行と実/modelのOpenCode(current)/GPT/他社を確認。未保存liveIDの復元とは別。docs/cli-model-reconnect.md参照。"
 
   - id: TC-098
     title: "BridgeがCodexのclientツール検索と名前空間を往復し遅延ロードを保つ"
