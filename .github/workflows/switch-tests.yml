@@ -15,6 +15,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.16'
+      - name: 通常起動の回帰テスト用にzshを準備する
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh
       - run: bash -n scripts/switch.sh
       - run: bash -n scripts/legacy-switch.sh
       - run: python3 -m py_compile scripts/*.py
