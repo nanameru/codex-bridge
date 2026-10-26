@@ -23,3 +23,9 @@
 - `python3 test/handoff-app-e2e.py --fail`: 実app-serverで連続失敗は2試行で停止、OpenCodeへの要求なし。
 - shell構文、Pythonコンパイル、git diff --check成功。
 - 実API追加0要求、顧客履歴の代理再送なし。上流は模擬API。元の実障害原因・実スレッドの再開成功は未確認。
+
+## EHOSTUNREACH追補（Issue #110）
+
+2026-10-26T00:26:19Zのセッション `01a17198-6f32-7d90-8a12-9ffd73bfec6a` で、HTTP応答前の `TypeError`（`cause.code=EHOSTUNREACH`）が既存の接続回復対象外となり、`summary_attempts=1` で停止した。従来の判定は `ETIMEDOUT` と `UND_ERR_CONNECT_TIMEOUT` だけを対象にしていた。
+
+固定許可リストへ `EHOSTUNREACH`、`ENETUNREACH`、`ENETDOWN`、`EHOSTDOWN`、`ECONNREFUSED`、`ECONNRESET`、`ECONNABORTED`、`EAI_AGAIN`、`UND_ERR_HEADERS_TIMEOUT` を追加した。直接cause、トップレベルcode、AggregateError内の固定コードを対象にする。HTTP応答前だけを対象とし、既存の合計最大2試行、成功時のみcache、取消・未知コード・HTTP応答後失敗の非再試行は変更しない。直接 `EHOSTUNREACH` の回帰テストは修正前に失敗し、修正後に成功した。
