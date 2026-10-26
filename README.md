@@ -615,6 +615,16 @@ Codex Appは会話を完了してから開き直し、CLIで一覧が古い場�
 `codex resume <thread-id> --no-daemon`で再読込してください。
 動的な一覧更新でも、この2件は既存OpenAI/OpenCodeモデルと共存します。
 
+通常の`codex`でも古い一覧が出る場合、画面が既存の共有app-serverへ再接続している可能性があります。
+`scripts/codex-fresh-launcher.sh`は引数なしの起動に公式`--no-daemon`を付け、最新設定を読む専用serverを使います。
+standalone版の`~/.codex/packages/standalone/current/bin/codex`を呼ぶため、releaseの固定はしません。
+本人の`~/.local/bin/codex`がこの公式binaryへのsymlinkであることを確認し、元symlinkをバックアップしてから配置する用途です。
+既存の独自launcherは上書きしないでください。
+引数付きの`codex <prompt>`、`resume`、各subcommandは全引数をそのまま渡します。
+専用serverの起動では共有CLIのモデル表示同期と共有serverからの実行中セッション管理は対象外です。
+公式installerの更新でlauncherがsymlinkへ戻った場合は再適用が必要です。
+配置後は追加オプションなしの`codex`を起動し、実画面の`/model`で一覧を確認してください。実行中の共有serverを止める必要はありません。
+
 この2件の手動指定では、APIキー未登録は`provider_key_required`で止まります。認証失敗・429・利用枠切れでも他社へ切り替えません。
 履歴引き継ぎ/圧縮だけは既存のOpenAI要約経路を使い、その後の通常要求は選択したサービスへ戻ります。
 最新依頼・指示・未完了ツール・schemaを保持し、既存の入力予算と分割要約を適用します。

@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-100
+    title: "通常のcodex起動で最新モデル一覧を表示する"
+    feature: "CLIの設定再読込"
+    scenario: "古い共有daemonが稼働したまま引数なし起動でOpenCodeとGPTを表示し、引数付きコマンドをそのまま転送する"
+    status: done
+    priority: high
+    type: manual
+    source: [scripts/codex-fresh-launcher.sh]
+    test_file: ""
+    issues: [120]
+    notes: "2026-10-26 Codex0.164.0でsh -n、実PTYの引数なしcodex→/model（OpenCode DeepSeek/現在GPT/他社）、version/app-server help、元symlinkのbackup、config hash不変、元daemon継続を確認。本人launcherの可逆的変更のため新しい自動テストは追加しない。"
+
   - id: TC-098
     title: "BridgeがCodexのclientツール検索と名前空間を往復し遅延ロードを保つ"
     feature: "検索の通信互換性"
