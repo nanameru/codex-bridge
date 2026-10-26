@@ -8,14 +8,14 @@ cases:
   - id: TC-100
     title: "通常のcodex起動で最新モデル一覧を表示する"
     feature: "CLIの設定再読込"
-    scenario: "古い共有daemonが稼働したまま引数なし起動でOpenCodeとGPTを表示し、引数付きコマンドをそのまま転送する"
+    scenario: "plain/prompt/resume/forkで専用serverを使い、remote/非TUI/未知option/既存flagを保持。公式visible entry更新後も安定した入口を使用する"
     status: done
     priority: high
-    type: manual
-    source: [scripts/codex-fresh-launcher.sh]
-    test_file: ""
+    type: regression
+    source: [scripts/codex_fresh.py]
+    test_file: test/test_codex_fresh.py
     issues: [120]
-    notes: "2026-10-26 Codex0.164.0でsh -n、実PTYの引数なしcodex→/model（OpenCode DeepSeek/現在GPT/他社）、version/app-server help、元symlinkのbackup、config hash不変、元daemon継続を確認。本人launcherの可逆的変更のため新しい自動テストは追加しない。"
+    notes: "旧引数0限定条件では22subcase失敗を再現。回帰7methods成功。実subprocessでargv/exitstatus/特殊文字/公式entry置換/real更新追従/自己参照拒否を検証。新zshのinteractive/noninteractive関数経由と実Herdr agent start→/modelでOpenCode/GPT/他社表示を確認。未保存liveIDは別serverへ復元できない。"
 
   - id: TC-098
     title: "BridgeがCodexのclientツール検索と名前空間を往復し遅延ロードを保つ"
