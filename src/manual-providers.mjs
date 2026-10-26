@@ -19,6 +19,8 @@ export const MANUAL_PROVIDERS = Object.freeze({
 export const CHAT_PROVIDERS = Object.freeze({ ...MANUAL_PROVIDERS, whatstoken: WHATSTOKEN });
 export const manualSlug = provider => provider + '/deepseek-v4.1-flash';
 export const autoManualSlug = provider => 'auto-' + manualSlug(provider);
+export const KIMI_MODEL = 'moonshotai/Kimi-K3.1-Pro';
+export const KIMI_SLUG = 'commandcode/' + KIMI_MODEL;
 export function readManualKey(provider, root = codexRoot(), environment = process.env) {
   const config = CHAT_PROVIDERS[provider];
   if (!config) return null;
@@ -26,15 +28,19 @@ export function readManualKey(provider, root = codexRoot(), environment = proces
   return typeof value === 'string' && value.length > 0 && value.length <= 8192 && !/[\s\x00-\x1f\x7f]/.test(value) ? value : null;
 }
 export function manualModels() {
-  return Object.entries(MANUAL_PROVIDERS).map(([provider, config]) => {
+  const models = Object.entries(MANUAL_PROVIDERS).map(([provider, config]) => {
     const model = buildCatalog([{ id: 'deepseek-v4.1-flash', name: `${config.label} · DeepSeek V4.1 Flash`,
       desc: `${config.label}の利用枠を使う手動切替。自動fallbackなし。`, ctx: config.context, out: 32768,
       compact: 500000, vision: config.vision, efforts: ['none','low','medium','high','xhigh','max'], tier: 'balanced' }]).models[0];
     return { ...model, slug: manualSlug(provider), router_provider: provider, router_model: config.model, router_transport: 'chat' };
   });
+  const kimi = buildCatalog([{ id: 'kimi-k3.1-pro', name: 'Command Code · Kimi K3.1 Pro',
+    desc: 'Command CodeのKimi K3.1 Pro。選択した提供元を維持します。', ctx: 1048576, out: 32768,
+    compact: 500000, vision: false, efforts: ['medium'], tier: 'balanced' }]).models[0];
+  return [...models, { ...kimi, slug: KIMI_SLUG, router_provider: 'commandcode', router_model: KIMI_MODEL, router_transport: 'chat' }];
 }
 export function automaticModels({ whatstoken = false } = {}) {
-  const models = manualModels();
+  const models = manualModels().filter(model => model.router_model !== KIMI_MODEL);
   if (whatstoken) {
     const model = buildCatalog([{ id: 'deepseek-v4.1-flash', name: 'WhatsToken · DeepSeek V4.1 Flash',
       desc: '無料時間帯と公開料金を確認できるときだけ優先します。', ctx: WHATSTOKEN.context,
@@ -53,15 +59,16 @@ export function withManualModels(catalog, options = {}) {
 
 export function manualChatBody(provider, body) {
   const config = CHAT_PROVIDERS[provider];
-  if (!config || body.model !== config.model) throw new Error('manual_model_invalid');
-  const result = { model: config.model, messages: chatMessages(body, body.reasoning?.effort !== 'none'), stream: body.stream === true };
+  if (!config || !(body.model === config.model || (provider === 'commandcode' && body.model === KIMI_MODEL))) throw new Error('manual_model_invalid');
+  const kimi = body.model === KIMI_MODEL;
+  const result = { model: body.model, messages: chatMessages(body, !kimi && body.reasoning?.effort !== 'none'), stream: body.stream === true };
   if (result.stream) result.stream_options = { include_usage: true };
   const tools = chatToolContext(body).tools;
   if (tools?.length) result.tools = tools;
   if (body.tool_choice !== undefined) result.tool_choice = chatToolChoice(body.tool_choice, chatToolContext(body));
   if (body.max_output_tokens !== undefined) result.max_tokens = body.max_output_tokens;
   for (const key of ['temperature','top_p','frequency_penalty','presence_penalty']) if (body[key] !== undefined) result[key] = body[key];
-  if (provider === 'commandcode' || provider === 'whatstoken') Object.assign(result, reasoningOptions(config.model.split('/').at(-1), body.reasoning?.effort));
+  if (provider === 'commandcode' || provider === 'whatstoken') Object.assign(result, reasoningOptions(body.model.split('/').at(-1), body.reasoning?.effort));
   else if (body.reasoning?.effort !== undefined) result.reasoning_effort = body.reasoning.effort;
   return result;
 }

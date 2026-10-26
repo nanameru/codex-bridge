@@ -42,9 +42,10 @@ with tempfile.TemporaryDirectory(prefix='manual-providers-e2e-') as directory:
         listed = json.dumps(server.request('model/list', {'includeHidden': False}))
         assert 'commandcode/deepseek-v4.1-flash' in listed
         assert 'ollama/deepseek-v4.1-flash' in listed
+        assert 'commandcode/moonshotai/Kimi-K3.1-Pro' in listed
         thread = server.request('thread/start', {'cwd': directory, 'sandbox': 'read-only', 'approvalPolicy': 'never'})['thread']['id']
         for model, provider in [('gpt-6.1-sol', 'openai'), ('opencode/deepseek-v4.1-flash', 'opencode'),
-                               ('commandcode/deepseek-v4.1-flash', 'commandcode'), ('ollama/deepseek-v4.1-flash', 'ollama')]:
+                               ('commandcode/deepseek-v4.1-flash', 'commandcode'), ('commandcode/moonshotai/Kimi-K3.1-Pro', 'commandcode'), ('ollama/deepseek-v4.1-flash', 'ollama')]:
             messages, status = h.turn(server, thread, model)
             assert status == 'completed', status
             assert any(provider + '_OK' in x.get('params', {}).get('delta', '') for x in messages), provider

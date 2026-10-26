@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-104
+    title: "通常起動でKimiとDeepSeekを表示し選択した提供元で使う"
+    feature: "Kimiの手動選択と起動入口"
+    scenario: "正式ID・ツール往復・usage・認証分離・既存PATHと新zsh・公式更新後の起動・実Codexの応答"
+    status: done
+    priority: high
+    type: regression
+    source: [src/manual-providers.mjs, src/model-router.mjs, scripts/install_fresh_cli.py]
+    test_file: test/manual-providers.test.mjs
+    issues: [120]
+    notes: "test/test_install_fresh_cli.pyとtest/manual-providers-e2e.py併用。実/modelにKimi/DeepSeekを確認。新8791経路で各HTTP200、実Codexでも両モデルcompleted/OK。旧8790は既存通信のため保持。docs/kimi-deepseek-rollout.md参照。"
   - id: TC-100
     title: "通常のcodex起動で最新モデル一覧を表示する"
     feature: "CLIの設定再読込"

@@ -609,7 +609,7 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 キーは`CODEX_HOME/commandcode-api-key`と`CODEX_HOME/ollama-api-key`へ本人専用の0600権限で保存します。
 専用環境変数`CMD_API_KEY` / `OLLAMA_API_KEY`がある場合はそちらを優先します。
 共有権限・symlink・hardlinkの鍵ファイルは読みません。OpenAIログインと他社のキーを混ぜません。
-設定コマンドは既定モデルや既存会話を書き換えず、モデル一覧のバックアップを作ります。手動用2項目と自動用2項目を追加します。
+設定コマンドは既定モデルや既存会話を書き換えず、モデル一覧のバックアップを作ります。手動用のDeepSeek 2項目・Kimi K3.1 Pro 1項目と、DeepSeek自動用2項目を追加します。
 常駐ルーターはキーの変更を要求ごとに読み込むので、キーの登録/更新だけなら再起動不要です。
 
 Codex Appは会話を完了してから開き直し、CLIで一覧が古い場合は
@@ -622,7 +622,7 @@ Codex Appは会話を完了してから開き直し、CLIで一覧が古い場�
 Codex0.164のoption値と`--`を区別し、未知optionは実CLIへそのまま渡します。
 本人環境では、公式installerの管理外である`~/.codex/bridge-cli/bin/codex`へ配置し、隣の`codex-real`を公式`standalone/current/bin/codex`へリンクします。
 `~/.zshenv`の管理ブロックで`codex`関数からこの入口へ全引数を渡します。Herdrが使う`codex resume <ID>`も対象です。
-公式installer所有の`~/.local/bin/codex`は書き換えません。シェル設定は原文をprivate backupしてから追記し、新しいシェルで読み込みます。
+`python3 scripts/install_fresh_cli.py`で、安定入口とzshの管理ブロックを配置します。公式バイナリを直接指す`~/.local/bin/codex`も安定入口へ向け直し、古いシェルのPATH起動に対応します。独自launcherは上書きしません。シェル原文と元リンク先はprivate backupへ保存します。公式更新がvisible entryを戻した後も新しいzshの管理関数は安定入口を使います。
 独自launcherや既存の同名管理ブロックを無断で上書きしないでください。
 専用serverの起動では共有CLIのモデル表示同期と共有serverからの実行中セッション管理は対象外です。
 配置後は新しいシェルから`codex`を起動し、実画面の`/model`で一覧を確認してください。起動済み画面の一覧はこの変更では再読込されません。
@@ -881,3 +881,9 @@ CODEX_TEST_WHATSTOKEN=1 CODEX_TEST_MODEL_PROVIDER=codex-live python3 test/cli-mo
 ```
 
 後者も隔離設定・合成キー・模擬上流のみです。料金や疎通の確認のために有料時間帯の実推論は行いません。
+
+### Kimi K3.1 Proの手動選択
+
+`Command Code · Kimi K3.1 Pro`（ID: `commandcode/moonshotai/Kimi-K3.1-Pro`）を選択できます。上流へは大文字・小文字を含む正式ID `moonshotai/Kimi-K3.1-Pro` とCommand Code専用の認証を送ります。DeepSeek用のreasoning指定やsampling既定値は付けません。Kimiは手動選択を維持し、自動fallbackの対象にはしません。追加後は通常の`codex`で開き、`/model`から選びます。稼働中の画面と共有serverのロックは別の問題です。
+
+本人環境の移行記録は[ローカル反映と検証](docs/kimi-deepseek-rollout.md)を参照してください。
