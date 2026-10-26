@@ -8,6 +8,7 @@ import { reasoningOptions } from './upstream-options.mjs';
 import { providerHelp } from './provider-help.mjs';
 import { classifyProviderLimit } from './provider-fallback.mjs';
 import { WHATSTOKEN } from './whatstoken-free.mjs';
+import { chatToolContext, chatToolChoice } from './tool-search.mjs';
 
 export const MANUAL_PROVIDERS = Object.freeze({
   commandcode: Object.freeze({ label: 'Command Code', base: 'https://api.commandcode.ai/provider/v1',
@@ -55,10 +56,9 @@ export function manualChatBody(provider, body) {
   if (!config || body.model !== config.model) throw new Error('manual_model_invalid');
   const result = { model: config.model, messages: chatMessages(body, body.reasoning?.effort !== 'none'), stream: body.stream === true };
   if (result.stream) result.stream_options = { include_usage: true };
-  const tools = (body.tools ?? []).filter(tool => tool.type === 'function' || tool.function).map(tool => ({ type: 'function',
-    function: tool.function ?? { name: tool.name, description: tool.description ?? '', parameters: tool.parameters ?? { type: 'object', properties: {} } } }));
-  if (tools.length) result.tools = tools;
-  if (body.tool_choice !== undefined) result.tool_choice = body.tool_choice;
+  const tools = chatToolContext(body).tools;
+  if (tools?.length) result.tools = tools;
+  if (body.tool_choice !== undefined) result.tool_choice = chatToolChoice(body.tool_choice, chatToolContext(body));
   if (body.max_output_tokens !== undefined) result.max_tokens = body.max_output_tokens;
   for (const key of ['temperature','top_p','frequency_penalty','presence_penalty']) if (body[key] !== undefined) result[key] = body[key];
   if (provider === 'commandcode' || provider === 'whatstoken') Object.assign(result, reasoningOptions(config.model.split('/').at(-1), body.reasoning?.effort));
@@ -109,7 +109,7 @@ export async function fetchManualProvider(provider, url, options, fetcher, maxBy
     { status: upstream.status, headers: /^\d{1,6}$/.test(retryAfter ?? '') ? { 'retry-after': retryAfter } : {} });
   }
   if (!upstream.body) throw new Error('manual_empty_response');
-  if (!body.stream) return Response.json(chatToResponses(await boundedJSON(upstream, maxBytes), body.model));
+  if (!body.stream) return Response.json(chatToResponses(await boundedJSON(upstream, maxBytes), body.model, chatToolContext(body)));
   if (!upstream.headers.get('content-type')?.includes('text/event-stream')) { await upstream.body.cancel(); throw new Error('manual_stream_required'); }
   const output = new PassThrough();
   output.writeHead = () => {};
@@ -119,7 +119,7 @@ export async function fetchManualProvider(provider, url, options, fetcher, maxBy
   options.signal?.addEventListener('abort', abort, { once: true });
   queueMicrotask(() => {
     if (options.signal?.aborted) { abort(); return; }
-    pipeChatStream(upstream, output, body.model, undefined, { maxBytes }).catch(() => output.destroy());
+    pipeChatStream(upstream, output, body.model, undefined, { maxBytes, toolContext: chatToolContext(body) }).catch(() => output.destroy());
   });
   return new Response(web, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' } });
 }

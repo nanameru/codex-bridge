@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
+import { ToolSearchError } from "./tool-search.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 import { toolRecoveryPlan, recoverWithAnswer, answerOnlyStream } from "./tool-recovery.mjs";
 import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFailure } from "./handoff-status.mjs";
@@ -42,6 +43,8 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./cli-model-sync.mjs", import.meta.url)))
   .update(readFileSync(new URL("./provider-help.mjs", import.meta.url)))
   .update(readFileSync(new URL("./chat-protocol.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./tool-search.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./usage.mjs", import.meta.url)))
   .update(readFileSync(new URL("./upstream-options.mjs", import.meta.url)))
   .update(readFileSync(new URL("./request-guard.mjs", import.meta.url)))
   .update(readFileSync(new URL("./models.json", import.meta.url))).digest("hex");
@@ -746,7 +749,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             request.headers.authorization?.replace(/^Bearer /i, ''),
           ] : []); }
           catch (error) {
-            if (candidateRoute.provider !== 'whatstoken' || options.signal?.aborted) throw error;
+            if (error instanceof ToolSearchError || candidateRoute.provider !== 'whatstoken' || options.signal?.aborted) throw error;
             return Response.json({ error: { code: 'whatstoken_unavailable' } }, { status: 503 });
           }
         }
@@ -970,9 +973,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const errorCode = [error?.code, error?.cause?.code].find(code => safeCodes.has(code));
       if (errorCode && !terminationReason.startsWith("client_")) metric.transport_error_code = errorCode;
       const timeout = terminationReason === "deadline_exceeded";
-      if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, timeout ? 504 : 502,
-        error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,
-        error instanceof HandoffError ? error.message : timeout ? "応答の待機がタイムアウトしました" : "転送先への接続が中断されました");
+      if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, error instanceof ToolSearchError ? 422 : timeout ? 504 : 502,
+        error instanceof ToolSearchError ? "unsupported_tool_search" : error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,
+        error instanceof ToolSearchError ? error.message : error instanceof HandoffError ? error.message : timeout ? "応答の待機がタイムアウトしました" : "転送先への接続が中断されました");
     } finally {
       handoffStatus?.dispose();
       clearTimeout(timer);

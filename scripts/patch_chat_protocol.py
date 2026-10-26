@@ -9,33 +9,93 @@ import time
 from switch_config import atomic_write
 
 IMPORT = 'import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.mjs";'
+TOOL_IMPORT = 'import { chatToolContext, chatToolChoice } from "./tool-search.mjs";'
+HELPERS = ('chat-protocol.mjs', 'tool-search.mjs', 'usage.mjs')
+MANIFEST = '.chat-protocol.sha256'
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def patched_source(source):
-    legacy = 'async function pipeStream(upstreamRes, res, model, threadId, abortHandle)' in source
-    # Keep the surrounding legacy authentication, timeouts, request guard and usage UI.
-    source = source.replace('import { chatToResponses, pipeChatStream } from \"./chat-protocol.mjs\";', IMPORT)
-    messages = 'function toChatMessages(body) {\n  return chatMessages(body, reasoningOptions(body.model ?? DEFAULT_MODEL, body.reasoning?.effort).thinking?.type === \"enabled\");\n}\n'
-    payload = 'function toResponsesPayload(chat, model) {\n  return chatToResponses(chat, model);\n}\n'
-    options = '{ recordUsage, abortHandle, heartbeatMs: SSE_HEARTBEAT_MS, firstByteTimeoutMs: UPSTREAM_FIRST_BYTE_TIMEOUT_MS, idleTimeoutMs: UPSTREAM_IDLE_TIMEOUT_MS }' if legacy else '{ recordUsage }'
-    signature = 'async function pipeStream(upstreamRes, res, model, threadId' + (', abortHandle' if legacy else '') + ')'
-    pipe = signature + ' {\n  return pipeChatStream(upstreamRes, res, model, threadId, ' + options + ');\n}\n'
+    legacy = bool(re.search(r'async function pipeStream\(upstreamRes, res, model, threadId, abortHandle(?:, toolContext)?\)', source))
+    # Preserve surrounding authentication, raw-stream handling, timeouts, guard and usage UI.
+    source = source.replace('import { chatToResponses, pipeChatStream } from "./chat-protocol.mjs";', IMPORT)
     if IMPORT not in source:
         if source.count('import http from "node:http";') != 1:
             raise ValueError('未対応のbridge形式です')
         source = source.replace('import http from "node:http";', IMPORT + '\nimport http from "node:http";', 1)
+    if TOOL_IMPORT not in source:
+        old = 'import { chatToolContext } from "./tool-search.mjs";'
+        source = source.replace(old, TOOL_IMPORT) if old in source else source.replace(IMPORT, IMPORT + '\n' + TOOL_IMPORT, 1)
+    messages = 'function toChatMessages(body) {\n  return chatMessages(body, reasoningOptions(body.model ?? DEFAULT_MODEL, body.reasoning?.effort).thinking?.type === "enabled");\n}\n'
+    tools = 'function toChatTools(body) {\n  return chatToolContext(body).tools;\n}\n'
+    payload = 'function toResponsesPayload(chat, model, toolContext) {\n  return chatToResponses(chat, model, toolContext);\n}\n'
+    options = '{ recordUsage, abortHandle, heartbeatMs: SSE_HEARTBEAT_MS, firstByteTimeoutMs: UPSTREAM_FIRST_BYTE_TIMEOUT_MS, idleTimeoutMs: UPSTREAM_IDLE_TIMEOUT_MS, toolContext }' if legacy else '{ recordUsage, toolContext }'
+    signature = 'async function pipeStream(upstreamRes, res, model, threadId' + (', abortHandle' if legacy else '') + ', toolContext)'
+    pipe = signature + ' {\n  return pipeChatStream(upstreamRes, res, model, threadId, ' + options + ');\n}\n'
     for pattern, replacement in [
         (r'function toChatMessages\(body\) \{[\s\S]*?\n}\n', messages),
-        (r'function toResponsesPayload\(chat, model\) \{[\s\S]*?\n}\n', payload),
-        (r'async function pipeStream\(upstreamRes, res, model, threadId(?:, abortHandle)?\) \{[\s\S]*?\n}\n', pipe),
+        (r'function toChatTools\(body\) \{[\s\S]*?\n}\n', tools),
+        (r'function toResponsesPayload\(chat, model(?:, toolContext)?\) \{[\s\S]*?\n}\n', payload),
+        (r'async function pipeStream\(upstreamRes, res, model, threadId(?:, abortHandle)?(?:, toolContext)?\) \{[\s\S]*?\n}\n', pipe),
     ]:
         source, count = re.subn(pattern, lambda _match: replacement, source)
         if count != 1:
             raise ValueError('bridgeの関数境界が一致しません')
+    # All input translation failures must be handled before issuing upstream I/O.
+    if 'let messages, toolContext, toolChoice;' not in source:
+        pattern = r'(?m)^([ \t]*)const messages = toChatMessages\(body\);$'
+        def guard(match):
+            indent = match[1]
+            lines = ['let messages, toolContext, toolChoice;', 'try {',
+                     '  toolContext = chatToolContext(body);',
+                     '  toolChoice = chatToolChoice(body.tool_choice, toolContext);',
+                     '  messages = toChatMessages(body);', '} catch {',
+                     '  res.writeHead(422, { "content-type": "application/json" });',
+                     '  res.end(JSON.stringify({error:{type:"unsupported_tool_search",message:"このツール検索または履歴はChat経路で安全に変換できません。履歴は保持しています。"}}));',
+                     '  return;', '}']
+            return '\n'.join(indent + line for line in lines)
+        source, count = re.subn(pattern, guard, source)
+        if count != 1:
+            raise ValueError('bridgeの入力変換境界が一致しません')
+    raw_choice = 'if (body.tool_choice) chatBody.tool_choice = body.tool_choice;'
+    desired_choice = 'if (toolChoice !== undefined) chatBody.tool_choice = toolChoice;'
+    if raw_choice in source:
+        source = source.replace(raw_choice, desired_choice)
+    source = source.replace('if (toolChoice) chatBody.tool_choice = toolChoice;', desired_choice)
+    if source.count(desired_choice) != 1:
+        raise ValueError('bridgeのtool_choice境界が一致しません')
+    source = source.replace('const payload = toResponsesPayload(chat, model);',
+                            'const payload = toResponsesPayload(chat, model, toolContext);')
+    call_pattern = r'await pipeStream\(([^,\n]+), res, model, threadId(?:, activeHandle)?(?:, toolContext)?\);'
+    def call(match):
+        return 'await pipeStream(' + match[1] + ', res, model, threadId' + (', activeHandle' if legacy else '') + ', toolContext);'
+    source, count = re.subn(call_pattern, call, source)
+    if count != 1:
+        raise ValueError('bridgeのstream呼び出し境界が一致しません')
+    if source.count('const payload = toResponsesPayload(chat, model, toolContext);') != 1:
+        raise ValueError('bridgeの非stream呼び出し境界が一致しません')
     # Effort is a provider option, not an instruction to keep rechecking tools.
     source = source.replace('high: "答える前に必ず手順を確認し、見落としがないか検証する。",', 'high: "",')
     return source
+
+
+def read_manifest(path):
+    if not path.exists():
+        return {}
+    content = path.read_text().strip()
+    # Migrate the original one-helper manifest without taking ownership of any
+    # other pre-existing helper. Future manifests cover the complete dependency set.
+    if re.fullmatch(r'[a-f0-9]{64}', content):
+        return {'chat-protocol.mjs': content}
+    result = {}
+    for line in content.splitlines():
+        match = re.fullmatch(r'([a-f0-9]{64})  ([a-z-]+\.mjs)', line)
+        if not match or match[2] not in HELPERS or match[2] in result:
+            raise ValueError('helper manifestの形式が不正です')
+        result[match[2]] = match[1]
+    if set(result) != set(HELPERS):
+        raise ValueError('helper manifestの依存が不完全です')
+    return result
 
 
 def apply(target):
@@ -44,24 +104,30 @@ def apply(target):
         raise ValueError('リンク先を更新しません')
     before = target.read_text()
     after = patched_source(before)
-    module = target.with_name('chat-protocol.mjs')
-    helper = (ROOT / 'src/chat-protocol.mjs').read_text()
-    manifest = target.with_name('.chat-protocol.sha256')
-    if module.is_symlink() or manifest.is_symlink():
+    helpers = {name: (ROOT / 'src' / name).read_text() for name in HELPERS}
+    manifest = target.with_name(MANIFEST)
+    if manifest.is_symlink() or any(target.with_name(name).is_symlink() for name in HELPERS):
         raise ValueError('リンクされたhelperを更新しません')
-    if module.exists() and module.read_text() != helper:
-        if not manifest.exists() or manifest.read_text().strip() != hashlib.sha256(module.read_bytes()).hexdigest():
-            raise ValueError('管理外のhelperを上書きしません')
-    subprocess.run([shutil.which('node') or 'node', '--check', '--input-type=module'], input=after, text=True, capture_output=True, check=True)
+    previous = read_manifest(manifest)
+    for name, helper in helpers.items():
+        module = target.with_name(name)
+        if module.exists() and module.read_text() != helper:
+            if previous.get(name) != hashlib.sha256(module.read_bytes()).hexdigest():
+                raise ValueError('管理外のhelperを上書きしません')
+    node = shutil.which('node') or 'node'
+    for content in [after, *helpers.values()]:
+        subprocess.run([node, '--check', '--input-type=module'], input=content, text=True, capture_output=True, check=True)
     if target.read_text() != before:
         raise ValueError('元ソースが変更されました')
-    for path, content in [(module, helper), (target, after)]:
+    for path, content in [*((target.with_name(name), content) for name, content in helpers.items()), (target, after)]:
         if path.exists() and path.read_text() == content:
             continue
         if path.exists():
             atomic_write(path.with_name(path.name + '.bak.chat-protocol.' + str(time.time_ns())), path.read_text())
         atomic_write(path, content, path.stat().st_mode & 0o777 if path.exists() else 0o600)
-    atomic_write(manifest, hashlib.sha256(module.read_bytes()).hexdigest()+'\n')
+    content = ''.join(hashlib.sha256(helpers[name].encode()).hexdigest() + '  ' + name + '\n' for name in HELPERS)
+    if not manifest.exists() or manifest.read_text() != content:
+        atomic_write(manifest, content)
 
 
 if __name__ == '__main__':
@@ -71,7 +137,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.apply:
         apply(args.target)
-        print('Chat protocol helperを配置しました。サービスは再起動していません。')
+        print('Chat protocol helperと依存を配置しました。サービスは再起動していません。')
     else:
         patched_source(args.target.read_text())
         print('関数境界の確認のみ。--applyで配置します。')
