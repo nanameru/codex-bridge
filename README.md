@@ -1,5 +1,7 @@
 # codex-bridge
 
+**Kimi K3.1 Pro・DeepSeekを通常の`codex`と`/model`で使う:** [配布版の導入・更新手順（macOS）](docs/distribution-setup.md)。各利用者自身の公式APIキーを使用します。
+
 Bridge経由のツール検索と使用量の保持については[通信互換性の修正と検証](docs/tool-search-compatibility.md)を参照してください。
 古い会話を切り替えた際の422については[履歴のツール定義と検索結果の互換性](docs/history-tool-search-422.md)を参照してください。
 
@@ -586,14 +588,15 @@ RUN_LIVE_ROUTER=1 python3 test/live-compaction-smoke.py --rollout /path/to/rollo
 
 ### Command Code / Ollama CloudのDeepSeekを手動で選ぶ
 
-共通ルーターへ次の2件を追加できます。この2件は`/model`で明示的に選ぶ固定ルートです。
+共通ルーターへ次の3件を追加できます。`/model`で明示的に選ぶ固定ルートです。
 
 | 一覧の表示 | CodexのモデルID | 公式APIに送るmodel |
 | --- | --- | --- |
 | Command Code · DeepSeek V4.1 Flash | `commandcode/deepseek-v4.1-flash` | `deepseek/deepseek-v4.1-flash` |
+| Command Code · Kimi K3.1 Pro | `commandcode/moonshotai/Kimi-K3.1-Pro` | `moonshotai/Kimi-K3.1-Pro` |
 | Ollama Cloud · DeepSeek V4.1 Flash | `ollama/deepseek-v4.1-flash` | `deepseek-v4.1-flash` |
 
-今回はDeepSeek V4.1 Flashだけです。Command Codeは[Provider API](https://commandcode.ai/docs/provider)、
+Command CodeはDeepSeek V4.1 FlashとKimi K3.1 Pro、OllamaはDeepSeek V4.1 Flashに対応します。Command Codeは[Provider API](https://commandcode.ai/docs/provider)、
 Ollamaは[Cloud API](https://docs.ollama.com/api/openai-compatibility)のChat Completionsを使用します。
 モデルIDとcontextは公式モデル一覧/`api/show`で確認しています。利用枠や契約プランの購入はこの機能では行いません。
 
@@ -614,7 +617,7 @@ python3 scripts/install_router_service.py --update-if-idle --wait-idle 900
 
 Codex Appは会話を完了してから開き直し、CLIで一覧が古い場合は
 `codex resume <thread-id> --no-daemon`で再読込してください。
-動的な一覧更新でも、この2件は既存OpenAI/OpenCodeモデルと共存します。
+動的な一覧更新でも、これらの手動モデルは既存OpenAI/OpenCodeモデルと共存します。
 
 通常の`codex`でも古い一覧が出る場合、画面が既存の共有app-serverへ再接続している可能性があります。
 `scripts/codex_fresh.py`は通常起動・prompt付き起動・`resume`・`fork`へ公式`--no-daemon`を付け、最新設定を読む専用serverを使います。
@@ -632,7 +635,7 @@ Herdrを開き直しても以前のシェルが残る場合があります。そ
 また、初回turn前の未保存liveセッションは別serverへ`resume`できません。`ephemeral=false`や共有serverの`thread/read`成功だけでは保存済みの証拠になりません。
 該当IDを別の会話へ置き換えたり、保存のためにダミー発言を送ったりせず、保存状態と一覧の問題を分けて確認してください。
 
-この2件の手動指定では、APIキー未登録は`provider_key_required`で止まります。認証失敗・429・利用枠切れでも他社へ切り替えません。
+これらの手動指定では、APIキー未登録は`provider_key_required`で止まります。認証失敗・429・利用枠切れでも他社へ切り替えません。
 履歴引き継ぎ/圧縮だけは既存のOpenAI要約経路を使い、その後の通常要求は選択したサービスへ戻ります。
 最新依頼・指示・未完了ツール・schemaを保持し、既存の入力予算と分割要約を適用します。
 新しいChat経路も会話単位の40要求/分の制限と、routerの300秒/転送byte制限に従います。

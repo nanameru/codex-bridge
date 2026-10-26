@@ -85,7 +85,8 @@ class ManualProvidersTests(unittest.TestCase):
 const server=createRouter({catalog:{models:[{slug:'gpt-test',router_provider:'openai'}]},manualProvidersEnabled:true});
 server.listen(0,'127.0.0.1',async()=>{try{
 const health=await(await fetch('http://127.0.0.1:'+server.address().port+'/health')).json();
-if(!health.model_ids.includes('commandcode/deepseek-v4.1-flash')||!health.model_ids.includes('ollama/deepseek-v4.1-flash'))process.exitCode=1;
+for(const id of ['commandcode/moonshotai/Kimi-K3.1-Pro','commandcode/deepseek-v4.1-flash','ollama/deepseek-v4.1-flash']){
+if(!health.model_ids.includes(id))throw new Error('packaged runtime missing '+id);}
 }finally{server.closeAllConnections();server.close();}});"""
             subprocess.run(["node", "--input-type=module", "-e", program, (runtime / "model-router.mjs").as_uri()], check=True, timeout=15)
 

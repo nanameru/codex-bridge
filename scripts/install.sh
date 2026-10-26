@@ -20,10 +20,7 @@ NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
 [ "$NODE_MAJOR" -ge 20 ] || { echo "Node.js 20 以上が必要です（現在 $(node -v)）"; exit 1; }
 echo "node $(node -v): OK"
 
-if ! command -v sqlite3 >/dev/null 2>&1; then
-  echo "注意: sqlite3 が無いため、OpenCode の OAuth トークンは読めません"
-  echo "      OPENCODE_API_KEY を環境変数で渡してください"
-fi
+echo "上流認証には公式APIキーを使います。ログインDBやOAuth情報は取り出しません。"
 
 echo
 echo "== 2. モデルカタログ生成 =="
@@ -34,6 +31,12 @@ node make-catalog.mjs
 echo
 echo "== 3. 起動 =="
 cat <<EOF
+Kimi・DeepSeekを通常のcodexコマンドと/modelで使う場合:
+
+  $ROOT/docs/distribution-setup.md
+
+以下は単体OpenCodeブリッジの起動方法です:
+
 別ターミナルで:
 
   cd $ROOT/src && node codex-bridge.mjs

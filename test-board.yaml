@@ -12,10 +12,10 @@ cases:
     status: done
     priority: high
     type: regression
-    source: [src/manual-providers.mjs, src/model-router.mjs, scripts/install_fresh_cli.py]
+    source: [src/manual-providers.mjs, src/model-router.mjs, scripts/install_fresh_cli.py, scripts/unified_config.py]
     test_file: test/manual-providers.test.mjs
     issues: [120]
-    notes: "test/test_install_fresh_cli.pyとtest/manual-providers-e2e.py併用。実/modelにKimi/DeepSeekを確認。新8791経路で各HTTP200、実Codexでも両モデルcompleted/OK。旧8790は既存通信のため保持。docs/kimi-deepseek-rollout.md参照。"
+    notes: "test/test_install_fresh_cli.pyとtest/manual-providers-e2e.py併用。実/modelにKimi/DeepSeekを確認。新8791経路で各HTTP200、実Codexでも両モデルcompleted/OK。旧8790は既存通信のため保持。Kimiを含む共有cacheからのprepare再生成と配布runtimeの一覧も検証。docs/kimi-deepseek-rollout.mdとdocs/distribution-setup.md参照。"
   - id: TC-100
     title: "通常のcodex起動で最新モデル一覧を表示する"
     feature: "CLIの設定再読込"

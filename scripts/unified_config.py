@@ -127,7 +127,11 @@ def prepare(root, source_root):
         if isinstance(cached_slug, str) and cached_slug.startswith(("opencode/", "commandcode/", "ollama/", "auto-commandcode/", "auto-ollama/", "auto-whatstoken/")):
             # Dynamic discovery stores the combined list in Codex's shared cache.
             # Rebuild external routes from their own source, never as native GPT routes.
-            checked_slug(cached_slug.split("/", 1)[1])
+            # Provider model IDs may include an organization, e.g.
+            # commandcode/moonshotai/Kimi-K3.1-Pro. Validate each component
+            # before excluding external cache entries from the native catalog.
+            for component in cached_slug.split("/")[1:]:
+                checked_slug(component)
             continue
         slug = checked_slug(model.get("slug"))
         if slug.startswith("opencode/"):
