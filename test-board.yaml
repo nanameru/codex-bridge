@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-106
+    title: "配布先の本人認証をfileとmacOS Keychainから解決する"
+    feature: "配布版の認証と401診断"
+    scenario: "別ホームの分離・file/keyring/auto・Keychain更新・安全な権限・期限切れ・401案内・secret非出力と非転送"
+    status: done
+    priority: high
+    type: regression
+    source: [src/local-security.mjs, src/auth-doctor.mjs, src/model-router.mjs, scripts/secure_local.py, scripts/install.sh]
+    test_file: test/distribution-auth.test.mjs
+    issues: [130, 41, 120]
+    notes: "Codex 0.164.0の標準direct Keychainのservice/accountに合わせる。実Keychainや課金APIは変更せず、一時ホーム・模擬Keychain・HTTP router・診断CLIで検証。配布先実機は別途確認が必要。"
   - id: TC-105
     title: "remote compactionの容量を実際のOpenAI転送形式で判定する"
     feature: "圧縮後の413回復"

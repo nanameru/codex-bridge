@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+codex_root="${CODEX_HOME:-$HOME/.codex}"
 
 echo "== 1. 環境確認 =="
 if ! command -v node >/dev/null 2>&1; then
@@ -20,11 +20,17 @@ NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
 [ "$NODE_MAJOR" -ge 20 ] || { echo "Node.js 20 以上が必要です（現在 $(node -v)）"; exit 1; }
 echo "node $(node -v): OK"
 
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import tomllib' >/dev/null 2>&1; then
+  echo "Python 3.11以上が必要です（Codexの設定解析に使います）" >&2; exit 1
+fi
+echo "利用者本人のCodex認証を確認します（外部通信・認証情報の表示なし）。"
+node "$ROOT/src/auth-doctor.mjs" --root "$codex_root"
+
 echo "上流認証には公式APIキーを使います。ログインDBやOAuth情報は取り出しません。"
 
 echo
 echo "== 2. モデルカタログ生成 =="
-mkdir -p "$CODEX_HOME"
+mkdir -p "$codex_root"
 cd "$ROOT/src"
 node make-catalog.mjs
 

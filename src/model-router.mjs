@@ -13,7 +13,7 @@ import { ToolSearchError } from "./tool-search.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 import { toolRecoveryPlan, recoverWithAnswer, answerOnlyStream } from "./tool-recovery.mjs";
 import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFailure } from "./handoff-status.mjs";
-import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION } from "./local-security.mjs";
+import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION, LOCAL_AUTH_HELP } from "./local-security.mjs";
 import { createRequestGuard } from "./request-guard.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
 import { CHAT_PROVIDERS, KIMI_MODEL, KIMI_SLUG, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
@@ -305,7 +305,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     }
     if (request.method === "GET" && path === "/codex/models" && catalogProvider) {
       if (!/^Bearer \S+$/i.test(request.headers.authorization ?? "") || !authenticate(request)) {
-        fail(response, 401, "authentication_required", "Codexのログイン認証が必要です"); return;
+        fail(response, 401, "authentication_required", LOCAL_AUTH_HELP); return;
       }
       const version = new URL(request.url, "http://127.0.0.1").searchParams.get("client_version");
       if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) {
@@ -334,7 +334,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       return;
     }
     if (!/^Bearer \S+$/i.test(request.headers.authorization ?? "") || !authenticate(request)) {
-      fail(response, 401, "authentication_required", "Codexのログイン認証を有効にして接続し直してください");
+      fail(response, 401, "authentication_required", LOCAL_AUTH_HELP);
       return;
     }
     const abort = new AbortController();

@@ -1,6 +1,5 @@
 """Safe local service operations. No inference, credential printing, or conversation edits."""
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -21,15 +20,11 @@ LEGACY_LABEL = "com.kimurataiyou.codex-bridge"
 
 
 def check_credentials(root):
-    auth = json.loads(private_read(root, "auth.json"))
-    if not (auth.get("tokens", {}).get("access_token") or auth.get("OPENAI_API_KEY")):
-        raise ValueError("本人のCodex認証ファイルが必要です（keychainのみの保存は未対応）")
-    token = auth.get("tokens", {}).get("access_token")
-    if token and len(token.split(".")) == 3:
-        segment = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-        if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] <= time.time():
-            raise ValueError("Codex認証の期限が切れています")
+    # Share the exact runtime resolver, including macOS Keychain. Never copy tokens.
+    result = subprocess.run(["node", str(ROOT / "src/auth-doctor.mjs"), "--root", str(root)],
+                            text=True, capture_output=True, timeout=10)
+    if result.returncode != 0:
+        raise ValueError("本人のCodex認証を確認できません。node src/auth-doctor.mjsで診断してください")
 
 
 def check_opencode_credentials():
