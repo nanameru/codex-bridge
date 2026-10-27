@@ -49,7 +49,7 @@ async function fixture(context, options = {}) {
   const gate = deferred();
   const calls = [];
   let summarySignal;
-  const server = createRouter({ catalog, summaryModel: "gpt-test", handoffStatusDelayMs: 1,
+  const server = createRouter({ catalog, historyMode: "openai", summaryModel: "gpt-test", handoffStatusDelayMs: 1,
     allowTestOrigins: true, nativeBase: "http://127.0.0.1:9999/v1", authenticate: () => true,
     bridgeKey: () => "internal-test-key", timeoutMs: 3000,
     fetcher: async (url, args) => {
@@ -101,11 +101,12 @@ test("App/CLI progress arrives while summary is pending; response IDs, indexes a
   const done = stream.at(-1);
   assert.equal(done.type, "response.completed");
   assert.equal(done.response.id, stream[0].response.id);
-  assert.equal(done.response.output.length, 2);
+  assert.equal(done.response.output.length, 3);
   assert.ok(isHandoffStatusItem(done.response.output[0]));
-  assert.equal(done.response.output[1].id, "msg_upstream");
+  assert.equal(done.response.output[2].id, "msg_upstream");
+  assert.match(done.response.output[1].content[0].text, /OpenAIにも送信/);
   assert.match(done.response.output[0].summary[0].text, /履歴変換完了/);
-  assert.equal(stream.find((e) => e.type === "response.output_item.done" && e.item.id === "msg_upstream").output_index, 1);
+  assert.equal(stream.find((e) => e.type === "response.output_item.done" && e.item.id === "msg_upstream").output_index, 2);
   assert.equal(calls[1].headers.authorization, undefined);
   assert.equal(done.response.output[0].type, "reasoning");
   assert.equal(stream.some(e => e.type === "response.output_text.delta" && e.item_id === done.response.output[0].id), false);
@@ -116,7 +117,7 @@ test("cache hits, immediate handoffs and native requests do not inject status", 
   const { gate, send, calls } = await fixture(context, { router: { handoffStatusDelayMs: 50 } });
   gate.resolve();
   for (const body of [requestBody, requestBody, { model: "gpt-test", stream: true, input: [{ role: "user", content: "native" }] }]) {
-    assert.doesNotMatch(await (await send(body)).text(), /rs_bridge_handoff_|msg_bridge_handoff_/);
+    assert.doesNotMatch(await (await send(body)).text(), /rs_bridge_handoff_|msg_bridge_handoff_(?!provider_)/);
   }
   assert.equal(calls.filter((c) => c.body.instructions?.startsWith("Produce only")).length, 1);
 });
@@ -168,7 +169,7 @@ test("split UTF-8 SSE and JSON upstreams preserve final model text", { timeout: 
     gate.resolve();
     const stream = events(first.text + await remainder(first.reader));
     assert.equal(stream.at(-1).type, "response.completed");
-    assert.equal(stream.at(-1).response.output[1].content[0].text, options.split ? "日本語の応答" : "ANSWER");
+    assert.equal(stream.at(-1).response.output[2].content[0].text, options.split ? "日本語の応答" : "ANSWER");
   }
 });
 
@@ -213,11 +214,11 @@ test("status does not alter custom tool arguments, call IDs or response ordering
   const stream = events(first.text + await remainder(first.reader));
   const output = stream.at(-1).response.output;
   assert.ok(isHandoffStatusItem(output[0]));
-  assert.equal(output[1].type, "custom_tool_call");
-  assert.equal(output[1].call_id, "probe");
-  assert.equal(output[1].input, "printf check");
-  assert.equal(output[1].id, "ctc_probe");
-  assert.equal(stream.find((e) => e.type === "response.output_item.done" && e.item.id === "ctc_probe").output_index, 1);
+  assert.equal(output[2].type, "custom_tool_call");
+  assert.equal(output[2].call_id, "probe");
+  assert.equal(output[2].input, "printf check");
+  assert.equal(output[2].id, "ctc_probe");
+  assert.equal(stream.find((e) => e.type === "response.output_item.done" && e.item.id === "ctc_probe").output_index, 2);
 });
 
 test("one shared client may cancel without cancelling the remaining status waiter", { timeout: 5000 }, async (context) => {

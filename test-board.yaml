@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-107
+    title: "履歴モードを明示選択し外部モデルの補助要約をOpenAIへ迂回させない"
+    feature: "選択モデルでの元ログ再要約と注意書き"
+    scenario: "既定selected・openai明示・ask停止・元ログ復元/欠落/巻き戻し・DeepSeek/Kimi認証分離・キャッシュと原本不変"
+    status: done
+    priority: high
+    type: regression
+    source: [src/history-mode.mjs, src/rollout-history.mjs, src/model-router.mjs, src/compaction-handoff.mjs, scripts/install_router_service.py]
+    test_file: test/history-mode.test.mjs
+    issues: [132, 43, 57, 130]
+    notes: "架空ログと模擬APIでOpenAI要求0件を確認する。実API・課金・本番会話の移行は行わない。既存remote compaction会話はselected/askで迂回を拒否し設定案内を出す。"
   - id: TC-106
     title: "配布先の本人認証をfileとmacOS Keychainから解決する"
     feature: "配布版の認証と401診断"

@@ -13,7 +13,7 @@ const answer = () => Response.json({ choices: [{ index: 0, message: { role: 'ass
 async function fixture(t, extra = {}) {
   const calls = [];
   const fetcher = async (url, options) => { calls.push({ url, ...options, body: JSON.parse(options.body) }); return answer(); };
-  const server = createRouter({ catalog, manualProvidersEnabled: true, authenticate: () => true,
+  const server = createRouter({ historyMode: "openai", catalog, manualProvidersEnabled: true, authenticate: () => true,
     manualKey: p => p + '-key', bridgeKey: () => 'bridge-key', fetcher, ...extra });
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   const base = `http://127.0.0.1:${server.address().port}`;

@@ -119,7 +119,7 @@ test('retry body read failures terminate safely instead of escaping as unhandled
 
 test('encrypted history expansion keeps the recovery instruction after recent user/tool history',async context=>{
  const sent=[];
- const router=createRouter({authenticate:()=>true,bridgeKey:()=> 'test',summaryModel:'gpt-test',catalog:{models:[{slug:'opencode/test',router_provider:'opencode'},{slug:'gpt-test',router_provider:'openai'}]},fetcher:async(_url,options)=>{
+ const router=createRouter({historyMode:'openai',authenticate:()=>true,bridgeKey:()=> 'test',summaryModel:'gpt-test',catalog:{models:[{slug:'opencode/test',router_provider:'opencode'},{slug:'gpt-test',router_provider:'openai'}]},fetcher:async(_url,options)=>{
   const body=JSON.parse(options.body);
   if(!body.instructions?.startsWith('Produce only'))sent.push(body);
   return Response.json({status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'OK'}]}]});

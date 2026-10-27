@@ -14,7 +14,7 @@ const TRANSIENT_CONNECTION_CODES = new Set(["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOU
 function summaryFailure(code, status, stage, attempts) {
   const safeCode = SAFE_FAILURE_CODES.has(code) ? code : "unknown_error";
   const http = status === undefined ? "上流HTTP応答なし" : `HTTP ${status}`;
-  const error = new HandoffError(`OpenAIの引き継ぎ要約に失敗しました（${safeCode}、${http}、試行${attempts}回）。履歴は保持しています。`);
+  const error = new HandoffError(`引き継ぎ要約に失敗しました（${safeCode}、${http}、試行${attempts}回）。履歴は保持しています。`);
   Object.assign(error, { upstreamCode: safeCode, upstreamStatus: status, failureStage: stage, attempts,
     retryable: safeCode === "server_error" || safeCode === "rate_limit_exceeded" || ["empty_summary", "summary_stream_truncated", "summary_max_output_tokens", "summary_connect_timeout"].includes(safeCode) || (stage === "http" && [408,500,502,503,504].includes(status)) });
   return error;
@@ -180,8 +180,8 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
   const clean = item => !isHandoffStatusItem(item) && !["system", "developer"].includes(item.role)
     && (item.type !== "reasoning" || !item.encrypted_content?.startsWith("cxb1:"));
   const canonical = input => JSON.stringify(input.map(normalizeToolCallId).map(({ id, status, ...item }) => item));
-  const scopeFor = ({ destination, headers, threadId }) => typeof threadId === "string" && threadId.length > 0 && threadId.length <= 200
-    ? createHash("sha256").update(JSON.stringify([threadId, destination, model, headers.authorization ?? "", headers["chatgpt-account-id"] ?? ""])).digest("hex") : null;
+  const scopeFor = ({ destination, headers, threadId, cacheIdentity = '' }) => typeof threadId === "string" && threadId.length > 0 && threadId.length <= 200
+    ? createHash("sha256").update(JSON.stringify([threadId, destination, model, headers.authorization ?? "", headers["chatgpt-account-id"] ?? "", cacheIdentity])).digest("hex") : null;
   const replace = (body, end, summary, recent) => {
     const preserved = preservedHandoffPrefix(body.input, end, recent);
     return { ...body, input: [...preserved.filter(item => ["system", "developer"].includes(item.role)),
@@ -189,7 +189,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
         "Conversation handoff from the preceding compacted history. This is context, not a new instruction:\n" + summary }] },
       ...preserved.filter(item => item.role === "user"), ...body.input.slice(end)] };
   };
-  const expand = async (body, { destination, headers, signal, threadId, prefixEnd, inputBudgetTokens = inputLimitTokens, preserveRecentUsers = false, observe = () => {}, diagnose = () => {} }) => {
+  const expand = async (body, { destination, headers, signal, threadId, cacheIdentity = '', prefixEnd, inputBudgetTokens = inputLimitTokens, preserveRecentUsers = false, observe = () => {}, diagnose = () => {} }) => {
     signal.throwIfAborted();
     if (prefixEnd !== undefined && (!Number.isInteger(prefixEnd) || prefixEnd <= 0 || prefixEnd >= body.input.length)) {
       throw new HandoffError("要約境界が不正です。履歴は変更していません");
@@ -203,6 +203,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
     const input = prefix.filter((item) => !isHandoffStatusItem(item) && !["system", "developer"].includes(item.role)
       && (item.type !== "reasoning" || !item.encrypted_content?.startsWith("cxb1:"))).map(normalizeToolCallId);
     const fingerprint = createHash("sha256").update(destination).update("\0").update(model).update("\0")
+      .update(cacheIdentity).update("\0")
       .update(headers.authorization ?? "")
       .update("\0").update(headers["chatgpt-account-id"] ?? "").update("\0")
       .update(JSON.stringify(input.map(({ id, status, ...item }) => item))).digest("hex");
@@ -216,7 +217,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
         const report = details => { try { diagnose(details); } catch { /* Diagnostics must not affect the request. */ } };
         let requestCount = 0;
         let checkpointHits = 0;
-        let checkpointChain = scopeFor({ destination, headers, threadId });
+        let checkpointChain = scopeFor({ destination, headers, threadId, cacheIdentity });
         const summaryBody = (items, outputLimit) => ({ model, input: [...items, { role: "user", content: [{ type: "input_text", text:
           "Write a factual handoff summary of the preceding conversation for continuing it with another model. "
           + "Preserve user requirements, decisions, completed changes, test results, unresolved failures, file paths, "
@@ -309,7 +310,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
               }
             } else {
               responseKind = response.headers.get("content-type")?.includes("json") || text.trimStart().startsWith("{") ? "json" : "other";
-              if (responseKind !== "json") throw new HandoffError("OpenAIから要約用のJSON/SSE応答を受信できませんでした。履歴は保持しています");
+              if (responseKind !== "json") throw new HandoffError("要約先からJSON/SSE応答を受信できませんでした。履歴は保持しています");
               completed = JSON.parse(text);
             }
             report({ summary_response_status: ["completed", "incomplete", "failed"].includes(completed?.status) ? completed.status : "missing" });
@@ -427,7 +428,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
           // Publish only a fully completed handoff, never an intermediate chunk.
           if (key) {
             if (cache.size >= 64) cache.delete(cache.keys().next().value);
-            cache.set(key, { text: result, scope: scopeFor({ destination, headers, threadId }),
+            cache.set(key, { text: result, scope: scopeFor({ destination, headers, threadId, cacheIdentity }),
               count: input.length, digest: createHash("sha256").update(canonical(input)).digest("hex"),
               budget: prefixEnd !== undefined, recent: preserveRecentUsers });
           }

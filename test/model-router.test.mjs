@@ -42,7 +42,7 @@ async function fixture(context, options = {}) {
   const bridge = upstream("opencode");
   const nativeBase = await listen(native);
   const bridgeBase = await listen(bridge);
-  const router = createRouter({ catalog, nativeBase, bridgeBase, openCodeBase: bridgeBase,
+  const router = createRouter({ catalog, historyMode: "openai", nativeBase, bridgeBase, openCodeBase: bridgeBase,
     openCodeKey: () => "fake-opencode-key", allowTestOrigins: true, allowDirectResponses: true,
     authenticate: () => true, bridgeKey: () => "test-internal-key", ...options });
   const base = await listen(router);
@@ -172,7 +172,7 @@ test("direct Responses preserves native custom events, normalizes phases, and ne
     }
     assert.equal(count, 1);
   }
-  assert.throws(() => createRouter({ catalog, openCodeBase: "https://example.org/v1" }), /公式origin/);
+  assert.throws(() => createRouter({ catalog, historyMode: "openai", openCodeBase: "https://example.org/v1" }), /公式origin/);
 });
 
 test("routes both switching directions without changing thread metadata or messages", async (context) => {
@@ -281,9 +281,9 @@ test("never follows redirects carrying native credentials", async (context) => {
 });
 
 test("rejects external native or bridge targets", () => {
-  assert.throws(() => createRouter({ catalog, nativeBase: "https://example.com" }));
-  assert.throws(() => createRouter({ catalog, bridgeBase: "https://example.com" }));
-  assert.throws(() => createRouter({ catalog, bridgeBase: "http://127.0.0.1:1@evil.example" }));
+  assert.throws(() => createRouter({ catalog, historyMode: "openai", nativeBase: "https://example.com" }));
+  assert.throws(() => createRouter({ catalog, historyMode: "openai", bridgeBase: "https://example.com" }));
+  assert.throws(() => createRouter({ catalog, historyMode: "openai", bridgeBase: "http://127.0.0.1:1@evil.example" }));
 });
 
 test("refuses provider-specific continuation IDs and oversized bodies", async (context) => {
@@ -433,7 +433,7 @@ test("wire and decoded request limits remain finite with inclusive boundaries", 
   }
   assert.ok(calls.length >= 3);
   assert.ok(metrics.filter(m => m.status === 413).every(m => ["wire_bytes", "decoded_bytes"].includes(m.input_limit_reason)));
-  for (const maxRequestBytes of [0, Infinity, NaN, 999]) assert.throws(() => createRouter({ catalog, maxBytes: 1000, maxRequestBytes }));
+  for (const maxRequestBytes of [0, Infinity, NaN, 999]) assert.throws(() => createRouter({ catalog, historyMode: "openai", maxBytes: 1000, maxRequestBytes }));
 });
 
 test("byte recovery can summarize completed image tools within one turn without losing steering or pending calls", async context => {
