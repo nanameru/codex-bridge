@@ -241,7 +241,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   providerFallbackState, providerFallbackFile = join(codexRoot, "provider-fallback-state.json"),
   providerFallbackCooldownMs = envLimit("CODEX_PROVIDER_FALLBACK_COOLDOWN_MS", 300000),
   autoProviderFallback = manualProvidersEnabled && process.env.CODEX_AUTO_PROVIDER_FALLBACK !== "0",
-  summaryModel = "gpt-6.1-sol", summaryInputLimitTokens = 200000, onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
+  summaryModel = "gpt-6-luna", summaryInputLimitTokens = 200000, onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
@@ -294,7 +294,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     if (request.method === "GET" && path === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
-        live_catalog: Boolean(catalogProvider),
+        live_catalog: Boolean(catalogProvider), summary_model: summaryModel,
         whatstoken_free: { enabled: whatstokenFreeEnabled, configured: Boolean(manualKey('whatstoken')) },
         request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxBytes },
         history_transport: allowDirectResponses ? "model" : "chat",
@@ -485,11 +485,12 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.input_bytes = Array.isArray(body.input) ? Buffer.byteLength(JSON.stringify(body.input)) : 0;
       // Codex remote compaction v2 sends a normal Responses request ending in
       // compaction_trigger and requires one compaction output item. The Chat
-      // conversion cannot produce that wire item, so use the native summary
-      // model for this request while the surrounding turn keeps its selection.
-      const remoteCompaction = route.provider !== "openai" && !directResponses && path === "/v1/responses"
+      // conversion cannot produce that wire item. Use the low-cost native summary
+      // model for compaction, including GPT chats, without changing their selection.
+      const remoteCompaction = !directResponses && path === "/v1/responses"
         && Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger");
-      if (remoteCompaction) {
+      const nativeCompactEndpoint = !directResponses && route.provider === "openai" && path === "/v1/responses/compact";
+      if (remoteCompaction || nativeCompactEndpoint) {
         const summaryRoute = routes.get(summaryModel);
         if (summaryRoute?.provider !== "openai") {
           fail(response, 422, "remote_compaction_model_required", "remote compactionに使えるOpenAIモデルがカタログにありません");
@@ -503,7 +504,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         // Budget the native wire representation. Bridge reasoning is never sent
         // to OpenAI, so retaining it here can falsely reject a completed summary
         // or trigger an unnecessary extra model call before the final routing.
-        body = routedBody({ ...body, model: summaryModel, tools: [], tool_choice: "none" }, summaryRoute, maxRequestBytes);
+        body = routedBody({ ...body, model: summaryModel, ...(remoteCompaction ? { tools: [], tool_choice: "none" } : {}) }, summaryRoute, maxRequestBytes);
       }
       if (route.provider !== "openai" && !directResponses && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");

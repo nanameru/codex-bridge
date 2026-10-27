@@ -79,7 +79,7 @@ test("remote compaction trigger uses the native model instead of Chat conversion
 });
 
 test("remote compaction fails safely without a native summary model", async context => {
-  const { calls, send } = await fixture(context);
+  const { calls, send } = await fixture(context, { summaryModel: undefined });
   const response = await send({ model: "opencode/deepseek-test",
     input: [{ role: "user", content: "continue" }, { type: "compaction_trigger" }] });
   assert.equal(response.status, 422);
@@ -204,7 +204,7 @@ test("never forwards native authentication or account headers to OpenCode", asyn
 });
 
 test("repairs persisted legacy custom IDs before native responses and remote compaction", async (context) => {
-  const { calls, base, send } = await fixture(context);
+  const { calls, base, send } = await fixture(context, { summaryModel: "gpt-test" });
   const input = [
     { type: "custom_tool_call", id: "fc_2020be0e36634c26", call_id: "call_original", name: "apply_patch", input: "patch" },
     { type: "custom_tool_call_output", call_id: "call_original", output: "ok" },
@@ -1354,5 +1354,58 @@ test("aborting an incomplete request body is classified as client input cancella
   const metric = await recorded;
   assert.equal(metric.outcome, 'aborted');
   assert.equal(metric.termination_reason, 'client_request_aborted');
+  assert.equal(calls.length, 0);
+});
+
+
+test("default Luna handles compaction and handoff while each chat keeps its model", async context => {
+  const { calls, base, send } = await fixture(context, { summaryModel: undefined, catalog: { models: [
+    ...catalog.models, { slug: "gpt-6-luna", router_provider: "openai", context_window: 272000 },
+  ] }, upstreamResponse: async ({ provider, response, body }) => {
+    if (provider !== "openai" || !body.instructions?.startsWith("Produce only")) return false;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ status: "completed", output: [{ type: "message", role: "assistant",
+      content: [{ type: "output_text", text: "Project facts preserved." }] }] }));
+    return true;
+  } });
+  for (const model of ["gpt-test", "opencode/deepseek-test"]) {
+    const input = [{ role: "user", content: "Keep the project facts." }, { type: "compaction_trigger" }];
+    const original = structuredClone(input);
+    const res = await send({ model, input });
+    assert.equal(res.status, 200, await res.text());
+    assert.equal(calls.at(-1).body.model, "gpt-6-luna");
+    assert.equal(calls.at(-1).provider, "openai");
+    assert.deepEqual(input, original);
+    await (await send({ model, input: [{ role: "user", content: "continue" }] })).text();
+    assert.equal(calls.at(-1).body.model, model === "gpt-test" ? model : "deepseek-test");
+  }
+  const compact = await fetch(base + "/responses/compact", { method: "POST", headers: {
+    authorization: "Bearer fake-native-token", "content-type": "application/json",
+  }, body: JSON.stringify({ model: "gpt-test", tools: [{ type: "function", name: "project_tool", parameters: { type: "object" } }], input: [{ role: "user", content: "Keep facts." }] }) });
+  assert.equal(compact.status, 200, await compact.text());
+  assert.equal(calls.at(-1).body.model, "gpt-6-luna");
+  assert.equal(calls.at(-1).body.tools[0].name, "project_tool");
+  const health = await (await fetch(base.replace(/\/v1$/, "") + "/health")).json();
+  assert.equal(health.summary_model, "gpt-6-luna");
+  const res = await send({ model: "opencode/deepseek-test", input: [
+    { type: "compaction", encrypted_content: "native-opaque" }, { role: "user", content: "continue" },
+  ] });
+  assert.equal(res.status, 200, await res.text());
+  assert.equal(calls.at(-2).body.model, "gpt-6-luna");
+  assert.equal(calls.at(-1).body.model, "deepseek-test");
+});
+
+test("missing Luna never silently uses available expensive Sol for compaction", async context => {
+  const { calls, base, send } = await fixture(context, { summaryModel: undefined, catalog: { models: [
+    ...catalog.models, { slug: "gpt-6.1-sol", router_provider: "openai" },
+  ] } });
+  for (const model of ["gpt-test", "opencode/deepseek-test"]) {
+    const res = await send({ model, input: [{ role: "user", content: "continue" }, { type: "compaction_trigger" }] });
+    assert.equal(res.status, 422, await res.text());
+  }
+  const res = await fetch(base + "/responses/compact", { method: "POST", headers: {
+    authorization: "Bearer fake-native-token", "content-type": "application/json",
+  }, body: JSON.stringify({ model: "gpt-test", input: [{ role: "user", content: "continue" }] }) });
+  assert.equal(res.status, 422, await res.text());
   assert.equal(calls.length, 0);
 });
