@@ -62,7 +62,7 @@ python3 scripts/secure_local.py doctor
 ```
 
 - `owner_credentials`: `codex login`の状態とファイル所有権・権限を確認します。
-  `auth.json`の内容をIssueやチャットへ貼らないでください。認証形式がkeychainのみなら、この接続方式は利用できません。
+  `auth.json`の内容をIssueやチャットへ貼らないでください。`file`・macOS Keychainの標準direct方式・`auto`に対応します。詳細は`node src/auth-doctor.mjs`で確認します。両サービスとCodexで同じユーザー・`CODEX_HOME`・認証保存方式を使います。
 - `private_bridge_key`: 内部鍵の安全な所有権・権限を確認します。未作成なら`prepare-key`で作成できます。
   既存の不正ファイルを自動上書きしたり、勝手に鍵をローテーションしたりはしません。
 - `opencode_api_credentials`: OpenCode Goの保存済みAPI設定と所有権・権限を確認します。
