@@ -21,8 +21,11 @@ LEGACY_LABEL = "com.kimurataiyou.codex-bridge"
 
 def check_credentials(root):
     # Share the exact runtime resolver, including macOS Keychain. Never copy tokens.
-    result = subprocess.run(["node", str(ROOT / "src/auth-doctor.mjs"), "--root", str(root)],
-                            text=True, capture_output=True, timeout=10)
+    try:
+        result = subprocess.run(["node", str(ROOT / "src/auth-doctor.mjs"), "--root", str(root)],
+                                text=True, capture_output=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        raise ValueError("本人認証の診断がタイムアウトしました。認証保存先を確認してください") from None
     if result.returncode != 0:
         raise ValueError("本人のCodex認証を確認できません。node src/auth-doctor.mjsで診断してください")
 

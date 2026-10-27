@@ -26,7 +26,7 @@ fi
 echo "利用者本人のCodex認証を確認します（外部通信・認証情報の表示なし）。"
 node "$ROOT/src/auth-doctor.mjs" --root "$codex_root"
 
-echo "上流認証には公式APIキーを使います。ログインDBやOAuth情報は取り出しません。"
+echo "OpenCodeへの上流認証には公式APIキーを使います。OpenCodeのログインDBやOAuth情報は取り出しません。"
 
 echo
 echo "== 2. モデルカタログ生成 =="

@@ -122,7 +122,7 @@ export function diagnoseCodexAuth(root = codexRoot(), options) {
   return { ok: auth !== null, store, reason };
 }
 
-export const LOCAL_AUTH_HELP = "利用者本人のCodex認証を確認できません。CodexとBridgeのCODEX_HOME・認証保存方式・有効期限・ファイル権限を確認してください。配布元の認証情報は不要です。診断: node src/auth-doctor.mjs";
+export const LOCAL_AUTH_HELP = "利用者本人のCodex認証を確認できません。CodexとBridgeのCODEX_HOME・認証保存方式・有効期限・ファイル権限を確認してください。配布元の認証情報は不要です。Bridgeリポジトリで診断: node src/auth-doctor.mjs";
 
 export function authenticateCodex(request, root = codexRoot(), options) {
   const bearer = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
