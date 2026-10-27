@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createRouterDiagnostics, transportErrorCodes, observeRouterProcess } from "./router-diagnostics.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import { Readable, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -47,6 +48,7 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./usage.mjs", import.meta.url)))
   .update(readFileSync(new URL("./upstream-options.mjs", import.meta.url)))
   .update(readFileSync(new URL("./request-guard.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./router-diagnostics.mjs", import.meta.url)))
   .update(readFileSync(new URL("./models.json", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
@@ -241,7 +243,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   providerFallbackState, providerFallbackFile = join(codexRoot, "provider-fallback-state.json"),
   providerFallbackCooldownMs = envLimit("CODEX_PROVIDER_FALLBACK_COOLDOWN_MS", 300000),
   autoProviderFallback = manualProvidersEnabled && process.env.CODEX_AUTO_PROVIDER_FALLBACK !== "0",
-  summaryModel = "gpt-6.1-sol", summaryInputLimitTokens = 200000, onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
+  summaryModel = "gpt-6.1-sol", summaryInputLimitTokens = 200000, onMetric = () => {}, diagnostics = createRouterDiagnostics(), handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
@@ -285,6 +287,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       throw new Error("OpenAI認証の転送先は公式originに限定されます");
     }
   }
+  let activeRequests = 0;
   const server = http.createServer(async (request, response) => {
     if (localRequestError(request)) {
       fail(response, 403, "local_request_required", "本人用loopback CLI接続だけを受け付けます");
@@ -355,6 +358,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     const started = performance.now();
     const metric = { event: "router_request", request_id: randomUUID(), path,
       summary_cache: "unused", summary_ms: 0, stage: "input", received_bytes: 0, response_bytes: 0 };
+    activeRequests++;
+    let threadRef = diagnostics.threadRef(request.headers.session_id);
+    let requestKind = nativeTool ? "native_tool" : path.endsWith("/compact") ? "remote_compaction" : "normal";
+    const checkpoint = event => diagnostics.record(event, { ...metric, thread_ref: threadRef, request_kind: requestKind });
+    checkpoint("router_request_started");
     try {
       const chunks = [];
       let size = 0;
@@ -399,6 +407,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 400, "invalid_request", "toolsまたはinputの形式が不正です");
         return;
       }
+      threadRef ??= diagnostics.threadRef(body.client_metadata?.thread_id);
+      if (Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger")) requestKind = "remote_compaction";
+      checkpoint("router_request_decoded");
       let route = nativeTool ? { provider: "openai" } : routes.get(body.model);
       // A session may retain its automatic ID after the feature is disabled.
       if (!route && !whatstokenFreeEnabled && body.model === autoManualSlug('whatstoken'))
@@ -608,6 +619,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             return;
           }
           metric.stage = "remote_compaction_handoff";
+          checkpoint("router_request_upstream");
           body = await expandCompaction(body, { ...handoffOptions, ...plan });
           metric.remote_compaction_prepared = true;
         }
@@ -653,6 +665,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           return;
         }
         metric.stage = "handoff";
+        checkpoint("router_request_upstream");
         const summaryStart = performance.now();
         try {
           const threshold = softLimitTokens > 0
@@ -691,6 +704,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           if (prefixEnd > 0 && prefixEnd < body.input.length) {
             if (minimum < hardLimitTokens && minimumBytes < maxBytes && routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization) {
               metric.stage = "budget_handoff";
+              checkpoint("router_request_upstream");
               if (plan.preserveRecentUsers) metric.budget_intra_turn = true;
               const summaryStart = performance.now();
               try {
@@ -771,6 +785,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         }
       };
       await syncSelection();
+      checkpoint("router_request_upstream");
       let upstream = await send(destination.replace(/\/$/, "") + suffix, {
         method: "POST", headers, body: routed,
         signal: abort.signal, redirect: "manual",
@@ -882,6 +897,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       metric.upstream_headers_ms = Math.round(performance.now() - upstreamStart);
       metric.upstream_status = upstream.status;
+      checkpoint("router_request_headers");
       if (upstream.status >= 300 && upstream.status < 400) {
         await upstream.body?.cancel();
         fail(response, 502, "upstream_redirect", "転送先のリダイレクトを拒否しました");
@@ -976,10 +992,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.stage = "complete";
     } catch (error) {
       terminationReason ??= metric.stage === "upstream_stream" ? "upstream_stream_error" : "upstream_error";
-      const safeCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_SOCKET",
-        "ERR_STREAM_PREMATURE_CLOSE", "ERR_STREAM_DESTROYED", "ABORT_ERR"]);
-      const errorCode = [error?.code, error?.cause?.code].find(code => safeCodes.has(code));
-      if (errorCode && !terminationReason.startsWith("client_")) metric.transport_error_code = errorCode;
+      const codes = transportErrorCodes(error);
+      if (codes.length && !terminationReason.startsWith("client_")) {
+        metric.transport_error_code = codes[0];
+        metric.transport_error_codes = codes;
+      }
       const timeout = terminationReason === "deadline_exceeded";
       if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, error instanceof ToolSearchError ? 422 : timeout ? 504 : 502,
         error instanceof ToolSearchError ? "unsupported_tool_search" : error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,
@@ -993,9 +1010,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.outcome = terminationReason?.startsWith("client_") ? "aborted"
         : terminationReason === "deadline_exceeded" ? "timeout"
         : terminationReason ? "failed" : metric.stage === "complete" ? "complete" : "rejected";
+      activeRequests--;
+      metric.timestamp = diagnostics.timestamp();
+      Object.assign(metric, diagnostics.identity);
+      checkpoint("router_request_finished");
       try { onMetric(metric); } catch {}
     }
   });
+  server.activeRequestCount = () => activeRequests;
   server.once("close", () => modelSync?.close?.());
   server.on("upgrade", (_request, socket) => {
     socket.end("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
@@ -1009,14 +1031,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const catalogProvider = createLiveCatalog({ initial: catalog,
     seed: JSON.parse(readFileSync(new URL("./models.json", import.meta.url), "utf8")).models,
     key: readOpenCodeKey, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
-  const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
+  const diagnostics = createRouterDiagnostics({ write: event => console.log(JSON.stringify(event)) });
+  const server = createRouter({ catalog, diagnostics, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
     catalogProvider, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
     cliModelSyncEnabled: process.env.CODEX_CLI_MODEL_SYNC !== "0",
     onMetric: (metric) => console.log(JSON.stringify(metric)) });
+  observeRouterProcess(process, diagnostics, server.activeRequestCount);
   server.listen(Number(process.env.ROUTER_PORT ?? 8790), "127.0.0.1", () => {
-    console.log("Unified model router listening on loopback");
+    diagnostics.record("router_started", { port: server.address().port });
   });
   for (const signal of ["SIGTERM", "SIGINT"]) {
-    process.once(signal, () => server.close(() => process.exit(0)));
+    process.once(signal, () => {
+      diagnostics.record("router_stopping", { signal, active_requests: server.activeRequestCount() });
+      server.close(() => process.exit(0));
+    });
   }
 }
