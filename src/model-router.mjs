@@ -500,7 +500,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         route = summaryRoute;
         // The model override belongs only to this compaction request. It never
         // changes the catalog, thread selection, or the next normal turn.
-        body = { ...body, model: summaryModel, tools: [], tool_choice: "none" };
+        // Budget the native wire representation. Bridge reasoning is never sent
+        // to OpenAI, so retaining it here can falsely reject a completed summary
+        // or trigger an unnecessary extra model call before the final routing.
+        body = routedBody({ ...body, model: summaryModel, tools: [], tool_choice: "none" }, summaryRoute, maxRequestBytes);
       }
       if (route.provider !== "openai" && !directResponses && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
