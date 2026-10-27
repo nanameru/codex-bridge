@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-097
+    title: "履歴処理完了後に通常のWorking表示へ戻す"
+    feature: "履歴処理の表示解除"
+    scenario: "budget/handoff完了・空reasoning・ツール処理・cache hit・失敗と中断"
+    status: done
+    priority: high
+    type: regression
+    source: [src/handoff-status.mjs]
+    test_file: test/handoff-status.test.mjs
+    issues: [114, 47]
+    notes: "要約/履歴変換の完了記録を保ち、最後にWorkingを別deltaで通知。失敗ではWorkingを送らない。test/handoff-tui-e2e.pyで実CLIの変換中→Working→printf実行→空summary/cache hit→Working→回答後の消去を確認。"
   - id: TC-104
     title: "通常起動でKimiとDeepSeekを表示し選択した提供元で使う"
     feature: "Kimiの手動選択と起動入口"

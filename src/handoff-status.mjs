@@ -7,7 +7,7 @@ const ITEM_PREFIX = "msg_bridge_handoff_";
 const PROGRESS_PREFIX = "rs_bridge_handoff_";
 export const WAIT_TEXT = "履歴を変換中（bridge）";
 export const BUDGET_TEXT = "会話履歴を要約中（bridge）";
-const READY_TEXT = "\nモデルの応答待ち（履歴変換完了）";
+const READY_TEXT = "\n履歴変換完了";
 
 export function isHandoffStatusItem(item) {
   return typeof item?.id === "string" && (
@@ -67,14 +67,20 @@ export class HandoffStatus {
       part: { type: "summary_text", text: "" } });
     this.emit({ type: "response.reasoning_summary_text.delta", item_id: this.itemId, output_index: 0, summary_index: 0, delta: this.text });
   }
-  ready() { this.finish(this.reason === "budget" ? "\nモデルの応答待ち（要約完了）" : READY_TEXT); }
-  finish(suffix) {
+  ready() { this.finish(this.reason === "budget" ? "\n要約完了" : READY_TEXT, "\nWorking"); }
+  finish(suffix, heading) {
     clearTimeout(this.timer);
     this.timer = null;
     if (!this.started || this.finished) return;
     this.finished = true;
     this.text += suffix;
     this.emit({ type: "response.reasoning_summary_text.delta", item_id: this.itemId, output_index: 0, summary_index: 0, delta: suffix });
+    // Codex retains the last summary heading across tools and empty reasoning.
+    // Keep completion in the transcript, then restore its normal Working label.
+    if (heading) {
+      this.text += heading;
+      this.emit({ type: "response.reasoning_summary_text.delta", item_id: this.itemId, output_index: 0, summary_index: 0, delta: heading });
+    }
     this.emit({ type: "response.reasoning_summary_text.done", item_id: this.itemId, output_index: 0, summary_index: 0, text: this.text });
     this.emit({ type: "response.reasoning_summary_part.done", item_id: this.itemId, output_index: 0, summary_index: 0, part: this.item().summary[0] });
     this.emit({ type: "response.output_item.done", output_index: 0, item: this.item() });
