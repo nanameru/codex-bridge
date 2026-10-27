@@ -59,7 +59,12 @@ function credentialSettings(root) {
   }
   if (!source.trim()) return { store: "file" };
   const digest = createHash("sha256").update(source).digest("hex");
-  if (settingsCache.has(digest)) return settingsCache.get(digest);
+  if (settingsCache.has(digest)) {
+    const settings = settingsCache.get(digest);
+    settingsCache.delete(digest);
+    settingsCache.set(digest, settings);
+    return settings;
+  }
   // Use the same TOML parser as our setup tools; never send config to a service.
   let settings = null;
   try {
@@ -67,7 +72,7 @@ function credentialSettings(root) {
       'import sys,json,tomllib; c=tomllib.loads(sys.stdin.read()); print(json.dumps({"store":c.get("cli_auth_credentials_store","file")}))'],
     { input: source, encoding: "utf8", timeout: 3000, maxBuffer: 65536, stdio: ["pipe", "pipe", "ignore"] }));
   } catch { /* Invalid TOML or missing Python is diagnosed without exposing config. */ }
-  if (settingsCache.size >= 32) settingsCache.clear();
+  if (settingsCache.size >= 32) settingsCache.delete(settingsCache.keys().next().value);
   settingsCache.set(digest, settings);
   return settings;
 }
