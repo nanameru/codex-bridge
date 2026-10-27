@@ -1205,3 +1205,14 @@ cases:
     test_file: test/cli-model-sync-e2e.py
     issues: [99]
     notes: "CODEX_TEST_WHATSTOKEN=1、CODEX_TEST_MODEL_PROVIDER=codex-liveで模擬上流30要求。外部推論なし。"
+
+  - id: TC-106
+    title: "圧縮・引き継ぎをLunaへ送り会話モデルと認証を維持する"
+    feature: "低料金の圧縮モデル"
+    scenario: "DeepSeek/GPT圧縮・旧compact・文章引き継ぎ・Luna不在時の高価なモデルへの退避禁止"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs, src/compaction-handoff.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [126]

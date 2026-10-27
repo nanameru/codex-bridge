@@ -9,6 +9,7 @@ const model = 'opencode/deepseek-v4.1-flash';
 const catalog = { models: [
   { slug: model, router_provider: 'opencode', router_model: 'deepseek-v4.1-flash', context_window: 1000000 },
   { slug: 'gpt-6.1-sol', router_provider: 'openai' },
+  { slug: 'gpt-6-luna', router_provider: 'openai' },
 ] };
 const quota = (window = 'short', seconds = 60, status = 429) => Response.json({ error: {
   code: 'usage_exceeded', window, resets_at: new Date(Date.now() + seconds * 1000).toISOString(),

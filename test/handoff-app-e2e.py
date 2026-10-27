@@ -132,6 +132,7 @@ def run(fail=False):
             upstream.stdin.flush()
             result = json.loads(upstream.stdout.readline())
             calls = result["calls"]
+            assert all(c["model"] == "gpt-6-luna" for c in calls if c["summary"] or c["compact"]), calls
             if os.environ.get("MOCK_HANDOFF_CONNECT_TIMEOUT") == "1":
                 assert result["connectFailures"] == 1, result
             retry = os.environ.get("MOCK_HANDOFF_TRANSIENT") == "1" or os.environ.get("MOCK_HANDOFF_RESULT") in ("incomplete", "empty")

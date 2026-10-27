@@ -16,7 +16,7 @@ const mock = (provider) => http.createServer(async (request, response) => {
   const compactEndpoint = Boolean(request.url.endsWith("/compact"));
   const compactionTrigger = Boolean(body.input?.some((item) => item.type === "compaction_trigger"));
   const compact = compactEndpoint || (compactionTrigger && provider === "openai");
-  calls.push({ provider, summary, compact, compactEndpoint, compactionTrigger, hasNativeAuth: Boolean(request.headers.authorization),
+  calls.push({ provider, model: body.model, summary, compact, compactEndpoint, compactionTrigger, hasNativeAuth: Boolean(request.headers.authorization),
     outputLimit: body.max_output_tokens,
     statusReplayed: JSON.stringify(body.input).includes(WAIT_TEXT), inputTypes: body.input?.map((item) => item.type),
     ...(process.env.MOCK_HANDOFF_TOOLS === "1" ? { toolResults: body.input?.filter(item => item.type === "function_call_output" && JSON.stringify(item.output).includes("BRIDGE_STATUS_TOOL_OK")).length } : {}) });
