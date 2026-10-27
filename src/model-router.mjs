@@ -245,7 +245,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   providerFallbackState, providerFallbackFile = join(codexRoot, "provider-fallback-state.json"),
   providerFallbackCooldownMs = envLimit("CODEX_PROVIDER_FALLBACK_COOLDOWN_MS", 300000),
   autoProviderFallback = manualProvidersEnabled && process.env.CODEX_AUTO_PROVIDER_FALLBACK !== "0",
-  summaryModel = "gpt-6.1-sol", summaryInputLimitTokens = 200000, onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
+  summaryModel = process.env.CODEX_SUMMARY_MODEL ?? "gpt-6.1-sol", summaryInputLimitTokens = 200000, onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
   historyMode, restoreHistory = restoreRolloutHistory,
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
@@ -320,9 +320,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     }
     const path = new URL(request.url, "http://127.0.0.1").pathname;
     if (request.method === "GET" && path === "/health") {
+      let activeHistoryMode;
+      try { activeHistoryMode = historyMode ?? readHistoryMode(codexRoot); } catch { activeHistoryMode = 'invalid'; }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
-        live_catalog: Boolean(catalogProvider),
+        live_catalog: Boolean(catalogProvider), summary_model: summaryModel, history_mode: activeHistoryMode,
         whatstoken_free: { enabled: whatstokenFreeEnabled, configured: Boolean(manualKey('whatstoken')) },
         request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxBytes },
         history_transport: allowDirectResponses ? "model" : "chat",
@@ -523,10 +525,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       // compaction_trigger and requires one compaction output item. The Chat
       // conversion cannot produce that wire item, so use the native summary
       // model for this request while the surrounding turn keeps its selection.
-      const remoteCompaction = route.provider !== "openai" && !directResponses && path === "/v1/responses"
+      const remoteCompaction = !directResponses && path === "/v1/responses"
         && Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger");
-      if (remoteCompaction) {
-        if (mode !== 'openai') {
+      const nativeCompactEndpoint = !directResponses && route.provider === "openai" && path === "/v1/responses/compact";
+      if (remoteCompaction || nativeCompactEndpoint) {
+        if (route.provider !== 'openai' && mode !== 'openai') {
           fail(response, 422, 'history_mode_requires_plaintext',
             'この会話はOpenAI固有の圧縮形式を要求しています。OpenAIへは送信していません。'
             + '選択モデルで圧縮する新規会話は python3 scripts/portable_history.py --apply で設定してください。'
@@ -546,7 +549,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         // Budget the native wire representation. Bridge reasoning is never sent
         // to OpenAI, so retaining it here can falsely reject a completed summary
         // or trigger an unnecessary extra model call before the final routing.
-        body = routedBody({ ...body, model: summaryModel, tools: [], tool_choice: "none" }, summaryRoute, maxRequestBytes);
+        body = routedBody({ ...body, model: summaryModel, ...(remoteCompaction ? { tools: [], tool_choice: "none" } : {}) }, summaryRoute, maxRequestBytes);
       }
       if (route.provider !== "openai" && !directResponses && path.endsWith("/compact")) {
         fail(response, 422, "unsupported_compaction", "OpenCode経由のremote compactionには未対応です");
@@ -1102,6 +1105,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     seed: JSON.parse(readFileSync(new URL("./models.json", import.meta.url), "utf8")).models,
     key: readOpenCodeKey, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
   const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
+    summaryModel: process.env.CODEX_SUMMARY_MODEL ?? "gpt-6-luna",
     catalogProvider, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
     cliModelSyncEnabled: process.env.CODEX_CLI_MODEL_SYNC !== "0",
     onMetric: (metric) => console.log(JSON.stringify(metric)) });

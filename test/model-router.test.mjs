@@ -204,7 +204,7 @@ test("never forwards native authentication or account headers to OpenCode", asyn
 });
 
 test("repairs persisted legacy custom IDs before native responses and remote compaction", async (context) => {
-  const { calls, base, send } = await fixture(context);
+  const { calls, base, send } = await fixture(context, { summaryModel: "gpt-test" });
   const input = [
     { type: "custom_tool_call", id: "fc_2020be0e36634c26", call_id: "call_original", name: "apply_patch", input: "patch" },
     { type: "custom_tool_call_output", call_id: "call_original", output: "ok" },

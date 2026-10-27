@@ -6,7 +6,7 @@ import { HandoffError } from './compaction-handoff.mjs';
 
 const LIMIT = 64 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const failure = () => Object.assign(new HandoffError('元の会話ログから安全に復元できません。ログの欠落・分岐・巻き戻し・サイズ・権限を確認してください。暗号化履歴は保持しています。OpenAIは使用していません。'), { status: 422 });
+const failure = () => Object.assign(new HandoffError('元の会話ログから安全に復元できません。ログの欠落・分岐・巻き戻し・サイズ・権限を確認してください。暗号化履歴は保持しています。OpenAIは使用していません。残存情報と手動メモを新規会話へ渡すには python3 scripts/rescue_handoff.py --thread <会話ID> --memo <メモファイル> を利用してください。'), { status: 422 });
 async function directory(path) {
   const info = await lstat(path);
   if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) throw failure();

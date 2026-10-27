@@ -45,6 +45,25 @@ class PortableHistoryTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(ph.BACKUP_PREFIX + "*")), [])
         verify.assert_not_called()
 
+    def test_current_8791_endpoint_is_preserved_and_verified(self):
+        self.write('openai_base_url="http://127.0.0.1:8791/v1"\n' + self.source)
+        with mock.patch.object(ph, "verify_runtime") as verify:
+            ph.configure(self.root, apply=True)
+        result = tomllib.loads(self.path.read_text())
+        self.assertEqual(result['model_providers'][ph.PROVIDER]['base_url'], 'http://127.0.0.1:8791/v1')
+        self.assertEqual(verify.call_args.args[-1], 8791)
+        self.assertEqual(result['model'], 'gpt-test')
+
+    def test_manual_provider_catalog_is_preserved(self):
+        path = self.root / 'unified-model-catalog.json'
+        catalog = json.loads(path.read_text())
+        catalog['models'].extend([
+            {'slug': 'commandcode/deepseek-test', 'router_provider': 'commandcode'},
+            {'slug': 'ollama/deepseek-test', 'router_provider': 'ollama'},
+        ])
+        path.write_text(json.dumps(catalog))
+        self.assertEqual(ph.read_catalog(self.root), catalog['models'])
+
     def test_apply_preserves_model_auth_profiles_and_other_capabilities(self):
         with mock.patch.object(ph, "verify_runtime"):
             report = ph.configure(self.root, apply=True)

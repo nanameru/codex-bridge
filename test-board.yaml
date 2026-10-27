@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-108
+    title: "OpenAI枠切れ時に残存履歴とメモを新規会話へ渡す"
+    feature: "部分復元による引き継ぎ救済"
+    scenario: "元ログなしのメモ・原本不変・不明範囲/省略表示・暗号/ツール/推論除外・権限/分岐/巻戻し拒否・文章圧縮と外部モデル指定"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/rescue_handoff.py, scripts/portable_history.py, src/rollout-history.mjs]
+    test_file: test/test_rescue_handoff.py
+    issues: [132]
+    notes: "合成ログで保存と新規起動引数を検証。本人の実ログを再送せず、完全復元は保証しない。8791と手動提供元カタログはtest_portable_history.pyで検証。"
   - id: TC-107
     title: "履歴モードを明示選択し外部モデルの補助要約をOpenAIへ迂回させない"
     feature: "選択モデルでの元ログ再要約と注意書き"

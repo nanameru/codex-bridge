@@ -57,3 +57,23 @@ python3 scripts/portable_history.py --apply
 ## 検証
 
 `node --test test/history-mode.test.mjs` で、元ログのread-only復元、OpenAI要求0件、DeepSeek/Kimiの提供元別認証、確認モード、元ログ欠落、rollback、symlink、成功要約のキャッシュと認証分離を模擬上流で検証します。実際の長い既存会話の要約精度や情報保持率を保証するテストではありません。
+
+## OpenAI枠切れ・元ログ不足時の引き継ぎ
+
+`selected`で安全な自動復元ができない場合は、残っている文章と手動メモを新しい会話へ渡せます。これは暗号化履歴の解読ではなく**部分復元**です。欠けた内容を推測で補いません。
+
+```sh
+# メモに「目的・禁止事項・完了内容・未完了事項・次の作業」を記載する
+# 保存だけ。AIへの通信は行わず、本文を標準出力へ表示しない
+python3 scripts/rescue_handoff.py --thread <会話ID> --memo /path/to/memo.md
+
+# 内容を確認した後、DeepSeekの新規会話を開始する
+python3 scripts/rescue_handoff.py --thread <会話ID> --memo /path/to/memo.md \
+  --launch --model opencode/deepseek-v4.1-flash
+```
+
+本人の`CODEX_HOME/handoffs/`へ0600のMarkdownを保存します。読める会話の最新側約24,000文字、保存済み文章要約、最大16,000bytesの手動メモを使います。元ログがない場合はメモのみで作成でき、画像・添付・暗号化item・隠れたreasoning・ツール呼び出しと出力は移しません。省略数と対象外を文書へ記載します。分岐・巻き戻し・重複・不正なログは自動処理せず停止します。原本を編集したり、古い会話IDを再利用したりしません。
+
+`--launch`は選択モデルへこの文書を読ませる新規会話です。その後の会話と圧縮には選択した提供元の利用量が発生します。実行前に`portable_history.py --apply`で文章圧縮を設定してください。8790/8791の現在の接続先、モデル、認証、既存profilesは維持します。既存チャットの内部圧縮方式は変更しません。
+
+稼働版のOpenAI明示経路で既存の低料金要約モデルを維持する場合は`CODEX_SUMMARY_MODEL=gpt-6-luna`を設定します。`selected`の外部モデル要約はこの設定を使いません。

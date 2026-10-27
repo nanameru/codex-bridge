@@ -72,6 +72,27 @@ test('mode CLI defaults to selected, shows loss warning, and writes private owne
   assert.match(HISTORY_MODES.openai.notice, /追加の利用量/);
 });
 
+test('production summary override keeps cheap GPT compaction and selected external requests separate', async t => {
+  const previous = process.env.CODEX_SUMMARY_MODEL;
+  process.env.CODEX_SUMMARY_MODEL = 'gpt-cheap';
+  t.after(() => { if (previous === undefined) delete process.env.CODEX_SUMMARY_MODEL; else process.env.CODEX_SUMMARY_MODEL = previous; });
+  const { calls, send, root } = await fixture(t, { summaryModel: undefined, catalog: { models: [
+    ...catalog.models, { slug: 'gpt-cheap', router_provider: 'openai' },
+  ] } });
+  const input = [{ role: 'user', content: 'keep facts' }, { type: 'compaction_trigger' }];
+  const native = await send({ model: 'gpt-test', input });
+  assert.equal(native.status, 200, await native.text());
+  assert.equal(calls.at(-1).body.model, 'gpt-cheap');
+  const count = calls.length;
+  const external = await send({ model: 'opencode/deepseek-test', input });
+  assert.equal(external.status, 422, await external.text());
+  assert.equal(calls.length, count); // selected never falls back to native GPT.
+  const normal = await send({ model: 'gpt-test', input: [{ role: 'user', content: 'continue' }] });
+  assert.equal(normal.status, 200, await normal.text());
+  assert.equal(calls.at(-1).body.model, 'gpt-test');
+  assert.equal(readHistoryMode(root), 'selected');
+});
+
 test('mode settings reject unsafe roots, symlinks, public files and unknown modes', t => {
   const root = home(t);
   assert.throws(() => writeHistoryMode(root, '__proto__'));
