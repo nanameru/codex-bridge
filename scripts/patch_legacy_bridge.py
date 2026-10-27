@@ -82,6 +82,10 @@ HELPERS = (
 )
 
 REPLACEMENTS = [
+    # fetch() resolves on HTTP response headers, after the model may have spent
+    # a long time preparing its answer. This is not a TCP connection deadline.
+    ('handle.setTimer(UPSTREAM_CONNECT_TIMEOUT_MS, `upstream connect timeout (${UPSTREAM_CONNECT_TIMEOUT_MS}ms)`);',
+     'handle.setTimer(UPSTREAM_FIRST_BYTE_TIMEOUT_MS, `upstream response headers timeout (${UPSTREAM_FIRST_BYTE_TIMEOUT_MS}ms)`);', 1),
     ('presence_penalty: 0.1,', 'presence_penalty: 0.1,\n        ...reasoningOptions(model, body.reasoning?.effort),', 1),
     ('async function doFetch(path, bodyObj, token, clientSignal) {',
      'async function doFetch(path, bodyObj, token, clientSignal, sessionId) {', 1),
@@ -148,7 +152,7 @@ def prepare(target):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="本番8788の既存修正を保持して推論設定・会話セッション・暴走ガードだけ更新する")
+    parser = argparse.ArgumentParser(description="本番8788の既存修正を保持して応答待機期限・推論設定・会話セッション・暴走ガードを更新する")
     parser.add_argument("target", type=Path)
     parser.add_argument("--apply", action="store_true")
     arguments = parser.parse_args()
@@ -170,7 +174,7 @@ def main():
             atomic_write(module, helper)
     if source != updated:
         atomic_write(arguments.target, updated, arguments.target.stat().st_mode & 0o777)
-    print("推論設定・会話セッション・暴走ガードのファイル更新を確認しました。プロセスは再起動していません。")
+    print("応答待機期限・推論設定・会話セッション・暴走ガードのファイル更新を確認しました。プロセスは再起動していません。")
 
 
 if __name__ == "__main__":

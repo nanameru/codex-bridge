@@ -108,3 +108,22 @@ Linuxではサービス管理を手動で行い、同じCODEX_HOMEを両サー�
 `secure_local.py prepare-key`後にコードを配置し、`node src/model-router.mjs`と
 `node src/codex-bridge.mjs`をloopbackで起動して`doctor`を実行します。
 テストのために本番の認証検査を無効にするフラグは用意していません。
+
+## 旧Bridgeで30秒の504が繰り返す場合（Issue #128）
+
+旧Bridgeの `doFetch()` は `fetch()` がHTTP応答ヘッダーを返すまで待ちます。
+この期間にはモデルの応答準備が含まれるため、TCP接続のつもりで設定した
+`UPSTREAM_CONNECT_TIMEOUT_MS=30000` を使うと、正常な推論も30秒で中断します。
+
+`scripts/patch_legacy_bridge.py` は、この待機を既存の
+`UPSTREAM_FIRST_BYTE_TIMEOUT_MS`（既定180秒）へ変更します。
+旧LaunchAgentに接続期限30秒が残っていても、この待機には適用しません。
+ヘッダー後の最初の本文、ストリームの無通信、クライアント中断の処理は維持します。
+内部で同じ要求を自動再送しません。180秒を超える無応答や上流自体の504は発生し得ます。
+
+更新前に確認モードを実行し、本番適用・再起動は別途承認を得てください。
+
+```sh
+python3 scripts/patch_legacy_bridge.py ~/home-runner/bridge/codex-bridge.mjs
+LEGACY_BRIDGE_SOURCE=~/home-runner/bridge/codex-bridge.mjs node --test test/bridge-transport.test.mjs
+```

@@ -10,6 +10,16 @@ from patch_legacy_bridge import GUARD_IMPORT
 
 
 class LegacyPatchTests(unittest.TestCase):
+    def test_header_wait_uses_model_response_budget_even_with_old_connect_setting(self):
+        original = 'import http from "node:http";\n'
+        original += "\n".join(old * count for old, _new, count in REPLACEMENTS)
+        original += '\nconst UPSTREAM_CONNECT_TIMEOUT_MS = numberEnv("UPSTREAM_CONNECT_TIMEOUT_MS", 30_000, 1_000);'
+        result = patched_source(original)
+        self.assertIn('handle.setTimer(UPSTREAM_FIRST_BYTE_TIMEOUT_MS, `upstream response headers timeout', result)
+        self.assertNotIn('handle.setTimer(UPSTREAM_CONNECT_TIMEOUT_MS', result)
+        self.assertIn('const UPSTREAM_CONNECT_TIMEOUT_MS = numberEnv', result)
+        self.assertEqual(patched_source(result), result)
+
     def test_upgrades_known_helper_with_one_backup_and_preserves_bridge_source(self):
         repository = Path(__file__).resolve().parents[1]
         previous = (repository / "test/fixtures/upstream-options-v1.mjs").read_bytes()
