@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-107
+    title: "圧縮通信の受信・上流待機・切断・プロセス終了を安全に記録する"
+    feature: "remote compactionの切断診断"
+    scenario: "未完了要求の段階記録・完了との相関・接続失敗とdeadlineの区別・本文と認証非保存・クラッシュ動作の維持"
+    status: done
+    priority: high
+    type: regression
+    source: [src/router-diagnostics.mjs, src/model-router.mjs, scripts/install_router_service.py]
+    test_file: test/router-diagnostics.test.mjs
+    issues: [134]
+    notes: "模擬上流で検証。対象実会話の送信失敗の根本原因は未確定で、本番反映・再発観測は未実施。"
   - id: TC-106
     title: "配布先の本人認証をfileとmacOS Keychainから解決する"
     feature: "配布版の認証と401診断"
