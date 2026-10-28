@@ -133,3 +133,49 @@ test('doctor reports only safe metadata for explicit recipient root, and exits n
   assert.equal(JSON.parse(failure.stdout).reason, 'auth_file_unavailable');
   assert.doesNotMatch(success.stdout + success.stderr + failure.stdout + failure.stderr, /never-print-this-credential|access_token/);
 });
+
+test('pinned Python authenticates with launchd PATH even when python3 is incompatible', t => {
+  const root = fixture(t, 'model = "minimal-path-test"\ncli_auth_credentials_store = "file"\n');
+  saved(root, 'private-minimal-path-token');
+  const python = spawnSync('python3', ['-c', 'import sys,tomllib; print(sys.executable)'], { encoding: 'utf8' });
+  assert.equal(python.status, 0);
+  const fakePython = join(root, 'python3');
+  writeFileSync(fakePython, '#!/bin/sh\nexit 91\n', { mode: 0o700 });
+  const script = `import {authenticateCodex, diagnoseCodexAuth} from ${JSON.stringify(new URL('../src/local-security.mjs', import.meta.url).href)};
+    const root = process.argv[1];
+    console.log(JSON.stringify({ diagnostic: diagnoseCodexAuth(root),
+      owner: authenticateCodex({headers:{authorization:'Bearer private-minimal-path-token'}},root),
+      stranger: authenticateCodex({headers:{authorization:'Bearer wrong-token'}},root) }));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, root], {
+    env: { ...process.env, PATH: root + ':/usr/bin:/bin:/usr/sbin:/sbin', CODEX_BRIDGE_PYTHON: python.stdout.trim() },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.deepEqual(output, { diagnostic: { ok: true, store: 'file', reason: null }, owner: true, stranger: false });
+  assert.doesNotMatch(result.stdout + result.stderr, /private-minimal-path-token|access_token/);
+});
+
+test('unavailable pinned Python is diagnosed separately and recovers without restarting', t => {
+  const root = fixture(t, 'model = "runtime-recovery-test"\n');
+  saved(root, 'private-recovery-token');
+  const python = spawnSync('python3', ['-c', 'import sys,tomllib; print(sys.executable)'], { encoding: 'utf8' });
+  assert.equal(python.status, 0);
+  const executable = join(root, 'pinned-python');
+  writeFileSync(executable, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+  const script = `import {diagnoseCodexAuth} from ${JSON.stringify(new URL('../src/local-security.mjs', import.meta.url).href)};
+    import {unlinkSync,symlinkSync} from 'node:fs';
+    const [root,executable,python]=process.argv.slice(1);
+    const before=diagnoseCodexAuth(root);
+    unlinkSync(executable);symlinkSync(python,executable);
+    console.log(JSON.stringify({before,after:diagnoseCodexAuth(root)}));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, root, executable, python.stdout.trim()], {
+    env: { ...process.env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', CODEX_BRIDGE_PYTHON: executable }, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    before: { ok: false, store: 'unknown', reason: 'credential_runtime_unavailable' },
+    after: { ok: true, store: 'file', reason: null },
+  });
+  assert.doesNotMatch(result.stdout + result.stderr, /private-recovery-token|access_token/);
+});

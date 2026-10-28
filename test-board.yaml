@@ -5,6 +5,64 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-111
+    title: "中継障害時にGPT直結の退避方法をエラーへ表示する"
+    feature: "中継障害からの手動退避案内"
+    scenario: "中継接続失敗・認証拒否・提供元制限・SSE失敗で案内し、入力不正には付けない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/codex-bridge.mjs, src/provider-help.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [137]
+    notes: "JSONエラーと開始後SSEの双方で codex --profile direct を確認。中継401のauthentication_requiredにも表示し、invalid_jsonと413には付けない。複合テストはtest/bridge-transport.test.mjsとtest/provider-help.test.mjsでも確認。"
+
+  - id: TC-109
+    title: "最小PATHでも検証済みPythonで本人認証を維持する"
+    feature: "launchd認証のPython固定"
+    scenario: "偽の旧python3・絶対パス指定・正当/不正Bearer・実行依存不良と構文不良の区別・依存修復後の再試行"
+    status: done
+    priority: high
+    type: regression
+    source: [src/local-security.mjs, src/auth-doctor.mjs]
+    test_file: test/distribution-auth.test.mjs
+    issues: [132, 130, 41]
+    notes: "実認証や上流推論を使わず子Nodeプロセスと一時ホームで検証。既存file/keyring/auto・認証更新・秘密非出力も維持。"
+
+  - id: TC-110
+    title: "初回導入と更新でtomllib対応Pythonを常駐設定へ固定する"
+    feature: "サービス更新時のPython環境検証"
+    scenario: "初回/既存plist・独自環境保持・最小PATH・非対応/不存在Pythonの事前拒否"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/local_security.py, scripts/install_router_service.py, scripts/secure_local.py]
+    test_file: test/test_service_python.py
+    issues: [132, 41]
+    notes: "一時ホームと模擬launchctlでplistを検証し、生成環境の実Pythonでtomllibをimportする。実サービスは変更しない。"
+
+  - id: TC-108
+    title: "OpenAI枠切れ時に残存履歴とメモを新規会話へ渡す"
+    feature: "部分復元による引き継ぎ救済"
+    scenario: "元ログなしのメモ・原本不変・不明範囲/省略表示・暗号/ツール/推論除外・権限/分岐/巻戻し拒否・文章圧縮と外部モデル指定"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/rescue_handoff.py, scripts/portable_history.py, src/rollout-history.mjs]
+    test_file: test/test_rescue_handoff.py
+    issues: [132]
+    notes: "合成ログで保存と新規起動引数を検証。本人の実ログを再送せず、完全復元は保証しない。8791と手動提供元カタログはtest_portable_history.pyで検証。"
+  - id: TC-107
+    title: "履歴モードを明示選択し外部モデルの補助要約をOpenAIへ迂回させない"
+    feature: "選択モデルでの元ログ再要約と注意書き"
+    scenario: "既定selected・openai明示・ask停止・元ログ復元/欠落/巻き戻し・DeepSeek/Kimi認証分離・キャッシュと原本不変"
+    status: done
+    priority: high
+    type: regression
+    source: [src/history-mode.mjs, src/rollout-history.mjs, src/model-router.mjs, src/compaction-handoff.mjs, scripts/install_router_service.py]
+    test_file: test/history-mode.test.mjs
+    issues: [132, 43, 57, 130]
+    notes: "架空ログと模擬APIでOpenAI要求0件を確認する。実API・課金・本番会話の移行は行わない。既存remote compaction会話はselected/askで迂回を拒否し設定案内を出す。"
   - id: TC-106
     title: "配布先の本人認証をfileとmacOS Keychainから解決する"
     feature: "配布版の認証と401診断"

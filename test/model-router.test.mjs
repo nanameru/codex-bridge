@@ -42,7 +42,7 @@ async function fixture(context, options = {}) {
   const bridge = upstream("opencode");
   const nativeBase = await listen(native);
   const bridgeBase = await listen(bridge);
-  const router = createRouter({ catalog, nativeBase, bridgeBase, openCodeBase: bridgeBase,
+  const router = createRouter({ catalog, historyMode: "openai", nativeBase, bridgeBase, openCodeBase: bridgeBase,
     openCodeKey: () => "fake-opencode-key", allowTestOrigins: true, allowDirectResponses: true,
     authenticate: () => true, bridgeKey: () => "test-internal-key", ...options });
   const base = await listen(router);
@@ -172,7 +172,7 @@ test("direct Responses preserves native custom events, normalizes phases, and ne
     }
     assert.equal(count, 1);
   }
-  assert.throws(() => createRouter({ catalog, openCodeBase: "https://example.org/v1" }), /公式origin/);
+  assert.throws(() => createRouter({ catalog, historyMode: "openai", openCodeBase: "https://example.org/v1" }), /公式origin/);
 });
 
 test("routes both switching directions without changing thread metadata or messages", async (context) => {
@@ -204,7 +204,7 @@ test("never forwards native authentication or account headers to OpenCode", asyn
 });
 
 test("repairs persisted legacy custom IDs before native responses and remote compaction", async (context) => {
-  const { calls, base, send } = await fixture(context);
+  const { calls, base, send } = await fixture(context, { summaryModel: "gpt-test" });
   const input = [
     { type: "custom_tool_call", id: "fc_2020be0e36634c26", call_id: "call_original", name: "apply_patch", input: "patch" },
     { type: "custom_tool_call_output", call_id: "call_original", output: "ok" },
@@ -245,7 +245,9 @@ test("preserves the already-deployed native image and search endpoints independe
 test("rejects unknown models and missing authentication before forwarding", async (context) => {
   const { calls, send } = await fixture(context);
   assert.equal((await send({ model: "unknown" })).status, 400);
-  assert.equal((await send({ model: "gpt-test" }, { authorization: "" })).status, 401);
+  const unauthorized = await send({ model: "gpt-test" }, { authorization: "" });
+  assert.equal(unauthorized.status, 401);
+  assert.match(await unauthorized.text(), /codex --profile direct/);
   assert.equal(calls.length, 0);
 });
 
@@ -281,9 +283,9 @@ test("never follows redirects carrying native credentials", async (context) => {
 });
 
 test("rejects external native or bridge targets", () => {
-  assert.throws(() => createRouter({ catalog, nativeBase: "https://example.com" }));
-  assert.throws(() => createRouter({ catalog, bridgeBase: "https://example.com" }));
-  assert.throws(() => createRouter({ catalog, bridgeBase: "http://127.0.0.1:1@evil.example" }));
+  assert.throws(() => createRouter({ catalog, historyMode: "openai", nativeBase: "https://example.com" }));
+  assert.throws(() => createRouter({ catalog, historyMode: "openai", bridgeBase: "https://example.com" }));
+  assert.throws(() => createRouter({ catalog, historyMode: "openai", bridgeBase: "http://127.0.0.1:1@evil.example" }));
 });
 
 test("refuses provider-specific continuation IDs and oversized bodies", async (context) => {
@@ -433,7 +435,7 @@ test("wire and decoded request limits remain finite with inclusive boundaries", 
   }
   assert.ok(calls.length >= 3);
   assert.ok(metrics.filter(m => m.status === 413).every(m => ["wire_bytes", "decoded_bytes"].includes(m.input_limit_reason)));
-  for (const maxRequestBytes of [0, Infinity, NaN, 999]) assert.throws(() => createRouter({ catalog, maxBytes: 1000, maxRequestBytes }));
+  for (const maxRequestBytes of [0, Infinity, NaN, 999]) assert.throws(() => createRouter({ catalog, historyMode: "openai", maxBytes: 1000, maxRequestBytes }));
 });
 
 test("byte recovery can summarize completed image tools within one turn without losing steering or pending calls", async context => {
@@ -1264,6 +1266,7 @@ test("upstream stream failure sends a safe terminal error instead of becoming a 
   assert.match(text, /partial/);
   assert.match(text, /event: response.failed/);
   assert.match(text, /upstream_stream_error/);
+  assert.match(text, /codex --profile direct/);
   assert.equal(metric.outcome, 'failed');
   assert.equal(metric.termination_reason, 'upstream_stream_error');
   assert.doesNotMatch(text + JSON.stringify(metric), /secret-key|private-message|private\.example/);
@@ -1281,9 +1284,24 @@ test("stream timeout sends a terminal error and records the deadline separately"
   const metric = await recorded;
   assert.match(text, /event: response.failed/);
   assert.match(text, /request_timeout/);
+  assert.match(text, /codex --profile direct/);
   assert.equal(metric.outcome, 'timeout');
   assert.equal(metric.termination_reason, 'deadline_exceeded');
   assert.equal(cancelled, true);
+});
+
+test("relay connection failures include the direct GPT escape command but invalid JSON does not", async context => {
+  const { send, base } = await fixture(context, { fetcher: async () => { throw new Error('private upstream detail'); } });
+  const failed = await send({ model: 'gpt-test' });
+  const failedText = await failed.text();
+  assert.equal(failed.status, 502);
+  assert.match(failedText, /codex --profile direct/);
+  assert.doesNotMatch(failedText, /private upstream detail/);
+
+  const invalid = await fetch(base + '/responses', { method: 'POST', headers: { authorization: 'Bearer test' }, body: '{' });
+  const invalidText = await invalid.text();
+  assert.equal(invalid.status, 400);
+  assert.doesNotMatch(invalidText, /codex --profile direct/);
 });
 
 test("client cancellation stops upstream without recording a provider failure", async context => {

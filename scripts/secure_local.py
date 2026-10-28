@@ -11,7 +11,7 @@ import time
 import tomllib
 
 from install_router_service import replace_registration, wait_for_idle
-from local_security import ensure_bridge_key, private_read, verify_service
+from local_security import ensure_bridge_key, private_read, verify_service, service_environment
 import patch_legacy_security
 from switch_config import atomic_write
 
@@ -23,7 +23,8 @@ def check_credentials(root):
     # Share the exact runtime resolver, including macOS Keychain. Never copy tokens.
     try:
         result = subprocess.run(["node", str(ROOT / "src/auth-doctor.mjs"), "--root", str(root)],
-                                text=True, capture_output=True, timeout=10)
+                                text=True, capture_output=True, timeout=10,
+                                env={**os.environ, **service_environment()})
     except subprocess.TimeoutExpired:
         raise ValueError("本人認証の診断がタイムアウトしました。認証保存先を確認してください") from None
     if result.returncode != 0:
@@ -98,6 +99,7 @@ def apply(root, target, wait_seconds):
     payload = plistlib.loads(previous)
     if payload.get("Label") != LEGACY_LABEL or str(target) not in payload.get("ProgramArguments", []):
         raise ValueError("既存サービスの実行ファイルが対象と一致しません")
+    payload["EnvironmentVariables"] = service_environment(payload.get("EnvironmentVariables", {}))
     service = f"gui/{os.getuid()}/{LEGACY_LABEL}"
     active = subprocess.run(["launchctl", "print", service], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if not active:

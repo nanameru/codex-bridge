@@ -8,7 +8,12 @@ import subprocess
 import sys
 import time
 from switch_config import atomic_write
-from local_security import ensure_bridge_key, verify_service
+from local_security import ensure_bridge_key, verify_service, service_environment
+
+ROUTER_SERVICES = {
+    "com.kimurataiyou.codex-model-router": 8790,
+    "com.kimurataiyou.codex-model-router-8791": 8791,
+}
 
 
 def wait_for_unload(service):
@@ -68,10 +73,10 @@ def replace_registration(path, payload, service, previous, active, verify):
         raise
 
 
-def wait_for_health(revision):
+def wait_for_health(port, revision):
     for _attempt in range(30):
         try:
-            verify_service(8790, revision)
+            verify_service(port, revision)
             return
         except (OSError, ValueError):
             time.sleep(0.2)
@@ -84,6 +89,8 @@ def install():
     mode.add_argument("--update-if-idle", action="store_true")
     mode.add_argument("--update-now", action="store_true", help="本人の明示指定で通信中でも今更新します")
     parser.add_argument("--wait-idle", type=int, default=0)
+    parser.add_argument("--service", choices=sorted(ROUTER_SERVICES), default="com.kimurataiyou.codex-model-router",
+                        help="更新する既知のrouterサービス（既定: 8790）")
     parser.add_argument("--enable-whatstoken-free", action="store_true", help="WhatsTokenを無料条件確認付きの自動ルートへ追加する")
     arguments = parser.parse_args()
     if not 0 <= arguments.wait_idle <= 1800:
@@ -94,12 +101,13 @@ def install():
     if not node:
         raise SystemExit("Node.jsが必要です")
     subprocess.run([node, "-e", 'if (typeof require("node:zlib").zstdDecompressSync !== "function") process.exit(1)'], check=True)
+    environment = service_environment(node=node)
     source = Path(__file__).resolve().parents[1]
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if not (root / "unified-model-catalog.json").exists():
         raise SystemExit("先にunified_config.py prepareを実行してください")
     ensure_bridge_key(root)
-    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs", "live-catalog.mjs", "make-catalog.mjs", "sync-models.mjs", "catalog-safety.mjs", "manual-providers.mjs", "whatstoken-free.mjs", "provider-fallback.mjs", "cli-control.mjs", "cli-model-sync.mjs", "provider-help.mjs", "chat-protocol.mjs", "tool-search.mjs", "usage.mjs", "upstream-options.mjs", "request-guard.mjs", "models.json"]}
+    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs", "live-catalog.mjs", "make-catalog.mjs", "sync-models.mjs", "catalog-safety.mjs", "manual-providers.mjs", "whatstoken-free.mjs", "provider-fallback.mjs", "cli-control.mjs", "cli-model-sync.mjs", "provider-help.mjs", "chat-protocol.mjs", "tool-search.mjs", "usage.mjs", "upstream-options.mjs", "request-guard.mjs", "history-mode.mjs", "rollout-history.mjs", "models.json"]}
     revision = hashlib.sha256(b"".join(modules.values())).hexdigest()
     runtime = root / "router-runtime" / revision
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -107,7 +115,8 @@ def install():
         atomic_write(runtime / name, content.decode("utf-8"))
     logs = root / "log"
     logs.mkdir(exist_ok=True, mode=0o700)
-    label = "com.kimurataiyou.codex-model-router"
+    label = arguments.service
+    port = ROUTER_SERVICES[label]
     agents = Path.home() / "Library/LaunchAgents"
     agents.mkdir(parents=True, exist_ok=True)
     path = agents / (label + ".plist")
@@ -116,13 +125,18 @@ def install():
     payload = {
         "Label": label, "ProgramArguments": [node, str(runtime / "model-router.mjs")],
         "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 10,
-        "EnvironmentVariables": {"CODEX_HOME": str(root)},
-        "StandardOutPath": str(logs / "model-router.log"),
-        "StandardErrorPath": str(logs / "model-router.stderr.log"),
+        "EnvironmentVariables": {**environment, "CODEX_HOME": str(root)},
+        "StandardOutPath": str(logs / "model-router.log") if port == 8790 else str(logs / f"model-router-{port}.log"),
+        "StandardErrorPath": str(logs / "model-router.stderr.log") if port == 8790 else str(logs / f"model-router-{port}.stderr.log"),
     }
     previous = path.read_bytes() if path.exists() else None
     if previous:
-        payload["EnvironmentVariables"] = {**plistlib.loads(previous).get("EnvironmentVariables", {}), "CODEX_HOME": str(root)}
+        payload["EnvironmentVariables"] = {**service_environment(plistlib.loads(previous).get("EnvironmentVariables", {}), node=node), "CODEX_HOME": str(root)}
+        registered_port = payload["EnvironmentVariables"].get("ROUTER_PORT")
+        if registered_port is not None and str(registered_port) != str(port):
+            raise SystemExit("常駐設定のROUTER_PORTが選択したサービスと一致しません。更新していません")
+    if port != 8790:
+        payload["EnvironmentVariables"]["ROUTER_PORT"] = str(port)
     if arguments.enable_whatstoken_free:
         payload["EnvironmentVariables"]["CODEX_WHATSTOKEN_FREE"] = "1"
     replace = previous is not None and plistlib.loads(previous) != payload
@@ -133,14 +147,14 @@ def install():
         if arguments.update_now:
             print("今すぐrouterを更新します。通信中の要求は切断されることがあります。Codex本体は再起動しません。", flush=True)
         else:
-            wait_for_idle(arguments.wait_idle)
+            wait_for_idle(arguments.wait_idle, ports=(port,))
         atomic_write(path.with_name(path.name + ".bak." + str(time.time_ns())), previous.decode("utf-8"))
     service = f"gui/{os.getuid()}/{label}"
     active = subprocess.run(["launchctl", "print", service], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if active and previous is None:
         raise SystemExit("登録済みサービスの元定義がありません。上書き・停止しません")
-    replace_registration(path, payload, service, previous, active, lambda: wait_for_health(revision))
-    print("共通routerのrevisionと認証拒否を確認しました。Codex・OpenCodeブリッジは再起動していません。")
+    replace_registration(path, payload, service, previous, active, lambda: wait_for_health(port, revision))
+    print(f"{label} (port {port}) のrevisionと認証拒否を確認しました。Codex・OpenCodeブリッジは再起動していません。")
 
 
 def main():

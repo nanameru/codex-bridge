@@ -37,6 +37,10 @@ test("actual bridge sends model controls and stable conversation sessions to moc
       response.end(JSON.stringify({ error: { message: "UPSTREAM_PRIVATE_SENTINEL" } }));
       return;
     }
+    if (text.includes("FORCE_BRIDGE_NETWORK_FAILURE")) {
+      request.socket.destroy();
+      return;
+    }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "OK" }, finish_reason: "stop" }] }));
   });
@@ -181,6 +185,11 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     "content-type": "application/json", "x-codex-bridge-auth": internalKey,
   }, body: JSON.stringify({ input: "UPSTREAM_PRIVATE_SENTINEL", stream: false }) });
   assert.equal(error.status, 400, await error.text());
+  const unavailable = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST", headers: {
+    "content-type": "application/json", "x-codex-bridge-auth": internalKey,
+  }, body: JSON.stringify({ input: "FORCE_BRIDGE_NETWORK_FAILURE", stream: false }) });
+  assert.equal(unavailable.status, 502);
+  assert.match(await unavailable.text(), /codex --profile direct/);
   assert.doesNotMatch(logs, /PRIVATE_TEXT|dummy-test-token|UPSTREAM_PRIVATE_SENTINEL/);
   assert.deepEqual(await readdir(join(directory, "dumps")).catch(() => []), []);
   const limited = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",

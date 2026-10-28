@@ -5,7 +5,8 @@ import { codexRoot, diagnoseCodexAuth } from './local-security.mjs';
 
 const HINTS = {
   unsafe_codex_home: 'CODEX_HOMEの所有者と書込み権限を確認してください。',
-  credential_config_invalid: 'config.tomlの構文・権限とPython 3.11以上を確認してください。',
+  credential_config_invalid: 'config.tomlの構文・所有者・書込み権限を確認してください。',
+  credential_runtime_unavailable: '常駐設定のCODEX_BRIDGE_PYTHONにPython 3.11以上の絶対パスが必要です。インストーラで再検証し、同じ環境変数で診断してください。トークンの再発行は不要です。',
   unsupported_credential_store: 'file/keyring/autoに対応しています。メモリ限定の認証は別プロセスと共有できません。',
   keyring_platform_unsupported: 'Keychain読み取りはmacOSに対応しています。このOSのkeyringは未対応です。',
   keyring_unavailable: 'このCODEX_HOMEのKeychain項目が未登録か、読み取りが拒否されています。本人のCodexでログイン状態を確認してください。',
@@ -21,7 +22,7 @@ try {
   const root = resolve(values.root ?? codexRoot());
   const result = diagnoseCodexAuth(root);
   console.log(JSON.stringify({ ...result, codex_home: root,
-    hint: result.ok ? '認証の読み取りは正常です。401が続く場合はCodexと両サービスのCODEX_HOME・起動ユーザーが同じか確認し、Codexを起動し直してください。' : HINTS[result.reason] }, null, 2));
+    hint: result.ok ? '認証の読み取りは正常です。401が続く場合は両サービスと同じCODEX_BRIDGE_PYTHON・PATH・CODEX_HOME・起動ユーザーで再診断してください。' : HINTS[result.reason] }, null, 2));
   process.exitCode = result.ok ? 0 : 1;
 } catch {
   console.error('使い方: node src/auth-doctor.mjs [--root CODEXの設定ディレクトリ]');

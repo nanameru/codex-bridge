@@ -82,6 +82,16 @@ python3 scripts/unified_config.py off
 Codexへ戻し、Issueへ値を伏せたdoctor結果とrevisionを残して修正します。
 バックアップに認証関連の設定が含まれる可能性があるため、Gitへ追加しないでください。
 
+中継・提供元障害のエラーには、GPTのdirectプロファイルを設定済みの場合に使える退避方法が表示されます。
+実行中のターンを引き継ぐことはできないため、別のターミナルで新しいセッションを開きます。
+
+```bash
+codex --profile direct
+```
+
+この経路はローカル中継を使わず、GPTへの認証もローカル中継へ渡しません。Codexアプリから起動した
+既存セッションには適用されないため、CLIで明示的に起動してください。
+
 ## 開発と更新
 
 認証の実装は`src/local-security.mjs`を両サービスで共有します。個別の修正を配置先だけで
@@ -108,3 +118,26 @@ Linuxではサービス管理を手動で行い、同じCODEX_HOMEを両サー�
 `secure_local.py prepare-key`後にコードを配置し、`node src/model-router.mjs`と
 `node src/codex-bridge.mjs`をloopbackで起動して`doctor`を実行します。
 テストのために本番の認証検査を無効にするフラグは用意していません。
+
+
+## launchdのPython解決先と401（Issue #132）
+
+サービス導入時に、インストーラ自身のPythonで3.11以上・`tomllib`を検証します。
+検証した実行ファイルを`CODEX_BRIDGE_PYTHON`の絶対パスとしてplistへ保存し、
+そのディレクトリをサービスの`PATH`の先頭にも追加します。routerと旧Bridgeの
+安全更新の両方が対象です。既存の環境変数は保持し、ログインシェルの環境全体はコピーしません。
+認証処理はこの絶対パスを`-I`（Pythonの環境・ユーザーsiteから隔離）で実行します。
+手動起動時に未指定なら従来の`python3`を使うため、Python 3.11以上をPATHへ置くか、
+`CODEX_BRIDGE_PYTHON`を明示してください。
+
+`auth-doctor`の`credential_runtime_unavailable`は、Pythonの不存在・非対応・起動失敗です。
+`credential_config_invalid`（config.tomlの不正・安全でない権限）と区別します。
+トークン更新をする前に、対象サービスのplistの`CODEX_BRIDGE_PYTHON`・`PATH`・
+`CODEX_HOME`と同じ環境で`node src/auth-doctor.mjs`を実行してください。
+設定内容・認証値を出力/共有する必要はありません。実行依存の失敗はキャッシュせず、
+同じパスのPythonを修復した後の要求から再評価します。
+
+HomebrewなどでPythonを削除・入れ替えた場合は、利用可能なPythonでインストーラを再実行し、
+通信idle時に更新してください。正常な認証も含め常に401になる場合、healthの成功と
+不正Bearerの拒否だけでは本人認証の成功を証明できません。
+今回の本番はPATH修復済みであり、本修正のコミットだけで稼働runtimeが切り替わることはありません。
