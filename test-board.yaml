@@ -29,6 +29,18 @@ cases:
     issues: [145]
     notes: "probeはloopbackだけに認証なしhandshakeを送り、音声・認証情報を送らない。"
 
+  - id: TC-114
+    title: "toolsが空のときにtool_choiceを転送しない"
+    feature: "toolsなしChatのtool_choice互換性"
+    scenario: "Chat変換、OpenCode Responses直結、Chat非対応時のResponsesフォールバック、手動経路でauto/noneを省略し、required/名前付きは上流要求0件のローカル422にし、toolsありの指定は維持する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-search.mjs, src/codex-bridge.mjs, src/manual-providers.mjs, src/model-router.mjs]
+    test_file: test/bridge-transport.test.mjs
+    issues: [146]
+    notes: "test/tool-search.test.mjsで共通規則、test/manual-providers.test.mjsで手動経路、test/bridge-transport.test.mjsで実HTTP境界とResponsesフォールバック、test/model-router.test.mjsでOpenCode Responses直結を検証。"
+
   - id: TC-111
     title: "中継障害時にGPT直結の退避方法をエラーへ表示する"
     feature: "中継障害からの手動退避案内"

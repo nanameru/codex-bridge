@@ -51,7 +51,7 @@ export function recoverWithAnswer(body) {
       + 'Do not call or simulate more tools. State completed work, remaining work and uncertainty honestly. If observation is still pending, report that status. '
       + 'Keep the report concise, around 1500 characters. Do not repeat promises to check. Never claim an unfinished task succeeded. Reply in the user\'s language.' }] };
 }
-// Recovery allows one bounded retry for length or empty output. A provider ignoring tools=[]/none cannot
+// Recovery allows one bounded retry for length or empty output. A provider ignoring empty tools cannot
 // dispatch a tool. Buffer only this exceptional response until validation.
 export function answerOnlyStream(contentType, maxBytes, { retry, diagnose = () => {} } = {}) {
   let bytes = 0, chunks = [];
