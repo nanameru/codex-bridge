@@ -13,7 +13,7 @@ import { toolChoiceForTools, ToolSearchError } from "./tool-search.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 import { toolRecoveryPlan, recoverWithAnswer, answerOnlyStream } from "./tool-recovery.mjs";
 import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFailure } from "./handoff-status.mjs";
-import { authenticateCodex, codexRoot as defaultCodexRoot, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION, LOCAL_AUTH_HELP } from "./local-security.mjs";
+import { authenticateCodex, codexHomeId, codexRoot as defaultCodexRoot, diagnoseCodexAuth, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION, LOCAL_AUTH_HELP } from "./local-security.mjs";
 import { createRequestGuard } from "./request-guard.mjs";
 import { HISTORY_MODES, readHistoryMode, modeHelp } from "./history-mode.mjs";
 import { restoreRolloutHistory } from "./rollout-history.mjs";
@@ -239,6 +239,7 @@ export async function fetchWithAvailabilityRetry(fetcher, url, options, onRetry 
 
 export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1", fetcher = fetch,
   codexRoot = defaultCodexRoot(), authenticate = (request) => authenticateCodex(request, codexRoot),
+  catalogAuthReady = () => diagnoseCodexAuth(codexRoot).ok,
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
@@ -329,7 +330,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       try { activeHistoryMode = historyMode ?? readHistoryMode(codexRoot); } catch { activeHistoryMode = 'invalid'; }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
-        live_catalog: Boolean(catalogProvider), summary_model: summaryModel, history_mode: activeHistoryMode,
+        live_catalog: Boolean(catalogProvider),
+        catalog_auth: catalogProvider ? { codex_home: codexHomeId(codexRoot), ready: catalogAuthReady() } : undefined,
+        summary_model: summaryModel, history_mode: activeHistoryMode,
         whatstoken_free: { enabled: whatstokenFreeEnabled, configured: Boolean(manualKey('whatstoken')) },
         request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxBytes },
         history_transport: allowDirectResponses ? "model" : "chat",

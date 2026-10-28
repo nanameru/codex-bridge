@@ -22,6 +22,12 @@ jobs:
       - run: bash -n scripts/switch.sh
       - run: bash -n scripts/legacy-switch.sh
       - run: python3 -m py_compile scripts/*.py
+      - name: PowerShell構文を検証する
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts/windows/catalog-doctor.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors; exit 1 }
       - run: python3 scripts/run_test_inventory.py --output test-results
       - name: ケース別テスト結果を保存する
         if: always()
@@ -30,3 +36,42 @@ jobs:
           name: case-results
           path: test-results/
           retention-days: 14
+
+  windows-catalog:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16'
+      - name: Windows PowerShell 5.1で構文を検証する
+        shell: powershell
+        run: |
+          foreach ($name in @('catalog-doctor.ps1', 'catalog-setup.ps1')) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path 'scripts\windows' $name)), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors; exit 1 }
+          }
+      - name: Windowsでカタログ診断・移行テストを実行する
+        run: python -m unittest discover -s test -p "test_catalog_doctor.py" -v
+      - name: Windowsで本人認証の読み取り分岐を検証する
+        run: node --test test/windows-auth.test.mjs
+      - name: Windowsで旧OpenCode専用カタログをPowerShell経由で診断する
+        shell: powershell
+        run: |
+          $homeDir = Join-Path $env:RUNNER_TEMP 'codex-home'
+          New-Item -ItemType Directory -Force $homeDir | Out-Null
+          $catalog = (Join-Path $homeDir 'model-catalog.json') -replace '\\','/'
+          '{"models":[{"slug":"opencode/gpt-6-luna"},{"slug":"opencode/deepseek-v4.1-flash"}]}' | Set-Content -Encoding ascii (Join-Path $homeDir 'model-catalog.json')
+          '{"models":[{"slug":"gpt-6.1-sol"}]}' | Set-Content -Encoding ascii (Join-Path $homeDir 'models_cache.json')
+          "model = `"opencode/deepseek-v4.1-flash`"`r`nmodel_catalog_json = `"$catalog`"`r`n" | Set-Content -Encoding ascii -NoNewline (Join-Path $homeDir 'config.toml')
+          $before = Get-FileHash (Join-Path $homeDir 'config.toml')
+          $out = & .\scripts\windows\catalog-doctor.ps1 -CodexHome $homeDir -Json | ConvertFrom-Json
+          if ($out.status -ne 'legacy_opencode_only' -or $out.target_status -ne 'hidden_by_catalog') { $out; exit 1 }
+          & .\scripts\windows\catalog-doctor.ps1 -CodexHome $homeDir -Action apply -Port 9
+          if ($LASTEXITCODE -eq 0) { Write-Error 'routerなしで適用されました'; exit 1 }
+          if ((Get-FileHash (Join-Path $homeDir 'config.toml')).Hash -ne $before.Hash) { Write-Error '失敗時に設定が変わりました'; exit 1 }
+          exit 0

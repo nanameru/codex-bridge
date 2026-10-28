@@ -1,6 +1,6 @@
 """Switch the local Codex client between static and authenticated live catalogs."""
 import argparse
-import fcntl
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -11,6 +11,25 @@ from switch_config import atomic_write
 from unified_config import edit_table
 
 PROVIDER = "codex-live"
+
+
+@contextmanager
+def exclusive_lock(path):
+    """Block until this process owns path; works on POSIX and Windows."""
+    with path.open("a+") as lock:
+        if os.name == "nt":
+            import msvcrt
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
 
 
 def candidate(source, port=8790):
@@ -75,8 +94,7 @@ if __name__ == "__main__":
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     if args.restore and not args.apply:
         parser.error("復元には--applyも指定してください")
-    with (root / ".live-catalog.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with exclusive_lock(root / ".live-catalog.lock"):
         if args.apply:
             print(apply(root, args.port, args.restore))
             print("設定ファイルの更新と、起動済み常駐app-serverへの反映は別です。")
