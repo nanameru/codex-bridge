@@ -130,7 +130,7 @@ class PortableHistoryTests(unittest.TestCase):
                 ph.configure(self.root, apply=True)
         self.assertEqual(self.path.read_text(), self.source)
         newer = self.source + '\n# newer\n'
-        with mock.patch.object(ph, "verify_runtime", side_effect=lambda *_: self.write(newer)):
+        with mock.patch.object(ph, "verify_runtime", side_effect=lambda *_, **__: self.write(newer)):
             with self.assertRaisesRegex(ValueError, "変更"):
                 ph.configure(self.root, apply=True)
         self.assertEqual(self.path.read_text(), newer)
@@ -154,6 +154,23 @@ class PortableHistoryTests(unittest.TestCase):
                                 env={**os.environ, "CODEX_HOME": str(self.root)}, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("private-test-secret", result.stdout + result.stderr)
+
+    def test_live_catalog_drift_requires_selected_model_and_protected_services(self):
+        models = ph.read_catalog(self.root)
+        health = {"mode": "unified", "live_catalog": True, "model_ids": ["gpt-test", "new-model"]}
+        with mock.patch.object(ph.subprocess, "run", return_value=mock.Mock(stdout="codex-cli 0.165.0")), \
+                mock.patch.object(ph, "verify_service", return_value=health):
+            ph.verify_runtime(models, "codex", selected_model="gpt-test")
+            for selected in [None, "retired-model"]:
+                with self.assertRaises(ValueError):
+                    ph.verify_runtime(models, "codex", selected_model=selected)
+            health["live_catalog"] = False
+            with self.assertRaises(ValueError):
+                ph.verify_runtime(models, "codex", selected_model="gpt-test")
+        with mock.patch.object(ph.subprocess, "run", return_value=mock.Mock(stdout="codex-cli 0.165.0")), \
+                mock.patch.object(ph, "verify_service", side_effect=ValueError("unsafe")):
+            with self.assertRaises(ValueError):
+                ph.verify_runtime(models, "codex", selected_model="gpt-test")
 
     def test_refuses_missing_malformed_unknown_and_linked_catalogs(self):
         path = self.root / "unified-model-catalog.json"

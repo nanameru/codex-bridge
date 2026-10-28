@@ -70,14 +70,20 @@ def candidate_config(source, root, models):
     return candidate
 
 
-def verify_runtime(models, binary, port=8790):
+def verify_runtime(models, binary, port=8790, selected_model=None):
     result = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10, check=True)
     version = re.search(r"codex-cli (\d+)\.(\d+)\.(\d+)", result.stdout)
     if not version or tuple(map(int, version.groups())) < (0, 162, 0):
         raise ValueError("Codex 0.162.0以上で検証してください")
     health = verify_service(port)
     verify_service(8788)
-    if health.get("mode") != "unified" or set(health.get("model_ids", [])) != {m["slug"] for m in models}:
+    live_ids = health.get("model_ids", [])
+    same_catalog = set(live_ids) == {m["slug"] for m in models}
+    # A live catalog can add or retire models after the local snapshot was saved.
+    # Still require the selected model to exist, and retain exact matching for static routers.
+    compatible_live = (health.get("live_catalog") is True
+                       and selected_model is not None and selected_model in live_ids)
+    if health.get("mode") != "unified" or not (same_catalog or compatible_live):
         raise ValueError("同じ統合カタログで保護版routerを起動してください")
 
 
@@ -102,7 +108,8 @@ def configure(root, *, apply=False, restore=None, binary="codex"):
         return report
     if restore is None:
         url = tomllib.loads(target)["model_providers"][PROVIDER]["base_url"]
-        verify_runtime(models, binary, 8791 if ":8791/" in url else 8790)
+        verify_runtime(models, binary, 8791 if ":8791/" in url else 8790,
+                       selected_model=tomllib.loads(target)["model"])
     if private_read(root, "config.toml") != source:
         raise ValueError("確認中に設定が変更されました。再実行してください")
     fd, backup_path = tempfile.mkstemp(prefix=BACKUP_PREFIX, dir=root)
