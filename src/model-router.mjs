@@ -259,7 +259,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   let routes = catalogRoutes(catalog);
   let modelSync = cliModelSync;
   const getModelSync = () => modelSync ??= new CliModelSync({ root: codexRoot,
-    routerBase: `http://127.0.0.1:${server.address()?.port ?? 8790}/v1` });
+    routerBase: `http://127.0.0.1:${server.address()?.port ?? 8791}/v1` });
   let fallbackState = providerFallbackState;
   const getFallbackState = () => fallbackState ??= new ProviderFallbackState({
     file: providerFallbackFile, unknownCooldownMs: providerFallbackCooldownMs,
@@ -1124,7 +1124,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     catalogProvider, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
     cliModelSyncEnabled: process.env.CODEX_CLI_MODEL_SYNC !== "0",
     onMetric: (metric) => console.log(JSON.stringify(metric)) });
-  server.listen(Number(process.env.ROUTER_PORT ?? 8790), "127.0.0.1", () => {
+  server.listen(Number(process.env.ROUTER_PORT ?? 8791), "127.0.0.1", () => {
     console.log("Unified model router listening on loopback");
   });
   for (const signal of ["SIGTERM", "SIGINT"]) {

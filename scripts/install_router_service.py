@@ -10,10 +10,9 @@ import time
 from switch_config import atomic_write
 from local_security import ensure_bridge_key, verify_service, service_environment
 
-ROUTER_SERVICES = {
-    "com.kimurataiyou.codex-model-router": 8790,
-    "com.kimurataiyou.codex-model-router-8791": 8791,
-}
+ROUTER_PORT = 8791
+ROUTER_LABEL = "com.kimurataiyou.codex-model-router-8791"
+ROUTER_SERVICES = {ROUTER_LABEL: ROUTER_PORT}
 
 
 def wait_for_unload(service):
@@ -26,7 +25,7 @@ def wait_for_unload(service):
     raise SystemExit("常駐登録の解除待ちがタイムアウトしました")
 
 
-def wait_for_idle(timeout, ports=(8790,)):
+def wait_for_idle(timeout, ports=(ROUTER_PORT,)):
     deadline = time.monotonic() + timeout
     notified = False
     while True:
@@ -89,8 +88,8 @@ def install():
     mode.add_argument("--update-if-idle", action="store_true")
     mode.add_argument("--update-now", action="store_true", help="本人の明示指定で通信中でも今更新します")
     parser.add_argument("--wait-idle", type=int, default=0)
-    parser.add_argument("--service", choices=sorted(ROUTER_SERVICES), default="com.kimurataiyou.codex-model-router",
-                        help="更新する既知のrouterサービス（既定: 8790）")
+    parser.add_argument("--service", choices=sorted(ROUTER_SERVICES), default=ROUTER_LABEL,
+                        help="更新する既知のrouterサービス（既定: 8791）")
     parser.add_argument("--enable-whatstoken-free", action="store_true", help="WhatsTokenを無料条件確認付きの自動ルートへ追加する")
     arguments = parser.parse_args()
     if not 0 <= arguments.wait_idle <= 1800:
@@ -126,8 +125,8 @@ def install():
         "Label": label, "ProgramArguments": [node, str(runtime / "model-router.mjs")],
         "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 10,
         "EnvironmentVariables": {**environment, "CODEX_HOME": str(root)},
-        "StandardOutPath": str(logs / "model-router.log") if port == 8790 else str(logs / f"model-router-{port}.log"),
-        "StandardErrorPath": str(logs / "model-router.stderr.log") if port == 8790 else str(logs / f"model-router-{port}.stderr.log"),
+        "StandardOutPath": str(logs / f"model-router-{port}.log"),
+        "StandardErrorPath": str(logs / f"model-router-{port}.stderr.log"),
     }
     previous = path.read_bytes() if path.exists() else None
     if previous:
@@ -135,8 +134,7 @@ def install():
         registered_port = payload["EnvironmentVariables"].get("ROUTER_PORT")
         if registered_port is not None and str(registered_port) != str(port):
             raise SystemExit("常駐設定のROUTER_PORTが選択したサービスと一致しません。更新していません")
-    if port != 8790:
-        payload["EnvironmentVariables"]["ROUTER_PORT"] = str(port)
+    payload["EnvironmentVariables"]["ROUTER_PORT"] = str(port)
     if arguments.enable_whatstoken_free:
         payload["EnvironmentVariables"]["CODEX_WHATSTOKEN_FREE"] = "1"
     replace = previous is not None and plistlib.loads(previous) != payload

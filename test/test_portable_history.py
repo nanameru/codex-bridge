@@ -21,7 +21,7 @@ class PortableHistoryTests(unittest.TestCase):
         self.source = ('# preserve\nmodel="gpt-test"\nmodel_provider="openai"\nmodel_catalog_json='
                        + json.dumps(str(self.root / "unified-model-catalog.json")) + '\n'
                        '[profiles.other]\nmodel="other"\n[model_providers.codex-bridge]\n'
-                       'name="Codex Bridge"\nbase_url="http://127.0.0.1:8790/v1"\n'
+                       'name="Codex Bridge"\nbase_url="http://127.0.0.1:8791/v1"\n'
                        'requires_openai_auth=true\nwire_api="responses"\n'
                        '[model_providers.codex-bridge.http_headers]\nx-codex-bridge-direct="1"\n'
                        'x-preserve="private-test-value"\n[model_providers.codex-bridge.capabilities]\n'
@@ -53,6 +53,11 @@ class PortableHistoryTests(unittest.TestCase):
         self.assertEqual(result['model_providers'][ph.PROVIDER]['base_url'], 'http://127.0.0.1:8791/v1')
         self.assertEqual(verify.call_args.args[-1], 8791)
         self.assertEqual(result['model'], 'gpt-test')
+
+    def test_retired_8790_endpoint_is_refused(self):
+        self.write(self.source.replace('http://127.0.0.1:8791/v1', 'http://127.0.0.1:8790/v1'))
+        with self.assertRaisesRegex(ValueError, "統合provider"):
+            ph.configure(self.root, apply=True)
 
     def test_manual_provider_catalog_is_preserved(self):
         path = self.root / 'unified-model-catalog.json'
@@ -104,7 +109,7 @@ class PortableHistoryTests(unittest.TestCase):
 
     def test_refuses_custom_provider_endpoint_credentials_and_unknown_marker(self):
         variants = [self.source.replace('model_provider="openai"', 'model_provider="custom"'),
-                    self.source.replace('http://127.0.0.1:8790/v1', 'https://example.org/v1'),
+                    self.source.replace('http://127.0.0.1:8791/v1', 'https://example.org/v1'),
                     self.source.replace('wire_api="responses"', 'wire_api="responses"\nenv_key="CUSTOM"'),
                     self.source.replace('x-codex-bridge-direct="1"', 'x-codex-bridge-direct="unknown"')]
         for source in variants:
@@ -142,7 +147,7 @@ class PortableHistoryTests(unittest.TestCase):
         with mock.patch.object(ph.subprocess, "run", return_value=mock.Mock(stdout="codex-cli 0.163.0")), \
                 mock.patch.object(ph, "verify_service", return_value=health) as verify:
             ph.verify_runtime(models, "codex")
-            self.assertEqual([c.args[0] for c in verify.call_args_list], [8790, 8788])
+            self.assertEqual([c.args[0] for c in verify.call_args_list], [8791, 8788])
         for version in ["codex-cli 0.161.0", "unknown"]:
             with mock.patch.object(ph.subprocess, "run", return_value=mock.Mock(stdout=version)):
                 with self.assertRaises(ValueError):

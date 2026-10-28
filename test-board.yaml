@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-112
+    title: "常駐ルーターを8791だけで起動し8790を再生成しない"
+    feature: "モデルルーターの単一ポート化"
+    scenario: "旧8790退役後の既定port・既知サービス・接続待機・ログ・ROUTER_PORT・health"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/install_router_service.py, scripts/live_catalog.py, scripts/unified_config.py, scripts/portable_history.py, scripts/rescue_handoff.py, scripts/secure_local.py, src/model-router.mjs, src/cli-model-sync.mjs]
+    test_file: test/test_service_python.py
+    issues: [139]
+    notes: "既知サービスを8791だけに限定し、既定ポート・待機対象・ログ・ROUTER_PORTが8791へ揃うことを一時ホームと模擬launchctlで検証。実サービスはテストから変更しない。"
+
   - id: TC-111
     title: "中継障害時にGPT直結の退避方法をエラーへ表示する"
     feature: "中継障害からの手動退避案内"
@@ -106,7 +118,7 @@ cases:
     source: [src/manual-providers.mjs, src/model-router.mjs, scripts/install_fresh_cli.py, scripts/unified_config.py]
     test_file: test/manual-providers.test.mjs
     issues: [120]
-    notes: "test/test_install_fresh_cli.pyとtest/manual-providers-e2e.py併用。実/modelにKimi/DeepSeekを確認。新8791経路で各HTTP200、実Codexでも両モデルcompleted/OK。旧8790は既存通信のため保持。Kimiを含む共有cacheからのprepare再生成と配布runtimeの一覧も検証。docs/kimi-deepseek-rollout.mdとdocs/distribution-setup.md参照。"
+    notes: "test/test_install_fresh_cli.pyとtest/manual-providers-e2e.py併用。実/modelにKimi/DeepSeekを確認。新8791経路で各HTTP200、実Codexでも両モデルcompleted/OK。旧8790はIssue #139で退役。Kimiを含む共有cacheからのprepare再生成と配布runtimeの一覧も検証。docs/kimi-deepseek-rollout.mdとdocs/distribution-setup.md参照。"
   - id: TC-100
     title: "通常のcodex起動で最新モデル一覧を表示する"
     feature: "CLIの設定再読込"

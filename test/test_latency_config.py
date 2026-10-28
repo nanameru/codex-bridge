@@ -13,7 +13,7 @@ class LatencyConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / 'config.toml'
-            source = '# keep comment\nmodel="chosen"\nmodel_provider="openai"\n[mcp_servers.example]\ncommand="example"\n[model_providers.bridge]\nbase_url="http://127.0.0.1:8790/v1"\n'
+            source = '# keep comment\nmodel="chosen"\nmodel_provider="openai"\n[mcp_servers.example]\ncommand="example"\n[model_providers.bridge]\nbase_url="http://127.0.0.1:8791/v1"\n'
             path.write_text(source)
             self.assertFalse(latency_config.configure(root)['applied'])
             self.assertEqual(path.read_text(), source)

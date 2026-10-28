@@ -12,7 +12,7 @@
 - `file`の`auth.json`は本人所有・0600相当の通常ファイルが必要です。Linux/Windowsのkeyring、暗号化secrets backend、メモリ限定の認証は未対応です。
 - Command CodeのAPI対応プランとAPIキー。OpenCode経由のDeepSeekにはOpenCode GoのAPIキーも必要です。
 
-以下は標準ポート8788/8790を使う構成向けです。別ポートや独自launcherを使う場合は上書きせず現行構成を確認してください。
+以下は標準ポート8788/8791を使う構成向けです。別ポートや独自launcherを使う場合は上書きせず現行構成を確認してください。
 本人Macの8791への反映は[作業記録](kimi-deepseek-rollout.md)に分けています。
 
 認証に配布元のパスやアカウントは使いません。通常は実行ユーザーの`~/.codex`、`CODEX_HOME`指定時はそのディレクトリを使います。Codex・router・単体Bridgeは同じユーザー・同じ`CODEX_HOME`で起動してください。別ターミナルや常駐サービスに同じ環境変数が自動で伝わるとは限りません。配布元の`auth.json`・APIキー・LaunchAgentはコピーしないでください。

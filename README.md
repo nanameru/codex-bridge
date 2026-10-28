@@ -89,7 +89,7 @@ GPTは標準の圧縮を維持します。OpenCodeへの履歴引き継ぎに時
 それ以外のモデルの相対順序は維持します。
 
 ```text
-Codex ── 共通router（127.0.0.1:8790） ┬─ GPT → OpenAI（既存のCodexログイン）
+Codex ── 共通router（127.0.0.1:8791） ┬─ GPT → OpenAI（既存のCodexログイン）
                                     └─ OpenCode → 既存bridge（127.0.0.1:8788）
 ```
 

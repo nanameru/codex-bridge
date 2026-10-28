@@ -161,7 +161,7 @@ def launch_args(root, path, model):
     config = tomllib.loads(private_read(root, "config.toml"))
     provider = config.get("model_providers", {}).get(PROVIDER, {})
     if (provider.get("capabilities", {}).get("remote_compaction") != "unsupported"
-            or provider.get("base_url") not in ("http://127.0.0.1:8790/v1", "http://127.0.0.1:8791/v1")
+            or provider.get("base_url") != "http://127.0.0.1:8791/v1"
             or provider.get("wire_api") != "responses" or provider.get("requires_openai_auth") is not True
             or any(provider.get(k) for k in ("env_key", "auth", "experimental_bearer_token"))):
         raise ValueError("先に portable_history.py --apply で文章圧縮を設定してください")

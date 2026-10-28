@@ -332,7 +332,7 @@ def activate_normal(root, port):
 def main():
     parser = argparse.ArgumentParser(description="同じチャットで双方向にモデルを切り替える設定")
     parser.add_argument("mode", choices=["prepare", "on", "off", "transports", "normal-on", "flash-code-mode"])
-    parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--port", type=int, default=8791)
     arguments = parser.parse_args()
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if arguments.mode == "transports":

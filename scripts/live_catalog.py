@@ -11,9 +11,10 @@ from switch_config import atomic_write
 from unified_config import edit_table
 
 PROVIDER = "codex-live"
+ROUTER_PORT = 8791
 
 
-def candidate(source, port=8790):
+def candidate(source, port=ROUTER_PORT):
     if not 1 <= port <= 65535:
         raise ValueError("ポートが不正です")
     data = tomllib.loads(source)
@@ -31,7 +32,7 @@ def candidate(source, port=8790):
     return result
 
 
-def apply(root, port=8790, restore=False):
+def apply(root, port=ROUTER_PORT, restore=False):
     config = root / "config.toml"
     state = root / "live-catalog-state.json"
     if any(p.is_symlink() for p in [root, config, state]):
@@ -70,7 +71,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--restore", action="store_true")
-    parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--port", type=int, default=ROUTER_PORT)
     args = parser.parse_args()
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     if args.restore and not args.apply:

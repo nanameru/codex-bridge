@@ -12,7 +12,7 @@ def main():
         raise SystemExit("実際の圧縮履歴をOpenAIで要約し、OpenCodeで応答を確認します。RUN_LIVE_ROUTER=1が必要です")
     parser = argparse.ArgumentParser()
     parser.add_argument("--rollout", type=Path, required=True)
-    parser.add_argument("--base-url", default="http://127.0.0.1:8790")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8791")
     arguments = parser.parse_args()
     history = None
     with arguments.rollout.open() as source:
