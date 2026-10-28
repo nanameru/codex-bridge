@@ -518,6 +518,18 @@ curl -s -X POST http://127.0.0.1:8788/v1/responses \
 
 3. 思考が長いモデルでは `stream_idle_timeout_ms` を上げる（既定 5 分）
 
+### 音声入力(Voice/Dictate)だけ「Reconnecting...」のまま止まる
+
+テキストは動くのに音声だけ接続できない場合、音声のRealtime WebSocketがローカルproxyやテキスト用routerへ
+向いている可能性があります。設定を変更しない診断で、テキストと音声の接続先を別々に確認してください。
+
+```bash
+python3 scripts/realtime_config.py doctor
+```
+
+他ツール(例: opencodex)が `experimental_realtime_ws_base_url` をローカルproxyへ上書きしている場合、
+Bridgeは上書きせず停止します。切り分けと復旧は[音声だけReconnectingになる場合](docs/realtime-voice.md)を参照してください。
+
 ### 同じ文章が2回表示される
 
 `codex exec` の仕様です。ストリーミング表示と確定メッセージが両方出ます。
