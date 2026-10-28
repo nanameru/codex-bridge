@@ -25,7 +25,7 @@ def read_catalog(root):
     if not isinstance(models, list) or not models or len(models) > 1000:
         raise ValueError("統合カタログの形式が不正です")
     if any(not isinstance(m, dict) or not isinstance(m.get("slug"), str)
-           or m.get("router_provider") not in ("openai", "opencode") for m in models):
+           or m.get("router_provider") not in ("openai", "opencode", "commandcode", "ollama", "whatstoken") for m in models):
         raise ValueError("統合カタログの経路が不正です")
     if len({m["slug"] for m in models}) != len(models):
         raise ValueError("統合カタログに重複があります")
@@ -46,7 +46,7 @@ def candidate_config(source, root, models):
     provider = providers[PROVIDER]
     if not isinstance(provider.get("http_headers", {}), dict) or not isinstance(provider.get("capabilities", {}), dict):
         raise ValueError("統合providerの付加設定が不正です")
-    if (provider.get("base_url") != "http://127.0.0.1:8790/v1"
+    if (provider.get("base_url") not in ("http://127.0.0.1:8790/v1", "http://127.0.0.1:8791/v1")
             or provider.get("name") in (None, "OpenAI")
             or provider.get("requires_openai_auth") is not True
             or provider.get("wire_api") != "responses"
@@ -55,7 +55,12 @@ def candidate_config(source, root, models):
     marker = provider.get("http_headers", {}).get("x-codex-bridge-direct")
     if marker not in (None, "1"):
         raise ValueError("未知の直結設定は変更しません")
+    # Preserve the active local router, including installations migrated to 8791.
+    active_url = config.get("openai_base_url", provider["base_url"])
+    if active_url not in ("http://127.0.0.1:8790/v1", "http://127.0.0.1:8791/v1"):
+        raise ValueError("未知の接続先は変更しません")
     candidate = edit_table(source, (), {"model_provider": PROVIDER})
+    candidate = edit_table(candidate, ("model_providers", PROVIDER), {"base_url": active_url})
     candidate = edit_table(candidate, ("model_providers", PROVIDER, "capabilities"),
                            {"remote_compaction": "unsupported"})
     # Old routers also use the common conversion path when this marker is absent.
@@ -65,14 +70,20 @@ def candidate_config(source, root, models):
     return candidate
 
 
-def verify_runtime(models, binary):
+def verify_runtime(models, binary, port=8790, selected_model=None):
     result = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10, check=True)
     version = re.search(r"codex-cli (\d+)\.(\d+)\.(\d+)", result.stdout)
     if not version or tuple(map(int, version.groups())) < (0, 162, 0):
         raise ValueError("Codex 0.162.0以上で検証してください")
-    health = verify_service(8790)
+    health = verify_service(port)
     verify_service(8788)
-    if health.get("mode") != "unified" or set(health.get("model_ids", [])) != {m["slug"] for m in models}:
+    live_ids = health.get("model_ids", [])
+    same_catalog = set(live_ids) == {m["slug"] for m in models}
+    # A live catalog can add or retire models after the local snapshot was saved.
+    # Still require the selected model to exist, and retain exact matching for static routers.
+    compatible_live = (health.get("live_catalog") is True
+                       and selected_model is not None and selected_model in live_ids)
+    if health.get("mode") != "unified" or not (same_catalog or compatible_live):
         raise ValueError("同じ統合カタログで保護版routerを起動してください")
 
 
@@ -96,7 +107,9 @@ def configure(root, *, apply=False, restore=None, binary="codex"):
     if not apply or not changed:
         return report
     if restore is None:
-        verify_runtime(models, binary)
+        url = tomllib.loads(target)["model_providers"][PROVIDER]["base_url"]
+        verify_runtime(models, binary, 8791 if ":8791/" in url else 8790,
+                       selected_model=tomllib.loads(target)["model"])
     if private_read(root, "config.toml") != source:
         raise ValueError("確認中に設定が変更されました。再実行してください")
     fd, backup_path = tempfile.mkstemp(prefix=BACKUP_PREFIX, dir=root)

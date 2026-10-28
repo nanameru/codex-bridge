@@ -21,7 +21,7 @@ async function fixture(t, handler = p => answer(p), options = {}) {
   let clock = Date.now();
   const calls = [], metrics = [];
   const state = new ProviderFallbackState({ now: () => clock });
-  const server = createRouter({ catalog, authenticate: () => true, manualProvidersEnabled: true,
+  const server = createRouter({ historyMode: "openai", catalog, authenticate: () => true, manualProvidersEnabled: true,
     bridgeKey: () => 'bridge-only', manualKey: p => p + '-only', providerFallbackState: state,
     onMetric: m => metrics.push(m), fetcher: async (url, init) => {
       const provider = Object.entries(MANUAL_PROVIDERS).find(([, c]) => url.startsWith(c.base))?.[0]

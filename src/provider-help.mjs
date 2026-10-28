@@ -7,6 +7,11 @@ export const PROVIDER_HELP = Object.freeze({
   ollama: Object.freeze({ label: 'Ollama Cloud', login: 'https://ollama.com/signin', billing: 'https://ollama.com/pricing' }),
   whatstoken: Object.freeze({ label: 'WhatsToken', login: 'https://www.whatstoken.ai/login', billing: 'https://www.whatstoken.ai' }),
 });
+export const DIRECT_RECOVERY_HELP = '\nGPTのdirectプロファイルを設定済みなら、別のターミナルで「codex --profile direct」を実行し、新しいセッションでGPTを利用できます。';
+const DIRECT_RECOVERY_CODES = new Set(['authentication_required', 'provider_limits_exhausted', 'upstream_error', 'upstream_redirect', 'empty_upstream', 'request_timeout']);
+export function directRecoveryHelp(status, code) {
+  return status >= 500 || DIRECT_RECOVERY_CODES.has(code) ? DIRECT_RECOVERY_HELP : '';
+}
 export function providerHelp(provider) {
   const help = Object.hasOwn(PROVIDER_HELP, provider) ? PROVIDER_HELP[provider] : null;
   return help ? `\n${help.label}：ログイン ${help.login} ／ プラン・支払い ${help.billing}` : '';

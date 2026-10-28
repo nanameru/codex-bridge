@@ -1,8 +1,9 @@
 /** Local trust boundary shared by both services. Never logs or forwards credentials. */
-import { constants, openSync, closeSync, fstatSync, lstatSync, readFileSync } from "node:fs";
+import { constants, openSync, closeSync, fstatSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 
 export const INTERNAL_AUTH_HEADER = "x-codex-bridge-auth";
 export const SECURITY_VERSION = "local-owner-v1";
@@ -27,14 +28,14 @@ export async function fetchOpenCode(url, options, fetcher = fetch) {
   return response;
 }
 
-export function readPrivateFile(root, name) {
+export function readPrivateFile(root, name, forbiddenMode = 0o077) {
   let descriptor;
   try {
     const parent = lstatSync(root);
     if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o022)) return null;
     descriptor = openSync(join(root, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = fstatSync(descriptor);
-    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077) || info.nlink !== 1
+    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & forbiddenMode) || info.nlink !== 1
         || info.size > 64 * 1024) return null;
     return readFileSync(descriptor, "utf8");
   } catch { return null; }
@@ -47,19 +48,100 @@ function sameSecret(received, expected) {
   return timingSafeEqual(digest(received), digest(expected));
 }
 
-export function authenticateCodex(request, root = codexRoot()) {
+const settingsCache = new Map();
+function credentialSettings(root) {
+  let source = readPrivateFile(root, "config.toml", 0o022);
+  if (source === null) {
+    // Only an absent config means defaults; unreadable/unsafe configs fail closed.
+    try { lstatSync(join(root, "config.toml")); return null; }
+    catch (error) { if (error.code !== "ENOENT") return null; }
+    source = "";
+  }
+  if (!source.trim()) return { store: "file" };
+  const python = process.env.CODEX_BRIDGE_PYTHON ?? "python3";
+  if (process.env.CODEX_BRIDGE_PYTHON !== undefined && !isAbsolute(python)) {
+    return { error: "credential_runtime_unavailable" };
+  }
+  const digest = createHash("sha256").update(python + "\0" + source).digest("hex");
+  if (settingsCache.has(digest)) {
+    const settings = settingsCache.get(digest);
+    settingsCache.delete(digest);
+    settingsCache.set(digest, settings);
+    return settings;
+  }
+  // Use the same TOML parser as our setup tools; never send config to a service.
+  let settings = null;
+  try {
+    settings = JSON.parse(execFileSync(python, ["-I", "-c",
+      'import sys,json,tomllib\ntry: c=tomllib.loads(sys.stdin.read())\nexcept tomllib.TOMLDecodeError: sys.exit(65)\nprint(json.dumps({"store":c.get("cli_auth_credentials_store","file")}))'],
+    { input: source, encoding: "utf8", timeout: 3000, maxBuffer: 65536, stdio: ["pipe", "pipe", "ignore"] }));
+  } catch (error) {
+    // Never cache a missing/incompatible runtime: a repaired environment must recover.
+    if (error.status !== 65) return { error: "credential_runtime_unavailable" };
+  }
+  if (settingsCache.size >= 32) settingsCache.delete(settingsCache.keys().next().value);
+  settingsCache.set(digest, settings);
+  return settings;
+}
+
+function macKeychainRead(service, account) {
+  return execFileSync("/usr/bin/security", ["find-generic-password", "-s", service, "-a", account, "-w"],
+    { encoding: "utf8", timeout: 3000, maxBuffer: 65536, stdio: ["ignore", "pipe", "ignore"] });
+}
+
+/** Read only the caller's Codex store. Never scan other users, homes or keychains. */
+export function readCodexAuth(root = codexRoot(), { platform = process.platform, keychainRead = macKeychainRead } = {}) {
+  const rejected = (reason, store = "unknown") => ({ auth: null, reason, store });
+  try {
+    const info = lstatSync(root);
+    if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) return rejected("unsafe_codex_home");
+    const settings = credentialSettings(root);
+    if (!settings) return rejected("credential_config_invalid");
+    if (settings.error) return rejected(settings.error);
+    const { store } = settings;
+    if (!["file", "keyring", "auto"].includes(store)) return rejected("unsupported_credential_store");
+    let serialized;
+    let usedStore = "file";
+    if (store !== "file") {
+      if (platform !== "darwin" && store === "keyring") return rejected("keyring_platform_unsupported", store);
+      if (platform === "darwin") {
+        try {
+          const account = "cli|" + createHash("sha256").update(realpathSync(root)).digest("hex").slice(0, 16);
+          serialized = keychainRead("Codex Auth", account);
+          if (serialized) usedStore = "keyring";
+        } catch { if (store === "keyring") return rejected("keyring_unavailable", store); }
+      }
+      if (!serialized && store === "keyring") return rejected("keyring_unavailable", store);
+    }
+    if (!serialized) serialized = readPrivateFile(root, "auth.json");
+    if (serialized === null) return rejected("auth_file_unavailable", usedStore);
+    let auth;
+    try { auth = JSON.parse(serialized); }
+    catch { return rejected("credential_invalid", usedStore); }
+    const expected = auth?.tokens?.access_token ?? auth?.OPENAI_API_KEY;
+    if (typeof expected !== "string" || !expected) return rejected("credential_missing", usedStore);
+    if (auth?.tokens?.access_token && expected.split(".").length === 3) {
+      let claims;
+      try { claims = JSON.parse(Buffer.from(expected.split(".")[1], "base64url").toString("utf8")); }
+      catch { return rejected("credential_invalid", usedStore); }
+      if (!Number.isFinite(claims?.exp) || claims.exp <= Date.now() / 1000) return rejected("credential_expired", usedStore);
+    }
+    return { auth, reason: null, store: usedStore };
+  } catch { return rejected("credential_unavailable"); }
+}
+
+export function diagnoseCodexAuth(root = codexRoot(), options) {
+  const { auth, reason, store } = readCodexAuth(root, options);
+  return { ok: auth !== null, store, reason };
+}
+
+export const LOCAL_AUTH_HELP = "利用者本人のCodex認証を確認できません。CodexとBridgeのCODEX_HOME・認証保存方式・有効期限・ファイル権限を確認してください。配布元の認証情報は不要です。Bridgeリポジトリで診断: node src/auth-doctor.mjs";
+
+export function authenticateCodex(request, root = codexRoot(), options) {
   const bearer = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
   if (!bearer) return false;
-  try {
-    const auth = JSON.parse(readPrivateFile(root, "auth.json"));
-    const expected = auth?.tokens?.access_token ?? auth?.OPENAI_API_KEY;
-    if (!sameSecret(bearer, expected)) return false;
-    if (auth?.tokens?.access_token && expected.split(".").length === 3) {
-      const claims = JSON.parse(Buffer.from(expected.split(".")[1], "base64url").toString("utf8"));
-      if (typeof claims.exp !== "number" || claims.exp <= Date.now() / 1000) return false;
-    }
-    return true;
-  } catch { return false; }
+  const { auth } = readCodexAuth(root, options);
+  return sameSecret(bearer, auth?.tokens?.access_token ?? auth?.OPENAI_API_KEY);
 }
 
 export function readBridgeKey(root = codexRoot()) {
@@ -102,7 +184,7 @@ export function guardBridgeRequest(request, response) {
   }
   if (localError || !authenticateBridge(request)) {
     response.writeHead(localError ?? 401, { "content-type": "application/json", "connection": "close", "cache-control": "no-store" });
-    response.end(JSON.stringify({ error: { type: "local_authentication_required", message: "本人用ローカル接続だけを受け付けます" } }));
+    response.end(JSON.stringify({ error: { type: "local_authentication_required", message: localError ? "ローカルCLI接続だけを受け付けます" : LOCAL_AUTH_HELP } }));
     return false;
   }
   return true;

@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import subprocess
+import sys
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -69,3 +71,25 @@ def verify_service(port, revision=None):
         if error.code != 401:
             raise ValueError("認証拒否の動作を確認できません") from None
     return health
+
+
+def service_environment(previous=None, *, python=None, node=None):
+    """Pin a verified interpreter before changing any service registration.
+
+    Keep the executable's stable symlink path (not its Homebrew Cellar target).
+    Do not inherit arbitrary login-shell environment variables or credentials.
+    """
+    executable = os.path.abspath(python or sys.executable)
+    try:
+        subprocess.run([executable, "-I", "-c", "import sys,tomllib; assert sys.version_info >= (3,11)"],
+                       check=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError("常駐認証にはtomllib対応のPython 3.11以上が必要です。サービスは更新していません") from None
+    environment = dict(previous or {})
+    directories = [str(Path(executable).parent)]
+    if node:
+        directories.append(str(Path(os.path.abspath(node)).parent))
+    directories.extend(environment.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin").split(os.pathsep))
+    environment["PATH"] = os.pathsep.join(dict.fromkeys(path for path in directories if os.path.isabs(path)))
+    environment["CODEX_BRIDGE_PYTHON"] = executable
+    return environment

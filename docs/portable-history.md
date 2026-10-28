@@ -9,7 +9,7 @@ CodexのハーネスとChatGPTログインを維持し、GPTとOpenCode APIの�
 | 推論先の選択 | モデル名でGPT/OpenCodeを振り分ける | `src/model-router.mjs` | 既存 |
 | API・ツールの変換 | ResponsesとChat Completionsの差を吸収する | `src/tool-adapter.mjs`、`src/codex-bridge.mjs` | 既存 |
 | 持ち運べる圧縮 | Codex標準local compactionで文章要約を保存する | `scripts/portable_history.py` | 本変更で追加 |
-| 旧履歴の一度限りの移行 | 元ログを使うか、元のGPTで文章要約へ移す | `src/compaction-handoff.mjs`は既存の送信時フォールバック | 移行ツールは別途必要 |
+| 旧履歴の送信時引き継ぎ | 本人の元ログを選択モデルで再要約、または明示的にOpenAIを使用 | `src/rollout-history.mjs`、`src/history-mode.mjs` | [履歴モード](history-modes.md)。元ログの条件を満たす場合のみ。原本や保存済み暗号履歴は書換えない |
 | 入力の計測 | 文章トークン、画像、転送bytesを別々に評価する | `src/model-router.mjs`の現行見積もりを置換する | 未実装 |
 | ツール出力の整理 | 重複・長いログを削減し、必要時に原本へ戻れるようにする | Headroom等は後段で比較する | 今回は依存追加しない |
 

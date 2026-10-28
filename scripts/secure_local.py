@@ -1,6 +1,5 @@
 """Safe local service operations. No inference, credential printing, or conversation edits."""
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -12,7 +11,7 @@ import time
 import tomllib
 
 from install_router_service import replace_registration, wait_for_idle
-from local_security import ensure_bridge_key, private_read, verify_service
+from local_security import ensure_bridge_key, private_read, verify_service, service_environment
 import patch_legacy_security
 from switch_config import atomic_write
 
@@ -21,15 +20,15 @@ LEGACY_LABEL = "com.kimurataiyou.codex-bridge"
 
 
 def check_credentials(root):
-    auth = json.loads(private_read(root, "auth.json"))
-    if not (auth.get("tokens", {}).get("access_token") or auth.get("OPENAI_API_KEY")):
-        raise ValueError("本人のCodex認証ファイルが必要です（keychainのみの保存は未対応）")
-    token = auth.get("tokens", {}).get("access_token")
-    if token and len(token.split(".")) == 3:
-        segment = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-        if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] <= time.time():
-            raise ValueError("Codex認証の期限が切れています")
+    # Share the exact runtime resolver, including macOS Keychain. Never copy tokens.
+    try:
+        result = subprocess.run(["node", str(ROOT / "src/auth-doctor.mjs"), "--root", str(root)],
+                                text=True, capture_output=True, timeout=10,
+                                env={**os.environ, **service_environment()})
+    except subprocess.TimeoutExpired:
+        raise ValueError("本人認証の診断がタイムアウトしました。認証保存先を確認してください") from None
+    if result.returncode != 0:
+        raise ValueError("本人のCodex認証を確認できません。node src/auth-doctor.mjsで診断してください")
 
 
 def check_opencode_credentials():
@@ -100,6 +99,7 @@ def apply(root, target, wait_seconds):
     payload = plistlib.loads(previous)
     if payload.get("Label") != LEGACY_LABEL or str(target) not in payload.get("ProgramArguments", []):
         raise ValueError("既存サービスの実行ファイルが対象と一致しません")
+    payload["EnvironmentVariables"] = service_environment(payload.get("EnvironmentVariables", {}))
     service = f"gui/{os.getuid()}/{LEGACY_LABEL}"
     active = subprocess.run(["launchctl", "print", service], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if not active:
