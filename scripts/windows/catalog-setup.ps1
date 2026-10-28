@@ -21,9 +21,9 @@ if ($RouterPort -eq $BridgePort) {
 
 $repository = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $required = @(
-    (Join-Path $repository 'src\model-router.mjs'),
-    (Join-Path $repository 'src\live-catalog.mjs'),
-    (Join-Path $repository 'scripts\catalog_doctor.py'),
+    (Join-Path $repository 'src\model-router.mjs')
+    (Join-Path $repository 'src\live-catalog.mjs')
+    (Join-Path $repository 'scripts\catalog_doctor.py')
     (Join-Path $PSScriptRoot 'catalog-doctor.ps1')
 )
 foreach ($path in $required) {
