@@ -1040,6 +1040,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           metric.first_upstream_byte_ms = Math.round(performance.now() - upstreamStart);
         }
         metric.response_bytes += chunk.length;
+        // Once streaming, the deadline bounds silence rather than a long healthy answer.
+        // SSE comments (keep-alive heartbeats) do not count as progress.
+        if (/^[^:\r\n]/m.test(chunk.toString("latin1"))) timer.refresh();
         callback(null, chunk);
       } });
       const customNames = new Set((nativeTool ? [] : body.tools ?? []).filter((tool) => tool.type === "custom").map((tool) => tool.name));
