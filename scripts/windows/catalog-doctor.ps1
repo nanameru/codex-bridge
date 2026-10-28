@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Issue #143: 旧OpenCode専用 model_catalog_json を診断・移行・復元します。
 .EXAMPLE

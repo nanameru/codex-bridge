@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Windowsで既存Bridgeを残したまま、公式モデル対応routerを起動してカタログを移行します。
 .EXAMPLE
