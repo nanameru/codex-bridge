@@ -3,6 +3,10 @@ import test from "node:test";
 import { once } from "node:events";
 import { createLiveCatalog, discoveredModels, boundedJSON } from "../src/live-catalog.mjs";
 import { createRouter } from "../src/model-router.mjs";
+import { codexHomeId } from "../src/local-security.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const seed = [{ id: "old", name: "Old", desc: "Existing", ctx: 128000, out: 32000, vision: false, efforts: ["low", "high"], tier: "fast" }];
 const initial = { models: [{ slug: "gpt-test", router_provider: "openai" },
@@ -172,4 +176,16 @@ test("a cached client model can refresh a restarted router before model/list run
  const missing = await fetch(base + "/v1/responses", { method: "POST", headers: { ...headers, version: "0.164.0" },
   body: JSON.stringify({ model: "opencode/never-provided", input: "continue" }) });
  assert.equal(missing.status, 400); await missing.text(); assert.equal(forwarded.length, 1);
+});
+
+test("health reports which CODEX_HOME the catalog authenticates against without exposing credentials", async context => {
+ const root = mkdtempSync(join(tmpdir(), "catalog-auth-")); context.after(() => rmSync(root, { recursive: true, force: true }));
+ for (const [catalogProvider, ready] of [[setup().live, false], [setup().live, true], [undefined, true]]) {
+  const router = createRouter({ catalog: initial, catalogProvider, codexRoot: root, catalogAuthReady: () => ready, bridgeKey: () => "INTERNAL" });
+  router.listen(0, "127.0.0.1"); await once(router, "listening");
+  const health = await (await fetch("http://127.0.0.1:" + router.address().port + "/health")).json();
+  router.closeAllConnections(); router.close();
+  assert.deepEqual(health.catalog_auth, catalogProvider ? { codex_home: codexHomeId(root), ready } : undefined);
+  assert.ok(!JSON.stringify(health).includes(root));
+ }
 });

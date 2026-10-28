@@ -8,7 +8,7 @@ Windowsの旧 `codex-bridge-local` コピーでは、`config.toml` の `model_ca
 
 - このリポジトリの最新版（`scripts/live_catalog.py` / `scripts/unified_config.py` / `src/live-catalog.mjs` を含む）
 - Python 3.11以上（`py -3` / `python` / `python3` の順で探します）
-- 適用時のみ、動的カタログ対応のrouterが起動していること（`/health` が `live_catalog: true`）
+- 適用時のみ、動的カタログ対応の最新routerが同じ `CODEX_HOME` で起動し、Codexの認証を確認できていること（`/health` の `live_catalog: true` と `catalog_auth`）
 
 ## 使い方
 
@@ -30,6 +30,8 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\catalog-doctor.ps1 -Act
 | 状態 | 意味 |
 | --- | --- |
 | `legacy_opencode_only` | 固定カタログに公式モデルが0件。Issue #143の原因で、`apply` の対象 |
+
+公式モデルかどうかは、`opencode/` などの接頭辞が無く、かつ `models_cache.json`（公式一覧）に載っているかで数えます。接頭辞の無い旧OpenCodeカタログ（`deepseek-v4.1-flash` など）も公式一覧と照合して `legacy_opencode_only` と判定します。公式一覧のキャッシュが無いときは接頭辞だけで数えるため、接頭辞の無いカタログは `native_only` となり自動変更しません。
 | `unified` / `native_only` | 公式モデルを含む固定カタログ。自動変更しません |
 | `builtin` / `dynamic` | 固定カタログ無し / `codex-live` の動的カタログ |
 | `unknown` | カタログを読めない等。自動変更しません |
@@ -45,10 +47,11 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\catalog-doctor.ps1 -Act
 
 ## 安全性
 
-- `auth.json` は読みません。出力は状態・件数・モデル名・カタログのパスだけで、provider設定の値は表示しません。
+- `diagnose` は何も書き込みません（ロックファイルも作りません）。`auth.json` は読みません。出力は状態・件数・モデル名・カタログのパスだけで、provider設定の値は表示しません。
 - `apply` は変更前に `config.toml.issue143-<日時>.bak` へ元のバイト列をそのまま保存し、`catalog-migration-state.json` にハッシュを記録します。CRLFの改行は維持します。
 - 2回目以降の `apply` は `unchanged` を返します。移行後に設定が編集されていれば、再適用も復元も拒否します。
 - BOM付き・リンク・読めないカタログ・既存の独自 `codex-live`・他ツールの復元情報（`live-catalog-state.json` / `unified-router-state.json`）・router未起動のときは何も書きません。
+- 移行後の一覧が0件にならないよう、`apply` の前にrouterの `/health` の `catalog_auth` を確認します。routerが報告する `codex_home`（`CODEX_HOME` の実パスのSHA-256）が同じで、`ready`（routerがそのCODEX_HOMEのCodex認証を確認できる）が真のときだけ変更します。古いrouter・別のCODEX_HOME・認証を確認できないrouterでは何も書きません。どちらの側も秘密値は読み書き・表示しません。
 - 実行中のCodexデスクトップ/CLIは停止しません。反映には全て終了してから再起動してください。Bridge停止時の自動復旧は対象外です。
 
 ## 検証

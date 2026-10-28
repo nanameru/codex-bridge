@@ -3,12 +3,16 @@
 Reads only config.toml, the referenced catalog and models_cache.json.
 Never reads auth.json or prints provider settings that may carry secrets.
 """
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit("Python 3.11以上が必要です（現在: %d.%d）" % sys.version_info[:2])
+
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
 import time
 import tomllib
@@ -32,8 +36,9 @@ def slugs(document):
     return found
 
 
-def is_native(slug):
-    return "/" not in slug
+def is_native(slug, official=None):
+    """Namespaced slugs are external; with an official list, only listed slugs count as native."""
+    return "/" not in slug and (official is None or slug in official)
 
 
 def read_config(root):
@@ -98,7 +103,7 @@ def diagnose(root, target=TARGET_MODEL):
             report["catalog_error"] = type(error).__name__
             status, listed = "unknown", []
         else:
-            native = [s for s in listed if is_native(s)]
+            native = [s for s in listed if is_native(s, official)]
             report["native_count"], report["external_count"] = len(native), len(listed) - len(native)
             status = "legacy_opencode_only" if not native else ("unified" if len(native) < len(listed) else "native_only")
     if status == "unknown":
@@ -135,9 +140,29 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def router_ready(port):
-    with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
-        return json.load(response).get("live_catalog") is True
+def home_id(root):
+    """Matches codexHomeId() in src/local-security.mjs without reading any credential."""
+    path = os.path.realpath(root)
+    return hashlib.sha256((path.lower() if os.name == "nt" else path).encode("utf-8")).hexdigest()
+
+
+def router_problem(port, root):
+    """Return why codex-live would list no models, or None when the router can serve this CODEX_HOME."""
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
+            health = json.load(response)
+    except (OSError, ValueError):
+        return "routerに接続できません。動的カタログ対応のrouterを先に起動してください"
+    if not isinstance(health, dict) or health.get("live_catalog") is not True:
+        return "routerが動的カタログに対応していません"
+    auth = health.get("catalog_auth")
+    if not isinstance(auth, dict):
+        return "routerが認証状態を報告しません。routerを最新版に更新してください"
+    if auth.get("codex_home") != home_id(root):
+        return "routerが別のCODEX_HOMEを使っています。移行後の一覧が0件になるため変更しません"
+    if auth.get("ready") is not True:
+        return "routerがCodexの認証を確認できません（node src/auth-doctor.mjs で診断）。移行後の一覧が0件になるため変更しません"
+    return None
 
 
 def restore(root):
@@ -156,7 +181,7 @@ def restore(root):
     return "restored"
 
 
-def migrate(root, port=8790, ready=router_ready):
+def migrate(root, port=8790, ready=router_problem):
     config, state_path = root / "config.toml", root / STATE
     raw, text, newline = read_config(root)
     report = diagnose(root)
@@ -174,8 +199,9 @@ def migrate(root, port=8790, ready=router_ready):
         raise ValueError(f"移行対象ではありません（状態: {report['status']}）。変更しません")
     result = candidate(text, port)
     applied = result.replace("\n", newline).encode("utf-8")
-    if not ready(port):
-        raise ValueError("動的カタログ対応のrouterを先に起動してください")
+    problem = ready(port, root)
+    if problem:
+        raise ValueError(problem)
     backup = root / f"config.toml.issue143-{time.strftime('%Y%m%d%H%M%S')}.bak"
     write_exact(backup, raw, exclusive=True)
     state = {"backup": backup.name, "original_sha256": digest(raw), "applied_sha256": digest(applied)}
@@ -210,14 +236,14 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+    if args.action == "diagnose":
+        report = diagnose(root)
+        print(json.dumps(report, ensure_ascii=False)) if args.json else show(report)
+        return 0
     with exclusive_lock(root / ".catalog-doctor.lock"):
-        if args.action == "diagnose":
-            report = diagnose(root)
-            print(json.dumps(report, ensure_ascii=False)) if args.json else show(report)
-            return 0
         print(restore(root) if args.action == "restore" else migrate(root, args.port))
         print("Codexデスクトップ/CLIを全て終了して再起動すると一覧に反映されます。このツールはプロセスを停止しません。")
-        return 0
+    return 0
 
 
 if __name__ == "__main__":

@@ -144,6 +144,13 @@ export function authenticateCodex(request, root = codexRoot(), options) {
   return sameSecret(bearer, auth?.tokens?.access_token ?? auth?.OPENAI_API_KEY);
 }
 
+/** Non-secret identity of a CODEX_HOME; mirrors home_id() in scripts/catalog_doctor.py. */
+export function codexHomeId(root = codexRoot()) {
+  let path;
+  try { path = realpathSync.native(root); } catch { return null; }
+  return createHash("sha256").update(process.platform === "win32" ? path.toLowerCase() : path).digest("hex");
+}
+
 export function readBridgeKey(root = codexRoot()) {
   const value = readPrivateFile(root, "bridge-local-token")?.trim();
   return /^[a-f0-9]{64}$/.test(value ?? "") ? value : null;
