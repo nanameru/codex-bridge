@@ -28,6 +28,7 @@ import { AUTO_DEEPSEEK_MODEL, AUTO_DEEPSEEK_PROVIDERS, ProviderFallbackState,
 const NATIVE_ORIGINS = new Set(["https://chatgpt.com", "https://api.openai.com"]);
 // These JSON endpoints belong to OpenAI, irrespective of the selected chat model.
 const NATIVE_TOOL_PATHS = new Set(["/v1/images/generations", "/v1/images/edits", "/v1/alpha/search"]);
+const WHATSTOKEN_SUMMARY_UNSUPPORTED = "この無料経路の補助要約は未対応です。履歴は保持しています。OpenCode・Command Code・Ollamaを明示選択してください。OpenAIは使用していません";
 const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.meta.url)))
   .update(readFileSync(new URL("./tool-adapter.mjs", import.meta.url)))
   .update(readFileSync(new URL("./compaction-handoff.mjs", import.meta.url)))
@@ -633,6 +634,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         diagnose: details => Object.assign(metric, details),
         threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id ?? request.headers.session_id };
       const selected = mode === 'selected' && route.provider !== 'openai';
+      const selectedSummaryUnsupported = selected && route.provider === 'whatstoken';
       const summaryContext = selected ? route.contextWindow : routes.get(summaryModel)?.contextWindow;
       const summaryBudget = Math.min(summaryInputLimitTokens, summaryContext ? Math.floor(summaryContext * 0.8) : summaryInputLimitTokens);
       handoffOptions.inputBudgetTokens = summaryBudget;
@@ -640,7 +642,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       if (selected) {
         if (route.provider === 'whatstoken') {
           // Its free-window guard belongs to the main request, not auxiliary calls.
-          expandHistory = async () => { throw new HandoffError('この無料経路の補助要約は未対応です。OpenCode・Command Code・Ollamaを明示選択してください。OpenAIは使用していません'); };
+          expandHistory = async () => { throw Object.assign(new HandoffError(WHATSTOKEN_SUMMARY_UNSUPPORTED), { status: 422 }); };
           expandHistory.reuseBudget = () => null;
         } else expandHistory = selectedSummary(route);
         handoffOptions.destination = destination;
@@ -692,6 +694,12 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.effective_input_limit_tokens = hardLimitTokens;
       }
       let compactionExpanded = false;
+      if (selectedSummaryUnsupported && Array.isArray(body.input)
+          && body.input.some(item => item.type === 'compaction')) {
+        metric.stage = 'handoff_rejected';
+        fail(response, 422, 'history_mode_summary_unsupported', WHATSTOKEN_SUMMARY_UNSUPPORTED);
+        return;
+      }
       if (route.provider !== "openai" && !directResponses && autoBudgetHandoff) {
         const reused = expandHistory.reuseBudget(body, handoffOptions);
         if (reused) {
@@ -783,6 +791,12 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
           const { prefixEnd, minimum, minimumBytes } = plan;
           if (prefixEnd > 0 && prefixEnd < body.input.length) {
+            if (selectedSummaryUnsupported) {
+              metric.stage = 'budget_rejected';
+              metric.budget_recovery_skipped = 'summary_unsupported';
+              fail(response, 422, 'history_mode_summary_unsupported', WHATSTOKEN_SUMMARY_UNSUPPORTED);
+              return;
+            }
             if (minimum < hardLimitTokens && minimumBytes < maxBytes && (selected || routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization)) {
               metric.stage = "budget_handoff";
               providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);

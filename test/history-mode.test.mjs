@@ -228,3 +228,38 @@ test('plaintext budget summaries use the external model and ask mode stops witho
     }
   }
 });
+
+test('selected whatstoken stops with actionable 422 when auxiliary summaries are required', async t => {
+  const options = {
+    historyMode: 'selected',
+    manualProvidersEnabled: true,
+    whatstokenFreeEnabled: true,
+    manualKey: provider => provider === 'whatstoken' ? 'whatstoken-key' : 'external-key',
+    whatstokenFreeGate: { check: async () => ({ allowed: true, end: Date.now() + 3600000 }), unavailable() {} },
+    opencodeSoftLimitTokens: 2500,
+    opencodeHardLimitTokens: 5000,
+  };
+  const model = 'auto-whatstoken/deepseek-v4.1-flash';
+
+  const budget = await fixture(t, options);
+  const largeInput = [
+    { type: 'message', role: 'user', content: 'OLD '.repeat(6000) },
+    { type: 'message', role: 'assistant', content: 'OLD RESULT' },
+    { type: 'message', role: 'user', content: 'LATEST REQUEST' },
+  ];
+  let response = await budget.send({ ...request, model, input: largeInput });
+  let text = await response.text();
+  assert.equal(response.status, 422, text);
+  assert.match(text, /history_mode_summary_unsupported/);
+  assert.match(text, /OpenCode・Command Code・Ollama/);
+  assert.equal(budget.calls.length, 0);
+
+  const compacted = await fixture(t, options);
+  rollout(compacted.root);
+  response = await compacted.send({ ...request, model });
+  text = await response.text();
+  assert.equal(response.status, 422, text);
+  assert.match(text, /history_mode_summary_unsupported/);
+  assert.match(text, /履歴は保持しています/);
+  assert.equal(compacted.calls.length, 0);
+});
