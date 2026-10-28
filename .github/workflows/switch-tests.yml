@@ -44,14 +44,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16'
       - name: Windows PowerShell 5.1で構文を検証する
         shell: powershell
         run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts\windows\catalog-doctor.ps1), [ref]$null, [ref]$errors) | Out-Null
-          if ($errors) { $errors; exit 1 }
+          foreach ($name in @('catalog-doctor.ps1', 'catalog-setup.ps1')) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path 'scripts\windows' $name)), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors; exit 1 }
+          }
       - name: Windowsでカタログ診断・移行テストを実行する
         run: python -m unittest discover -s test -p "test_catalog_doctor.py" -v
+      - name: Windowsで本人認証の読み取り分岐を検証する
+        run: node --test test/windows-auth.test.mjs
       - name: Windowsで旧OpenCode専用カタログをPowerShell経由で診断する
         shell: powershell
         run: |

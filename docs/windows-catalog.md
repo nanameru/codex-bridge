@@ -4,13 +4,28 @@ Windowsの旧 `codex-bridge-local` コピーでは、`config.toml` の `model_ca
 
 `scripts/windows/catalog-doctor.ps1`（本体は `scripts/catalog_doctor.py`）で、状態の診断と、組み込み一覧を壊さない動的カタログ（`codex-live`）への移行・復元を行います。
 
+既存Bridgeを残したまま、公式モデル対応routerの準備とカタログ移行をまとめて行う場合は、`scripts/windows/catalog-setup.ps1` を使います。
+
 ## 前提
 
 - このリポジトリの最新版（`scripts/live_catalog.py` / `scripts/unified_config.py` / `src/live-catalog.mjs` を含む）
+- Node.js 22.16以上
 - Python 3.11以上（`py -3` / `python` / `python3` の順で探します）
+- 既存Bridgeが `127.0.0.1:10100` で起動していること（変更する場合は `-BridgePort` を指定）
 - 適用時のみ、動的カタログ対応の最新routerが同じ `CODEX_HOME` で起動し、Codexの認証を確認できていること（`/health` の `live_catalog: true` と `catalog_auth`）
 
 ## 使い方
+
+### 一括セットアップ（推奨）
+
+```powershell
+cd C:\Users\User\Projects\codex-bridge-issue143
+powershell -ExecutionPolicy Bypass -File scripts\windows\catalog-setup.ps1 -BridgePort 10100
+```
+
+このスクリプトは、既存Bridgeのhealth確認、統合カタログの生成、routerの起動、`catalog_auth.ready` の確認、バックアップ付きの `apply` を順番に行います。既に動的カタログ対応routerが `8790` で動いている場合は再利用します。完了後、Codexデスクトップをタスクトレイまで完全終了してから起動し直し、モデル一覧を確認してください。
+
+### 個別操作
 
 ```powershell
 # 読み取りのみの診断（既定）
@@ -30,11 +45,11 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\catalog-doctor.ps1 -Act
 | 状態 | 意味 |
 | --- | --- |
 | `legacy_opencode_only` | 固定カタログに公式モデルが0件。Issue #143の原因で、`apply` の対象 |
-
-公式モデルかどうかは、`opencode/` などの接頭辞が無く、かつ `models_cache.json`（公式一覧）に載っているかで数えます。接頭辞の無い旧OpenCodeカタログ（`deepseek-v4.1-flash` など）も公式一覧と照合して `legacy_opencode_only` と判定します。`src/make-catalog.mjs` が生成した項目（Bridge独自の `base_instructions` 付き）は、`gpt-6-luna` のように公式と同名でもOpenCodeとして数えます。公式一覧のキャッシュが無いときは接頭辞だけで数えるため、接頭辞の無いカタログは `native_only` となり自動変更しません。
 | `unified` / `native_only` | 公式モデルを含む固定カタログ。自動変更しません |
 | `builtin` / `dynamic` | 固定カタログ無し / `codex-live` の動的カタログ |
 | `unknown` | カタログを読めない等。自動変更しません |
+
+公式モデルかどうかは、`opencode/` などの接頭辞が無く、かつ `models_cache.json`（公式一覧）に載っているかで数えます。接頭辞の無い旧OpenCodeカタログ（`deepseek-v4.1-flash` など）も公式一覧と照合して `legacy_opencode_only` と判定します。`src/make-catalog.mjs` が生成した項目（Bridge独自の `base_instructions` 付き）は、`gpt-6-luna` のように公式と同名でもOpenCodeとして数えます。公式一覧のキャッシュが無いときは接頭辞だけで数えるため、接頭辞の無いカタログは `native_only` となり自動変更しません。
 
 `gpt-6.1-sol` の判定は、Codexが公式APIから取得した `models_cache.json`（公式一覧）と比較して区別します。
 
@@ -58,6 +73,7 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\catalog-doctor.ps1 -Act
 
 ```sh
 python3 -m unittest discover -s test -p test_catalog_doctor.py
+node --test test/windows-auth.test.mjs
 ```
 
-CIの `windows-latest` ジョブで、Windows PowerShell 5.1の構文検証、同テスト、PowerShell経由の診断と router未起動時の不変更を確認します。
+CIの `windows-latest` ジョブで、Windows PowerShell 5.1の構文検証（`catalog-doctor.ps1` / `catalog-setup.ps1`）、本人認証の読み取り分岐、PowerShell経由の診断とrouter未起動時の不変更を確認します。Windowsの実端末への適用と、適用後のモデル一覧・実送信はこのリポジトリのCIでは確認できません。

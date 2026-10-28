@@ -28,15 +28,27 @@ export async function fetchOpenCode(url, options, fetcher = fetch) {
   return response;
 }
 
-export function readPrivateFile(root, name, forbiddenMode = 0o077) {
+function privateOwner(info, platform) {
+  // Node does not expose Windows ACL owners through fs.Stats. The service and
+  // Codex run as the same Windows user, so POSIX uid/mode checks cannot apply.
+  if (platform === "win32") return true;
+  return typeof process.getuid === "function" && info.uid === process.getuid();
+}
+
+function privateNode(info, forbiddenMode, platform) {
+  return privateOwner(info, platform)
+    && (platform === "win32" || (!(info.mode & forbiddenMode) && info.nlink === 1));
+}
+
+export function readPrivateFile(root, name, forbiddenMode = 0o077, platform = process.platform) {
   let descriptor;
   try {
     const parent = lstatSync(root);
-    if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o022)) return null;
+    if (!parent.isDirectory() || !privateOwner(parent, platform)
+        || (platform !== "win32" && (parent.mode & 0o022))) return null;
     descriptor = openSync(join(root, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = fstatSync(descriptor);
-    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & forbiddenMode) || info.nlink !== 1
-        || info.size > 64 * 1024) return null;
+    if (!info.isFile() || !privateNode(info, forbiddenMode, platform) || info.size > 64 * 1024) return null;
     return readFileSync(descriptor, "utf8");
   } catch { return null; }
   finally { if (descriptor !== undefined) closeSync(descriptor); }
@@ -49,8 +61,8 @@ function sameSecret(received, expected) {
 }
 
 const settingsCache = new Map();
-function credentialSettings(root) {
-  let source = readPrivateFile(root, "config.toml", 0o022);
+function credentialSettings(root, platform) {
+  let source = readPrivateFile(root, "config.toml", 0o022, platform);
   if (source === null) {
     // Only an absent config means defaults; unreadable/unsafe configs fail closed.
     try { lstatSync(join(root, "config.toml")); return null; }
@@ -94,8 +106,9 @@ export function readCodexAuth(root = codexRoot(), { platform = process.platform,
   const rejected = (reason, store = "unknown") => ({ auth: null, reason, store });
   try {
     const info = lstatSync(root);
-    if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) return rejected("unsafe_codex_home");
-    const settings = credentialSettings(root);
+    if (!info.isDirectory() || !privateOwner(info, platform)
+        || (platform !== "win32" && (info.mode & 0o022))) return rejected("unsafe_codex_home");
+    const settings = credentialSettings(root, platform);
     if (!settings) return rejected("credential_config_invalid");
     if (settings.error) return rejected(settings.error);
     const { store } = settings;
@@ -113,7 +126,7 @@ export function readCodexAuth(root = codexRoot(), { platform = process.platform,
       }
       if (!serialized && store === "keyring") return rejected("keyring_unavailable", store);
     }
-    if (!serialized) serialized = readPrivateFile(root, "auth.json");
+    if (!serialized) serialized = readPrivateFile(root, "auth.json", 0o077, platform);
     if (serialized === null) return rejected("auth_file_unavailable", usedStore);
     let auth;
     try { auth = JSON.parse(serialized); }

@@ -44,14 +44,14 @@ cases:
   - id: TC-115
     title: "Windowsの旧OpenCode専用カタログを検出し公式モデルと共存させる"
     feature: "Windowsカタログ診断・移行"
-    scenario: "旧model_catalog_jsonの検出・gpt-6.1-solのカタログ欠落とプラン側未提供の区別・CRLF保持のバックアップ付き移行・冪等・競合/不明/BOM/リンク/router未起動での拒否・秘密非出力"
+    scenario: "旧model_catalog_jsonの検出・gpt-6.1-solのカタログ欠落とプラン側未提供の区別・CRLF保持のバックアップ付き移行・冪等・競合/不明/BOM/リンク/router未起動での拒否・Windows本人認証の読み取り・秘密非出力"
     status: done
     priority: high
     type: regression
-    source: [scripts/catalog_doctor.py, scripts/live_catalog.py, scripts/switch_config.py, scripts/windows/catalog-doctor.ps1]
+    source: [scripts/catalog_doctor.py, scripts/live_catalog.py, scripts/switch_config.py, scripts/windows/catalog-doctor.ps1, scripts/windows/catalog-setup.ps1, src/local-security.mjs]
     test_file: test/test_catalog_doctor.py
     issues: [143]
-    notes: "auth.jsonは読まない。実プラン利用可否は一覧では判定せず、models_cache.jsonの公式一覧との比較でカタログ欠落かを判定する。Windows実行はCIのwindows-latestで確認。"
+    notes: "catalog-doctorはauth.jsonを読まない。実プラン利用可否は一覧では判定せず、models_cache.jsonの公式一覧との比較でカタログ欠落かを判定する。test/windows-auth.test.mjsでWindowsの認証読取分岐を検証する。Windows実行はCIのwindows-latestで確認。"
 
   - id: TC-111
     title: "中継障害時にGPT直結の退避方法をエラーへ表示する"
