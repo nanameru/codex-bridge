@@ -116,11 +116,11 @@ class CatalogDoctorTest(unittest.TestCase):
         env = {**os.environ, "CODEX_HOME": str(self.root), "PYTHONUTF8": "1"}
         for args in [[], ["--json"]]:
             result = subprocess.run([sys.executable, str(ROOT / "scripts/catalog_doctor.py"), "diagnose", *args],
-                                    env=env, capture_output=True, text=True, check=True)
+                                    env=env, capture_output=True, encoding="utf-8", check=True)
             self.assertNotIn(SECRET, result.stdout + result.stderr)
             self.assertIn("legacy_opencode_only", result.stdout)
         result = subprocess.run([sys.executable, str(ROOT / "scripts/catalog_doctor.py"), "apply", "--port", "9"],
-                                env=env, capture_output=True, text=True)
+                                env=env, capture_output=True, encoding="utf-8")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(SECRET, result.stdout + result.stderr)
         self.assertEqual((self.root / "config.toml").read_bytes(), self.source)
