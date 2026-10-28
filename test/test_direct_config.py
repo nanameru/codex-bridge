@@ -19,7 +19,7 @@ class DirectConfigTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.path = self.root / "config.toml"
-        self.source = 'model="gpt-6.1-sol"\nopenai_base_url="http://127.0.0.1:8790/v1"\n[profiles.work]\nmodel="other"\n'
+        self.source = 'model="gpt-6.1-sol"\nopenai_base_url="http://127.0.0.1:8791/v1"\n[profiles.work]\nmodel="other"\n'
         self.path.write_text(self.source)
         (self.root / "model-catalog.json").write_text(json.dumps({"models": [
             {"slug": "deepseek-v4.1-flash", "auto_compact_token_limit": 500000},
@@ -29,7 +29,7 @@ class DirectConfigTests(unittest.TestCase):
         self.assertEqual(direct_codex.configure(self.root), 2)
         config = tomllib.loads(self.path.read_text())
         self.assertEqual(config["model"], "gpt-6.1-sol")
-        self.assertEqual(config["openai_base_url"], "http://127.0.0.1:8790/v1")
+        self.assertEqual(config["openai_base_url"], "http://127.0.0.1:8791/v1")
         self.assertEqual(config["profiles"]["work"], {"model": "other"})
         self.assertNotIn(direct_codex.PROVIDER, config["profiles"])
         profile = tomllib.loads((self.root / (direct_codex.PROVIDER + ".config.toml")).read_text())

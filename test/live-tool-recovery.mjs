@@ -11,7 +11,7 @@ const tool={type:'function',name:'route_probe',description:'Read the synthetic b
 const user={role:'user',content:'ビルド状況を一度確認して結果を日本語で教えて。'};
 async function ask(model,input,thread) {
  assert.ok(++requests<=4,'live request budget exceeded');
- const res=await fetch('http://127.0.0.1:8790/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(60000),
+ const res=await fetch('http://127.0.0.1:8791/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(60000),
   headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({model,input,tools:[tool],stream:true,max_output_tokens:1024,
     reasoning:{effort:'low'},prompt_cache_key:thread,instructions:'You are a coding agent. Call route_probe once then answer using its completed result. Never call it again after a completed build status.'})});
  assert.equal(res.status,200,'live upstream HTTP failure');

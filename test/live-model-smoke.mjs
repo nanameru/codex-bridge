@@ -18,7 +18,7 @@ const output = call_id => ({ type: 'function_call_output', call_id, output: '{"s
 let requests = 0, failures = 0;
 async function ask(model, input, thread) {
   assert.ok(++requests <= models.length * 3, 'live request budget exceeded');
-  const res = await fetch('http://127.0.0.1:8790/v1/responses', { method: 'POST', redirect: 'error',
+  const res = await fetch('http://127.0.0.1:8791/v1/responses', { method: 'POST', redirect: 'error',
     signal: AbortSignal.timeout(60000), headers, body: JSON.stringify({ model, input, tools: [tool], stream: true,
       max_output_tokens: 2048, reasoning: { effort: 'low' }, prompt_cache_key: thread,
       instructions: 'Call route_probe exactly once to obtain the build status. After its completed result, answer with BUILD_OK_42 and never call tools again.' }) });

@@ -85,7 +85,7 @@ test('設定更新が非同期でも確認後に選択モデルを確定する',
 
 test('設定済みのローカルprovider名codex-liveでも選択を同期する',async()=>{
   const f=fixture({provider:'codex-live',config:{model_providers:{'codex-live':{
-    base_url:'http://127.0.0.1:8790/v1',requires_openai_auth:true}}}});
+    base_url:'http://127.0.0.1:8791/v1',requires_openai_auth:true}}}});
   const context=await f.sync.prepare(id,CLI_AUTO_MODEL);
   assert.equal(context?.automatic,true);
   assert.equal(await f.sync.sync(context,cc),'updated');
@@ -95,10 +95,10 @@ test('外部URL・別port/path・認証不要providerを表示同期へ使わな
   for(const providerConfig of [
     {base_url:'https://api.openai.com/v1',requires_openai_auth:true},
     {base_url:'http://127.0.0.1:8788/v1',requires_openai_auth:true},
-    {base_url:'http://127.0.0.1:8790/other',requires_openai_auth:true},
-    {base_url:'http://127.0.0.1:8790/v1',requires_openai_auth:false},
-    {base_url:'http://user:secret@127.0.0.1:8790/v1',requires_openai_auth:true},
-    {base_url:'http://127.0.0.1:8790/v1?token=secret',requires_openai_auth:true},
+    {base_url:'http://127.0.0.1:8791/other',requires_openai_auth:true},
+    {base_url:'http://127.0.0.1:8791/v1',requires_openai_auth:false},
+    {base_url:'http://user:secret@127.0.0.1:8791/v1',requires_openai_auth:true},
+    {base_url:'http://127.0.0.1:8791/v1?token=secret',requires_openai_auth:true},
   ]){
     const f=fixture({provider:'codex-live',config:{model_providers:{'codex-live':providerConfig}}});
     const reasons=[];

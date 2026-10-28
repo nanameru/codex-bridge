@@ -18,7 +18,7 @@ class LiveCatalogConfigTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.config = self.root / "config.toml"
         self.source = ('# keep comment\nmodel="gpt-test"\nmodel_provider="openai"\n'
-                       'model_catalog_json="/old/catalog.json"\nopenai_base_url="http://127.0.0.1:8790/v1"\n'
+                       'model_catalog_json="/old/catalog.json"\nopenai_base_url="http://127.0.0.1:8791/v1"\n'
                        '[features]\ngoals=true\n[model_providers.other]\nname="Other"\n')
         self.config.write_text(self.source)
 

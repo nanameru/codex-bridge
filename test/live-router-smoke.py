@@ -14,7 +14,7 @@ from recover_thread import LocalServer
 
 @contextmanager
 def isolated_login(comparison=False):
-    base = os.environ.get("LIVE_ROUTER_BASE_URL", "http://127.0.0.1:8790/v1")
+    base = os.environ.get("LIVE_ROUTER_BASE_URL", "http://127.0.0.1:8791/v1")
     parsed = urlparse(base)
     if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.path != "/v1" or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("実応答テストの接続先はloopback HTTP /v1に限定します")
@@ -118,7 +118,7 @@ def run_checks():
     ready = False
     for _attempt in range(30):
         try:
-            with urlopen("http://127.0.0.1:8790/health", timeout=1) as response:
+            with urlopen("http://127.0.0.1:8791/health", timeout=1) as response:
                 ready = json.load(response).get("mode") == "unified"
             if ready:
                 break
@@ -178,7 +178,7 @@ def main():
         raise SystemExit(f"実モデルを{count}回呼び出します。実行する場合はRUN_LIVE_ROUTER=1を指定してください")
     with isolated_login(comparison=comparison):
         if comparison:
-            base = os.environ.get("LIVE_ROUTER_BASE_URL", "http://127.0.0.1:8790/v1")
+            base = os.environ.get("LIVE_ROUTER_BASE_URL", "http://127.0.0.1:8791/v1")
             with urlopen(base[:-3] + "/health", timeout=3) as response:
                 health = json.load(response)
             if "opencode/deepseek-v4.1-flash" not in health.get("direct_models", []):

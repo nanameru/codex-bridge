@@ -74,7 +74,7 @@ class LocalOperationsTests(unittest.TestCase):
             with mock.patch.object(local_security, "get_health", return_value=health), \
                     mock.patch.object(local_security, "build_opener") as opener:
                 with self.assertRaises(ValueError):
-                    local_security.verify_service(8790, "expected")
+                    local_security.verify_service(8791, "expected")
                 opener.assert_not_called()
 
     def test_rejection_probe_uses_only_an_invalid_credential_and_no_user_input(self):
@@ -83,7 +83,7 @@ class LocalOperationsTests(unittest.TestCase):
         opener.open.side_effect = HTTPError("http://127.0.0.1", 401, "Unauthorized", {}, None)
         with mock.patch.object(local_security, "get_health", return_value=health), \
                 mock.patch.object(local_security, "build_opener", return_value=opener):
-            self.assertEqual(local_security.verify_service(8790, "expected"), health)
+            self.assertEqual(local_security.verify_service(8791, "expected"), health)
         request = opener.open.call_args.args[0]
         self.assertEqual(request.data, b"{}")
         self.assertEqual(request.get_header("Authorization"), "Bearer invalid-local-probe")
@@ -169,7 +169,7 @@ class LocalOperationsTests(unittest.TestCase):
     def test_waits_for_both_services_and_does_not_restart_busy_processes(self):
         with mock.patch.object(install_router_service.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
             with self.assertRaises(SystemExit):
-                install_router_service.wait_for_idle(0, ports=(8790, 8788))
+                install_router_service.wait_for_idle(0, ports=(8791, 8788))
         self.assertEqual(len(run.call_args_list), 2)
         self.assertTrue(all(call.args[0][0] == "lsof" for call in run.call_args_list))
 

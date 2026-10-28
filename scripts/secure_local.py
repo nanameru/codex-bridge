@@ -43,7 +43,7 @@ def doctor(root):
         ("owner_credentials", lambda: check_credentials(root)),
         ("opencode_api_credentials", check_opencode_credentials),
         ("private_bridge_key", lambda: ensure_existing_key(root)),
-        ("router_protected", lambda: verify_service(8790)),
+        ("router_protected", lambda: verify_service(8791)),
         ("bridge_protected_dump_off", lambda: verify_service(8788)),
         ("routing_config", lambda: check_config(root)),
     ]:
@@ -65,7 +65,7 @@ def ensure_existing_key(root):
 
 def check_config(root):
     config = tomllib.loads(private_read(root, "config.toml"))
-    base = "http://127.0.0.1:8790/v1"
+    base = "http://127.0.0.1:8791/v1"
     if (config.get("openai_base_url") != base
             or config.get("model_providers", {}).get("codex-bridge", {}).get("base_url") != base
             or config.get("model_catalog_json") != str(root / "unified-model-catalog.json")):
@@ -106,7 +106,7 @@ def apply(root, target, wait_seconds):
         raise ValueError("既存サービスが起動していません。配置を確認してください")
     ensure_bridge_key(root)
     subprocess.run([sys.executable, str(ROOT / "scripts/install_router_service.py"), "--update-if-idle", "--wait-idle", str(wait_seconds)], check=True)
-    # Updating 8788 must not restart/block an unrelated native GPT stream on 8790.
+    # Updating 8788 must not restart/block an unrelated native GPT stream on 8791.
     wait_for_idle(wait_seconds, ports=(8788,))
     if target.read_text() != source or path.read_bytes() != previous:
         raise ValueError("確認中に旧サービスが変更されました。適用していません")

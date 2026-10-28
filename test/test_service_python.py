@@ -14,6 +14,12 @@ from local_security import service_environment
 
 
 class ServicePythonTests(unittest.TestCase):
+    def test_installer_registers_only_the_canonical_8791_service(self):
+        self.assertEqual(install_router_service.ROUTER_PORT, 8791)
+        self.assertEqual(install_router_service.ROUTER_SERVICES, {
+            'com.kimurataiyou.codex-model-router-8791': 8791,
+        })
+
     def test_pins_verified_interpreter_and_preserves_existing_service_settings(self):
         previous = {'PATH': '/custom/bin:/usr/bin:/bin', 'KEEP': 'unchanged',
                     'CODEX_BRIDGE_PYTHON': '/old/python'}
@@ -44,12 +50,13 @@ class ServicePythonTests(unittest.TestCase):
                 root = home / 'codex'
                 root.mkdir(mode=0o700)
                 (root / 'unified-model-catalog.json').write_text('{"models":[]}')
-                path = home / 'Library/LaunchAgents/com.kimurataiyou.codex-model-router.plist'
+                path = home / 'Library/LaunchAgents/com.kimurataiyou.codex-model-router-8791.plist'
                 if existing:
                     path.parent.mkdir(parents=True)
                     path.write_bytes(plistlib.dumps({
-                        'Label': 'com.kimurataiyou.codex-model-router',
+                        'Label': 'com.kimurataiyou.codex-model-router-8791',
                         'EnvironmentVariables': {'CODEX_HOME': str(root), 'KEEP': 'old-setting',
+                                                 'ROUTER_PORT': '8791',
                                                  'PATH': '/custom/bin:/usr/bin:/bin'},
                     }))
 
@@ -69,6 +76,7 @@ class ServicePythonTests(unittest.TestCase):
                     install_router_service.install()
                 environment = replace.call_args.args[1]['EnvironmentVariables']
                 self.assertEqual(environment['CODEX_BRIDGE_PYTHON'], os.path.abspath(sys.executable))
+                self.assertEqual(environment['ROUTER_PORT'], '8791')
                 self.assertIn('/node/bin', environment['PATH'].split(':'))
                 if existing:
                     self.assertEqual(environment['KEEP'], 'old-setting')

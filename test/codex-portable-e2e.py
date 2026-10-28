@@ -74,7 +74,7 @@ def run(*, tools=False, start_opencode=False):
             config = ('model="gpt-6.1-sol"\nmodel_provider="openai"\nmodel_catalog_json='
                       + json.dumps(str(home / "unified-model-catalog.json"))
                       + '\n[model_providers.codex-bridge]\nname="Codex Bridge"\n'
-                      'base_url="http://127.0.0.1:8790/v1"\nrequires_openai_auth=true\nwire_api="responses"\n'
+                      'base_url="http://127.0.0.1:8791/v1"\nrequires_openai_auth=true\nwire_api="responses"\n'
                       '[model_providers.codex-bridge.http_headers]\nx-codex-bridge-direct="1"\n')
             configured = candidate_config(config, home, read_catalog(home))
             # Redirect only this disposable test provider to the ephemeral mock listener.

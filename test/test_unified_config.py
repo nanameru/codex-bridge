@@ -58,12 +58,12 @@ class UnifiedConfigTests(unittest.TestCase):
     def test_round_trip_and_legacy_switch_preserve_models_and_settings(self):
         original = tomllib.loads(self.path.read_text())
         with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
-            unified_config.configure(self.root, "on", 8790)
+            unified_config.configure(self.root, "on", 8791)
             first = self.path.read_text()
-            unified_config.configure(self.root, "on", 8790)
+            unified_config.configure(self.root, "on", 8791)
         self.assertEqual(self.path.read_text(), first)
         data = tomllib.loads(first)
-        self.assertEqual(data["openai_base_url"], "http://127.0.0.1:8790/v1")
+        self.assertEqual(data["openai_base_url"], "http://127.0.0.1:8791/v1")
         self.assertTrue(data["model_providers"]["codex-bridge"]["requires_openai_auth"])
         with mock.patch.dict(switch_config.os.environ, {"DEFAULT_MODEL": "deepseek-test"}):
             switch_config.switch("on", self.root)
@@ -71,7 +71,7 @@ class UnifiedConfigTests(unittest.TestCase):
         self.assertEqual(tomllib.loads(self.path.read_text())["model_catalog_json"], str(self.root / "unified-model-catalog.json"))
         switch_config.switch("off", self.root)
         self.assertEqual(tomllib.loads(self.path.read_text())["model_catalog_json"], str(self.root / "unified-model-catalog.json"))
-        unified_config.configure(self.root, "off", 8790)
+        unified_config.configure(self.root, "off", 8791)
         self.assertEqual(tomllib.loads(self.path.read_text()), original)
         self.assertIn("# preserve", self.path.read_text())
 
@@ -79,7 +79,7 @@ class UnifiedConfigTests(unittest.TestCase):
         original = self.path.read_bytes()
         with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO('{"mode":"unified","model_ids":[]}')):
             with self.assertRaisesRegex(ValueError, "カタログ"):
-                unified_config.configure(self.root, "on", 8790)
+                unified_config.configure(self.root, "on", 8791)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertFalse((self.root / "unified-router-state.json").exists())
 
@@ -88,7 +88,7 @@ class UnifiedConfigTests(unittest.TestCase):
         before = self.path.read_bytes()
         with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
             with self.assertRaisesRegex(ValueError, "保護版"):
-                unified_config.configure(self.root, "on", 8790)
+                unified_config.configure(self.root, "on", 8791)
         self.assertEqual(self.path.read_bytes(), before)
         self.assertFalse((self.root / "unified-router-state.json").exists())
 
@@ -96,7 +96,7 @@ class UnifiedConfigTests(unittest.TestCase):
         self.path.write_text(self.path.read_text() + 'env_key="OTHER_KEY"\n')
         before = self.path.read_bytes()
         with self.assertRaisesRegex(ValueError, "独自認証"):
-            unified_config.configure(self.root, "on", 8790)
+            unified_config.configure(self.root, "on", 8791)
         self.assertEqual(self.path.read_bytes(), before)
 
     def test_preserves_multiline_content_and_quoted_provider_name(self):
@@ -109,7 +109,7 @@ class UnifiedConfigTests(unittest.TestCase):
 
     def normal_setup(self):
         self.path.write_text('model="opencode/deepseek-v4.1-flash"\n[model_providers.codex-bridge]\n'
-                             'name="Codex Bridge"\nbase_url="http://127.0.0.1:8790/v1"\n'
+                             'name="Codex Bridge"\nbase_url="http://127.0.0.1:8791/v1"\n'
                              'requires_openai_auth=true\nwire_api="responses"\n')
         (self.root / "unified-model-catalog.json").write_text(json.dumps({"models": [
             {"slug": "opencode/deepseek-v4.1-flash", "router_provider": "opencode", "router_transport": "responses"}]}))
@@ -178,7 +178,7 @@ class UnifiedConfigTests(unittest.TestCase):
         health = self.normal_setup()
         source = self.path.read_text()
         with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO(json.dumps(health))):
-            unified_config.activate_normal(self.root, 8790)
+            unified_config.activate_normal(self.root, 8791)
         config = tomllib.loads(self.path.read_text())
         self.assertEqual(config["model_provider"], "codex-bridge")
         self.assertEqual(config["model"], "opencode/deepseek-v4.1-flash")
@@ -187,7 +187,7 @@ class UnifiedConfigTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), source)
         with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO(json.dumps(health))):
-            unified_config.activate_normal(self.root, 8790)
+            unified_config.activate_normal(self.root, 8791)
         self.assertEqual(len(list(self.root.glob("config.toml.bak.normal-direct.*"))), 1)
 
     def test_common_history_accepts_every_model_and_removes_old_direct_marker(self):
@@ -202,7 +202,7 @@ class UnifiedConfigTests(unittest.TestCase):
                     {"slug": slug, "router_provider": "opencode", "router_transport": "chat"}]}))
                 health = {"history_transport": "chat", "model_ids": [slug]}
                 with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO(json.dumps(health))):
-                    unified_config.activate_normal(self.root, 8790)
+                    unified_config.activate_normal(self.root, 8791)
                 result = tomllib.loads(self.path.read_text())
                 self.assertEqual(result["model"], slug)
                 self.assertEqual(result["model_provider"], "codex-bridge")
@@ -219,35 +219,35 @@ class UnifiedConfigTests(unittest.TestCase):
                              '[profiles.work]\nmodel="profile"\n' + self.path.read_text().split("\n", 1)[1])
         original = tomllib.loads(self.path.read_text())
         with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
-            unified_config.activate_normal(self.root, 8790)
+            unified_config.activate_normal(self.root, 8791)
             first = self.path.read_text()
-            unified_config.activate_normal(self.root, 8790)
+            unified_config.activate_normal(self.root, 8791)
         data = tomllib.loads(first)
         self.assertEqual(self.path.read_text(), first)
         self.assertEqual(data["model"], "gpt-6.1-sol")
         self.assertEqual(data["model_provider"], "openai")
-        self.assertEqual(data["openai_base_url"], "http://127.0.0.1:8790/v1")
+        self.assertEqual(data["openai_base_url"], "http://127.0.0.1:8791/v1")
         self.assertEqual(data["model_catalog_json"], str(self.root / "unified-model-catalog.json"))
         self.assertEqual(data["profiles"], original["profiles"])
         self.assertIn("# preserve", first)
         self.assertEqual(len(list(self.root.glob("config.toml.bak.unified.*"))), 1)
-        unified_config.configure(self.root, "off", 8790)
+        unified_config.configure(self.root, "off", 8791)
         self.assertEqual(tomllib.loads(self.path.read_text()), original)
 
     def test_legacy_switch_restores_missing_native_route_in_unified_mode(self):
         with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
-            unified_config.configure(self.root, "on", 8790)
+            unified_config.configure(self.root, "on", 8791)
         self.path.write_text(unified_config.edit_table(self.path.read_text(), (), {"openai_base_url": None}))
         for mode in ["repair", "on", "off"]:
             switch_config.switch(mode, self.root)
-            self.assertEqual(tomllib.loads(self.path.read_text())["openai_base_url"], "http://127.0.0.1:8790/v1")
+            self.assertEqual(tomllib.loads(self.path.read_text())["openai_base_url"], "http://127.0.0.1:8791/v1")
         self.assertEqual(tomllib.loads(self.path.read_text())["model"], "gpt-test")
 
     def test_unified_switch_never_points_native_auth_at_a_remote_bridge(self):
         with mock.patch.object(unified_config, "urlopen", side_effect=self.health):
-            unified_config.configure(self.root, "on", 8790)
-        for url in ["https://remote.example/v1", "http://user:secret@127.0.0.1:8790/v1",
-                    "http://127.0.0.1:8790/v1?redirect=1", "http://127.0.0.1:8790/other"]:
+            unified_config.configure(self.root, "on", 8791)
+        for url in ["https://remote.example/v1", "http://user:secret@127.0.0.1:8791/v1",
+                    "http://127.0.0.1:8791/v1?redirect=1", "http://127.0.0.1:8791/other"]:
             self.path.write_text(unified_config.edit_table(self.path.read_text(), unified_config.BRIDGE_TABLE, {"base_url": url}))
             before = self.path.read_bytes()
             with self.assertRaisesRegex(ValueError, "loopback"):
@@ -260,13 +260,13 @@ class UnifiedConfigTests(unittest.TestCase):
         before = self.path.read_bytes()
         with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO('{"mode":"unified","model_ids":[]}')):
             with self.assertRaisesRegex(ValueError, "カタログ"):
-                unified_config.activate_normal(self.root, 8790)
+                unified_config.activate_normal(self.root, 8791)
         self.assertEqual(self.path.read_bytes(), before)
         self.path.write_text('model_provider="custom"\n' + self.path.read_text())
         before = self.path.read_bytes()
         with mock.patch.object(unified_config, "urlopen") as fetch:
             with self.assertRaisesRegex(ValueError, "独自"):
-                unified_config.activate_normal(self.root, 8790)
+                unified_config.activate_normal(self.root, 8791)
             fetch.assert_not_called()
         self.assertEqual(self.path.read_bytes(), before)
 
@@ -281,7 +281,7 @@ class UnifiedConfigTests(unittest.TestCase):
 
         with mock.patch.object(unified_config, "urlopen", side_effect=changing_health):
             with self.assertRaisesRegex(ValueError, "変更"):
-                unified_config.activate_normal(self.root, 8790)
+                unified_config.activate_normal(self.root, 8791)
         self.assertEqual(self.path.read_text(), newer)
         self.assertFalse((self.root / "unified-router-state.json").exists())
 
@@ -295,7 +295,7 @@ class UnifiedConfigTests(unittest.TestCase):
             before = self.path.read_bytes()
             with mock.patch.object(unified_config, "urlopen", return_value=io.StringIO('{}')):
                 with self.assertRaises(ValueError):
-                    unified_config.activate_normal(self.root, 8790)
+                    unified_config.activate_normal(self.root, 8791)
             self.assertEqual(self.path.read_bytes(), before)
 
     def test_prepares_namespaced_catalog_without_overwriting_sources(self):

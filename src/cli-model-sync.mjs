@@ -18,7 +18,7 @@ export function cliThreadId(body, headers = {}) {
 // The existing two manual IDs always remain fixed, including after ABA changes.
 export class CliModelSync {
   constructor({ root, socketPath = join(root, 'app-server-control/app-server-control.sock'), control,
-    routerBase = 'http://127.0.0.1:8790/v1' } = {}) {
+    routerBase = 'http://127.0.0.1:8791/v1' } = {}) {
     this.control = control ?? new CliControl({ socketPath });
     this.routerBase = routerBase;
     this.providers = new Set(); this.providerCacheUntil = 0;
