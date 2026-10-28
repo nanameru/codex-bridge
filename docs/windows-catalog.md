@@ -31,7 +31,7 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\catalog-doctor.ps1 -Act
 | --- | --- |
 | `legacy_opencode_only` | 固定カタログに公式モデルが0件。Issue #143の原因で、`apply` の対象 |
 
-公式モデルかどうかは、`opencode/` などの接頭辞が無く、かつ `models_cache.json`（公式一覧）に載っているかで数えます。接頭辞の無い旧OpenCodeカタログ（`deepseek-v4.1-flash` など）も公式一覧と照合して `legacy_opencode_only` と判定します。公式一覧のキャッシュが無いときは接頭辞だけで数えるため、接頭辞の無いカタログは `native_only` となり自動変更しません。
+公式モデルかどうかは、`opencode/` などの接頭辞が無く、かつ `models_cache.json`（公式一覧）に載っているかで数えます。接頭辞の無い旧OpenCodeカタログ（`deepseek-v4.1-flash` など）も公式一覧と照合して `legacy_opencode_only` と判定します。`src/make-catalog.mjs` が生成した項目（Bridge独自の `base_instructions` 付き）は、`gpt-6-luna` のように公式と同名でもOpenCodeとして数えます。公式一覧のキャッシュが無いときは接頭辞だけで数えるため、接頭辞の無いカタログは `native_only` となり自動変更しません。
 | `unified` / `native_only` | 公式モデルを含む固定カタログ。自動変更しません |
 | `builtin` / `dynamic` | 固定カタログ無し / `codex-live` の動的カタログ |
 | `unknown` | カタログを読めない等。自動変更しません |

@@ -151,6 +151,27 @@ class CatalogDoctorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             doctor.migrate(self.root, 8790, ready=OK)
 
+    @unittest.skipIf(shutil.which("node") is None, "nodeが必要")
+    def test_make_catalog_output_is_legacy_even_when_slugs_collide_with_official(self):
+        script = ("import('./src/make-catalog.mjs').then(m => process.stdout.write(JSON.stringify(m.buildCatalog("
+                  "JSON.parse(require('fs').readFileSync('src/models.json', 'utf8')).models))))")
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", check=True)
+        generated = json.loads(result.stdout)
+        names = doctor.slugs(generated)
+        self.assertIn("gpt-6-luna", names)
+        (self.root / "model-catalog.json").write_text(result.stdout, encoding="utf-8")
+        (self.root / "models_cache.json").write_text(catalog("gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-luna"))
+        report = doctor.diagnose(self.root)
+        self.assertEqual((report["status"], report["native_count"], report["external_count"], report["target_status"]),
+                         ("legacy_opencode_only", 0, len(names), "hidden_by_catalog"))
+        self.assertEqual(doctor.migrate(self.root, 8790, ready=OK), "applied")
+        self.assertEqual(doctor.migrate(self.root, 8790, ready=OK), "unchanged")
+        generated["models"].append({"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol"})
+        (self.root / "model-catalog.json").write_text(json.dumps(generated), encoding="utf-8")
+        self.assertEqual(doctor.restore(self.root), "restored")
+        self.assertEqual(doctor.diagnose(self.root)["status"], "unified")
+
     def serve_health(self, health):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):

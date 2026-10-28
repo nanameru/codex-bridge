@@ -23,6 +23,8 @@ from live_catalog import PROVIDER, candidate, exclusive_lock
 
 TARGET_MODEL = "gpt-6.1-sol"
 STATE = "catalog-migration-state.json"
+# Opening sentence of INSTRUCTIONS in src/make-catalog.mjs (unchanged since that file was added).
+BRIDGE_INSTRUCTIONS = "You are Codex, a coding agent running in the user's terminal on macOS."
 FOREIGN_STATES = ("live-catalog-state.json", "unified-router-state.json")
 
 
@@ -34,6 +36,12 @@ def slugs(document):
     if not found or not all(isinstance(s, str) and s for s in found):
         raise ValueError("slugが不正な項目があります")
     return found
+
+
+def bridge_generated(document):
+    """Slugs stamped by src/make-catalog.mjs; OpenCode entries may reuse official names such as gpt-6-luna."""
+    return {m.get("slug") for m in document["models"]
+            if isinstance(m, dict) and str(m.get("base_instructions", "")).startswith(BRIDGE_INSTRUCTIONS)}
 
 
 def is_native(slug, official=None):
@@ -98,12 +106,14 @@ def diagnose(root, target=TARGET_MODEL):
         if not path.is_absolute():
             path = root / path
         try:
-            listed = slugs(load_json(path))
+            document = load_json(path)
+            listed = slugs(document)
         except (OSError, ValueError) as error:
             report["catalog_error"] = type(error).__name__
             status, listed = "unknown", []
         else:
-            native = [s for s in listed if is_native(s, official)]
+            bridge = bridge_generated(document)
+            native = [s for s in listed if s not in bridge and is_native(s, official)]
             report["native_count"], report["external_count"] = len(native), len(listed) - len(native)
             status = "legacy_opencode_only" if not native else ("unified" if len(native) < len(listed) else "native_only")
     if status == "unknown":
