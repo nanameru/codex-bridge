@@ -117,14 +117,14 @@ def pin_realtime(data, state):
 
 
 def write_state(path, state):
-    if not path.exists() or json.loads(path.read_text()) != state:
+    if not path.exists() or json.loads(path.read_text(encoding="utf-8")) != state:
         atomic_write(path, json.dumps(state, ensure_ascii=False))
 
 
 def prepare(root, source_root):
-    native = json.loads((root / "models_cache.json").read_text())["models"]
-    opencode = json.loads((root / "model-catalog.json").read_text())["models"]
-    source_models = json.loads((source_root / "src/models.json").read_text())["models"]
+    native = json.loads((root / "models_cache.json").read_text(encoding="utf-8"))["models"]
+    opencode = json.loads((root / "model-catalog.json").read_text(encoding="utf-8"))["models"]
+    source_models = json.loads((source_root / "src/models.json").read_text(encoding="utf-8"))["models"]
     if not all(isinstance(model, dict) for model in source_models):
         raise ValueError("モデルIDが不正です")
     allowed = {checked_slug(model.get("id")) for model in source_models}
@@ -186,23 +186,23 @@ def configure(root, mode, port):
         raise ValueError("ポートは1〜65535で指定してください")
     path = root / "config.toml"
     state_path = root / "unified-router-state.json"
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     data = tomllib.loads(source)
     bridge = data.get("model_providers", {}).get("codex-bridge", {})
     if mode == "on":
         if any(bridge.get(key) for key in ["env_key", "auth", "experimental_bearer_token"]):
             raise ValueError("codex-bridgeに独自認証があります。自動では変更しません")
-        saved = json.loads(state_path.read_text()) if state_path.exists() else {}
+        saved = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
         realtime_config.plan(data, saved.get("realtime"))
         catalog = root / "unified-model-catalog.json"
-        model_ids = {model["slug"] for model in json.loads(catalog.read_text())["models"]}
+        model_ids = {model["slug"] for model in json.loads(catalog.read_text(encoding="utf-8"))["models"]}
         with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
             health = json.load(response)
         if health.get("mode") != "unified" or set(health.get("model_ids", [])) != model_ids:
             raise ValueError("同じ統合カタログでrouterを起動してから有効にしてください")
         if (root / "bridge-local-token").exists() and health.get("security") != SECURITY_VERSION:
             raise ValueError("保護版routerを起動してから有効にしてください")
-        state = json.loads(state_path.read_text()) if state_path.exists() else {
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {
             "root": {key: data.get(key) for key in ROOT_KEYS},
             "bridge": {key: bridge.get(key) for key in BRIDGE_KEYS},
             "bridge_existed": bool(bridge),
@@ -219,7 +219,7 @@ def configure(root, mode, port):
         if not state_path.exists():
             print("統合ルーティングは無効です")
             return
-        state = json.loads(state_path.read_text())
+        state = json.loads(state_path.read_text(encoding="utf-8"))
         candidate = edit_table(source, (), state["root"])
         realtime_changes, warnings = realtime_config.restore(data, state.get("realtime"))
         for warning in warnings:
@@ -230,7 +230,7 @@ def configure(root, mode, port):
             "base_url": "http://127.0.0.1:8788/v1", "requires_openai_auth": None, "wire_api": "responses",
         }
         candidate = edit_table(candidate, BRIDGE_TABLE, changes)
-    if path.is_symlink() or path.read_text() != source:
+    if path.is_symlink() or path.read_text(encoding="utf-8") != source:
         raise ValueError("設定が変更されたかリンクです。再確認してください")
     if mode == "on":
         write_state(state_path, state)
@@ -244,7 +244,7 @@ def configure(root, mode, port):
     if mode == "off":
         switch_state = root / "codex-bridge-switch-state.json"
         if switch_state.exists():
-            saved = json.loads(switch_state.read_text())
+            saved = json.loads(switch_state.read_text(encoding="utf-8"))
             if saved.get("model_catalog_json") == str(root / "unified-model-catalog.json"):
                 if state["root"]["model_catalog_json"] is None:
                     saved.pop("model_catalog_json", None)
@@ -258,7 +258,7 @@ def configure(root, mode, port):
 
 def update_transports(root):
     path = root / "unified-model-catalog.json"
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     catalog = json.loads(source)
     for model in catalog["models"]:
         if model.get("router_provider") == "opencode":
@@ -266,7 +266,7 @@ def update_transports(root):
     candidate = json.dumps(catalog, ensure_ascii=False)
     if json.loads(source) == catalog:
         return
-    if path.is_symlink() or path.read_text() != source:
+    if path.is_symlink() or path.read_text(encoding="utf-8") != source:
         raise ValueError("カタログが変更されたかリンクです。再確認してください")
     import tempfile
     descriptor, backup_path = tempfile.mkstemp(prefix="unified-model-catalog.json.bak.transports.", dir=root)
@@ -285,17 +285,17 @@ def configure_flash_code_mode(catalog):
 
 def activate_flash_code_mode(root):
     path = root / "unified-model-catalog.json"
-    config = tomllib.loads((root / "config.toml").read_text())
+    config = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
     if (config.get("model_provider") != "codex-bridge"
             or config.get("model_catalog_json") != str(path)
             or config.get("model_providers", {}).get("codex-bridge", {}).get("http_headers", {}).get("x-codex-bridge-direct") != "1"):
         raise ValueError("先に通常codexの公式直接接続を有効にしてください")
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     catalog = json.loads(source)
     configure_flash_code_mode(catalog)
     if catalog == json.loads(source):
         return
-    if path.is_symlink() or path.read_text() != source:
+    if path.is_symlink() or path.read_text(encoding="utf-8") != source:
         raise ValueError("カタログが変更されたかリンクです。再確認してください")
     import tempfile
     descriptor, backup_path = tempfile.mkstemp(prefix="unified-model-catalog.json.bak.flash-code-mode.", dir=root)
@@ -310,9 +310,9 @@ def activate_normal(root, port):
     if not 1 <= port <= 65535:
         raise ValueError("ポートは1〜65535で指定してください")
     path = root / "config.toml"
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     parsed = tomllib.loads(source)
-    catalog = json.loads((root / "unified-model-catalog.json").read_text())
+    catalog = json.loads((root / "unified-model-catalog.json").read_text(encoding="utf-8"))
     model = next((model for model in catalog["models"] if model["slug"] == parsed.get("model")), None)
     if parsed.get("model_provider") not in (None, "openai", "codex-bridge"):
         raise ValueError("独自の既定providerは変更しません")
@@ -339,7 +339,7 @@ def activate_normal(root, port):
     candidate = edit_table(source, (), {"model_provider": "codex-bridge"})
     candidate = edit_table(candidate, ("model_providers", "codex-bridge", "http_headers"), {"x-codex-bridge-direct": None if common_history else "1"})
     state_path = root / "unified-router-state.json"
-    state = json.loads(state_path.read_text()) if state_path.exists() else None
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else None
     if state is not None:
         realtime, state = pin_realtime(parsed, state)
         if realtime:
@@ -347,7 +347,7 @@ def activate_normal(root, port):
     else:
         print("注意: 統合routerのstateがないため音声(Realtime)接続先は変更しません。"
               "python3 scripts/realtime_config.py doctor で確認してください")
-    if path.is_symlink() or path.read_text() != source:
+    if path.is_symlink() or path.read_text(encoding="utf-8") != source:
         raise ValueError("設定が変更されたかリンクです。再確認してください")
     if state is not None:
         write_state(state_path, state)
