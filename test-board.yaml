@@ -1216,3 +1216,15 @@ cases:
     test_file: test/cli-model-sync-e2e.py
     issues: [99]
     notes: "CODEX_TEST_WHATSTOKEN=1、CODEX_TEST_MODEL_PROVIDER=codex-liveで模擬上流30要求。外部推論なし。"
+
+  - id: TC-107
+    title: "通常Codex起動をGPT-6.1 Sol公式直結へ固定し、外部モデルをprofileへ退避する"
+    feature: "ルーター障害時のGPT直結"
+    scenario: "profile指定なしの通常起動をopenai-directへ固定し、--profile opencodeで中継経路を利用できる"
+    status: done
+    priority: high
+    type: integration
+    source: []
+    test_file: manual
+    issues: [136]
+    notes: "Codex 0.165.0で実CLIを確認。profileなしはprovider=openai-direct/model=gpt-6.1-sol、ルーターを127.0.0.1:9へ上書きしてもDEFAULT_DIRECT_OK。--profile opencodeはprovider=codex-bridge/model=opencode/deepseek-v4.1-flashでOPENCODE_PROFILE_OK。設定はタイムスタンプ付きでバックアップ済み。"
