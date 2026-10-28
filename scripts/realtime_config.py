@@ -8,6 +8,7 @@ import argparse
 import http.client
 import json
 import os
+import sys
 from pathlib import Path
 import tomllib
 from urllib.parse import urlsplit
@@ -215,6 +216,9 @@ def diagnose(root, with_probe=False):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Realtime音声接続先の診断(設定は変更しません)")
     parser.add_argument("mode", choices=["doctor"])
     parser.add_argument("--probe", action="store_true",

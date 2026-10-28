@@ -236,6 +236,17 @@ class RealtimeDoctorTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["text_base_url"], "http://127.0.0.1:8790/v1")
 
+    def test_doctor_cli_survives_a_non_utf8_console(self):
+        import os, subprocess
+        (self.root / "config.toml").write_text('openai_base_url="http://127.0.0.1:10100/v1"\n')
+        script = Path(__file__).resolve().parents[1] / "scripts" / "realtime_config.py"
+        env = {**os.environ, "CODEX_HOME": str(self.root), "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+        result = subprocess.run([sys.executable, str(script), "doctor"], env=env,
+                                capture_output=True)
+        self.assertEqual(result.returncode, 1, result.stderr.decode("utf-8", "replace"))
+        report = json.loads(result.stdout.decode("utf-8"))
+        self.assertEqual(report["realtime_target"], "ws://127.0.0.1:10100/v1/realtime")
+
     def test_output_never_contains_credentials_or_query(self):
         report = self.diagnose(f'{KEY}="wss://user:secret@realtime.example.com/v1?token=abc"\n')
         text = json.dumps(report)
