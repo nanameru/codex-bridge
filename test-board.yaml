@@ -1274,3 +1274,15 @@ cases:
     test_file: test/cli-model-sync-e2e.py
     issues: [99]
     notes: "CODEX_TEST_WHATSTOKEN=1、CODEX_TEST_MODEL_PROVIDER=codex-liveで模擬上流30要求。外部推論なし。"
+
+  - id: TC-087
+    title: "旧会話のprovider不整合だけをresume起動時に自動移行する"
+    feature: "resume時のprovider自動移行"
+    scenario: "旧OpenAI/中継モデル・正常なOpenAI/中継会話・明示override・重複/symlink・不正JSON・未知router・非loopback"
+    status: done
+    priority: high
+    type: integration
+    source: [scripts/codex_fresh.py]
+    test_file: test/test_codex_fresh.py
+    issues: [141]
+    notes: "実セッションのbytes/mtime不変と、CODEX_HOMEを使うlauncher実行E2Eを確認。曖昧・異常時は引数を補正せずfail closed。"

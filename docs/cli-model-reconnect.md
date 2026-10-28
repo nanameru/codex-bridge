@@ -39,3 +39,28 @@
 新しいシェルの通常起動だけでなく、実際に困っているpaneで確認する。
 footer、`/model`、選択中ID、実プロセスの起動引数を別々に検証する。
 接続が直ったことを、AIがチャットで答えるモデル一覧だけから判定しない。
+
+## 旧会話のprovider不整合をresume時に自動移行する（Issue #141）
+
+旧OpenCode会話に`model_provider = "openai"`が保存されたまま、会話内の最後のモデルが
+中継対象になっている場合、Codex TUIは保存済みproviderを優先してChatGPT直結経路へ誤接続し、
+次のエラーで停止することがある。
+
+```text
+The 'opencode/deepseek-v4.1-flash' model is not supported when using Codex with a ChatGPT account.
+```
+
+管理launcherは`codex resume <明示UUID>`だけで、次の条件をすべて満たす場合に限り、
+その起動へ`-c model_provider="codex-bridge"`を自動付与する。
+
+- 現在の設定が`codex-bridge`で、接続先が`http://127.0.0.1:8791/v1`
+- 設定されたmodel catalogが`CODEX_HOME`内の通常ファイル
+- セッションが一意で、symlinkではない通常ファイル
+- セッション先頭の保存providerが`openai`
+- 最後の`turn_context`のモデルがcatalog上で既知の中継provider（`openai`以外）
+- `--last`、profile、remote、明示的なモデル/provider overrideがない
+
+不正JSON、曖昧なセッション、未知のrouter、非loopback設定では何も補正せず、
+従来のCodex引数へ戻る。セッションJSONL、`config.toml`、認証情報は変更しない。
+履歴は先頭メタ情報と末尾16 MiBだけを上限付きで読み、会話全体を走査しない。
+この自動化は既知のprovider不整合だけを対象とし、モデル本体の品質・料金・利用枠を修復しない。
