@@ -1218,13 +1218,13 @@ cases:
     notes: "CODEX_TEST_WHATSTOKEN=1、CODEX_TEST_MODEL_PROVIDER=codex-liveで模擬上流30要求。外部推論なし。"
 
   - id: TC-107
-    title: "通常Codex起動をGPT-6.1 Sol公式直結へ固定し、外部モデルをprofileへ退避する"
-    feature: "ルーター障害時のGPT直結"
-    scenario: "profile指定なしの通常起動をopenai-directへ固定し、--profile opencodeで中継経路を利用できる"
+    title: "通常起動をGPT-6.1 Sol既定にし、モデル切替を中継で各提供元へ振り分ける"
+    feature: "モデル切替と提供元ルーティング"
+    scenario: "profile指定なしでGPT-6.1 Solを使い、同じproviderのままOpenCodeモデルへ切り替えて中継側がrouter_providerに従って振り分ける"
     status: done
     priority: high
     type: integration
-    source: []
+    source: [src/model-router.mjs, scripts/unified_config.py]
     test_file: manual
     issues: [136]
-    notes: "Codex 0.165.0で実CLIを確認。profileなしはprovider=openai-direct/model=gpt-6.1-sol、ルーターを127.0.0.1:9へ上書きしてもDEFAULT_DIRECT_OK。--profile opencodeはprovider=codex-bridge/model=opencode/deepseek-v4.1-flashでOPENCODE_PROFILE_OK。設定はタイムスタンプ付きでバックアップ済み。"
+    notes: "Codex 0.165.0で実CLIを確認。profileなしはmodel=gpt-6.1-sol/provider=codex-bridgeでDEFAULT_GPT_OK、--model opencode/deepseek-v4.1-flashもprovider=codex-bridgeでSWITCH_OPENCODE_OK。モデル切替時にCodexのproviderは変わらず、各モデルはカタログのrouter_provider（openai/opencode/commandcode/ollama等）で中継先を決める。既定direct providerではOpenCodeモデルがChatGPT非対応エラーになることを再現し、設定はGPT既定・中継providerへ復旧した。"
