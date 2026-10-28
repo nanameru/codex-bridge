@@ -1,4 +1,3 @@
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -20,7 +19,10 @@ def atomic_write(path, text, permissions=0o600):
     descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w") as output:
-            os.fchmod(output.fileno(), permissions)
+            if hasattr(os, "fchmod"):
+                os.fchmod(output.fileno(), permissions)
+            else:  # Windows: os.chmodは読み取り専用属性だけを扱う
+                os.chmod(temporary, permissions)
             output.write(text)
             output.flush()
             os.fsync(output.fileno())
@@ -156,6 +158,7 @@ def main():
     if not (root / "config.toml").is_file():
         raise ValueError(f"config.toml が見つかりません: {root}")
     with (root / "codex-bridge-switch.lock").open("a") as lock:
+        import fcntl
         os.chmod(lock.name, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
         switch(sys.argv[1], root)
