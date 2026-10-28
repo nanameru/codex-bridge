@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from switch_config import atomic_write
-from local_security import ensure_bridge_key, verify_service
+from local_security import ensure_bridge_key, verify_service, service_environment
 
 
 def wait_for_unload(service):
@@ -94,6 +94,7 @@ def install():
     if not node:
         raise SystemExit("Node.jsが必要です")
     subprocess.run([node, "-e", 'if (typeof require("node:zlib").zstdDecompressSync !== "function") process.exit(1)'], check=True)
+    environment = service_environment(node=node)
     source = Path(__file__).resolve().parents[1]
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if not (root / "unified-model-catalog.json").exists():
@@ -116,13 +117,13 @@ def install():
     payload = {
         "Label": label, "ProgramArguments": [node, str(runtime / "model-router.mjs")],
         "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 10,
-        "EnvironmentVariables": {"CODEX_HOME": str(root)},
+        "EnvironmentVariables": {**environment, "CODEX_HOME": str(root)},
         "StandardOutPath": str(logs / "model-router.log"),
         "StandardErrorPath": str(logs / "model-router.stderr.log"),
     }
     previous = path.read_bytes() if path.exists() else None
     if previous:
-        payload["EnvironmentVariables"] = {**plistlib.loads(previous).get("EnvironmentVariables", {}), "CODEX_HOME": str(root)}
+        payload["EnvironmentVariables"] = {**service_environment(plistlib.loads(previous).get("EnvironmentVariables", {}), node=node), "CODEX_HOME": str(root)}
     if arguments.enable_whatstoken_free:
         payload["EnvironmentVariables"]["CODEX_WHATSTOKEN_FREE"] = "1"
     replace = previous is not None and plistlib.loads(previous) != payload

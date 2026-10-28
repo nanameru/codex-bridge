@@ -3,7 +3,7 @@ import { constants, openSync, closeSync, fstatSync, lstatSync, readFileSync, rea
 import { execFileSync } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 
 export const INTERNAL_AUTH_HEADER = "x-codex-bridge-auth";
 export const SECURITY_VERSION = "local-owner-v1";
@@ -58,7 +58,11 @@ function credentialSettings(root) {
     source = "";
   }
   if (!source.trim()) return { store: "file" };
-  const digest = createHash("sha256").update(source).digest("hex");
+  const python = process.env.CODEX_BRIDGE_PYTHON ?? "python3";
+  if (process.env.CODEX_BRIDGE_PYTHON !== undefined && !isAbsolute(python)) {
+    return { error: "credential_runtime_unavailable" };
+  }
+  const digest = createHash("sha256").update(python + "\0" + source).digest("hex");
   if (settingsCache.has(digest)) {
     const settings = settingsCache.get(digest);
     settingsCache.delete(digest);
@@ -68,10 +72,13 @@ function credentialSettings(root) {
   // Use the same TOML parser as our setup tools; never send config to a service.
   let settings = null;
   try {
-    settings = JSON.parse(execFileSync("python3", ["-c",
-      'import sys,json,tomllib; c=tomllib.loads(sys.stdin.read()); print(json.dumps({"store":c.get("cli_auth_credentials_store","file")}))'],
+    settings = JSON.parse(execFileSync(python, ["-I", "-c",
+      'import sys,json,tomllib\ntry: c=tomllib.loads(sys.stdin.read())\nexcept tomllib.TOMLDecodeError: sys.exit(65)\nprint(json.dumps({"store":c.get("cli_auth_credentials_store","file")}))'],
     { input: source, encoding: "utf8", timeout: 3000, maxBuffer: 65536, stdio: ["pipe", "pipe", "ignore"] }));
-  } catch { /* Invalid TOML or missing Python is diagnosed without exposing config. */ }
+  } catch (error) {
+    // Never cache a missing/incompatible runtime: a repaired environment must recover.
+    if (error.status !== 65) return { error: "credential_runtime_unavailable" };
+  }
   if (settingsCache.size >= 32) settingsCache.delete(settingsCache.keys().next().value);
   settingsCache.set(digest, settings);
   return settings;
@@ -90,6 +97,7 @@ export function readCodexAuth(root = codexRoot(), { platform = process.platform,
     if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) return rejected("unsafe_codex_home");
     const settings = credentialSettings(root);
     if (!settings) return rejected("credential_config_invalid");
+    if (settings.error) return rejected(settings.error);
     const { store } = settings;
     if (!["file", "keyring", "auto"].includes(store)) return rejected("unsupported_credential_store");
     let serialized;

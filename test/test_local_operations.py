@@ -25,6 +25,14 @@ class LocalOperationsTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
+    def test_auth_preflight_uses_the_same_pinned_python_as_service(self):
+        with mock.patch.object(secure_local, "service_environment", return_value={
+                "CODEX_BRIDGE_PYTHON": "/verified/python", "PATH": "/verified:/usr/bin:/bin"}), \
+                mock.patch.object(secure_local.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            secure_local.check_credentials(self.root)
+        self.assertEqual(run.call_args.kwargs['env']['CODEX_BRIDGE_PYTHON'], '/verified/python')
+        self.assertEqual(run.call_args.kwargs['env']['PATH'], '/verified:/usr/bin:/bin')
+
     def test_internal_key_is_private_exclusive_and_stable(self):
         local_security.ensure_bridge_key(self.root)
         path = self.root / "bridge-local-token"
@@ -189,6 +197,9 @@ class LocalOperationsTests(unittest.TestCase):
             secure_local.apply(self.root, target, 0)
         wait.assert_called_once_with(0, ports=(8788,))
         self.assertEqual(replace.call_args.args[2], f"gui/{os.getuid()}/{secure_local.LEGACY_LABEL}")
+        environment = replace.call_args.args[1]['EnvironmentVariables']
+        self.assertEqual(environment['CODEX_BRIDGE_PYTHON'], os.path.abspath(sys.executable))
+        self.assertEqual(environment['PATH'].split(':')[0], str(Path(sys.executable).parent))
 
 
 if __name__ == "__main__":

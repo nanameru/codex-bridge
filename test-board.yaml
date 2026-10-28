@@ -5,6 +5,30 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-109
+    title: "最小PATHでも検証済みPythonで本人認証を維持する"
+    feature: "launchd認証のPython固定"
+    scenario: "偽の旧python3・絶対パス指定・正当/不正Bearer・実行依存不良と構文不良の区別・依存修復後の再試行"
+    status: done
+    priority: high
+    type: regression
+    source: [src/local-security.mjs, src/auth-doctor.mjs]
+    test_file: test/distribution-auth.test.mjs
+    issues: [132, 130, 41]
+    notes: "実認証や上流推論を使わず子Nodeプロセスと一時ホームで検証。既存file/keyring/auto・認証更新・秘密非出力も維持。"
+
+  - id: TC-110
+    title: "初回導入と更新でtomllib対応Pythonを常駐設定へ固定する"
+    feature: "サービス更新時のPython環境検証"
+    scenario: "初回/既存plist・独自環境保持・最小PATH・非対応/不存在Pythonの事前拒否"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/local_security.py, scripts/install_router_service.py, scripts/secure_local.py]
+    test_file: test/test_service_python.py
+    issues: [132, 41]
+    notes: "一時ホームと模擬launchctlでplistを検証し、生成環境の実Pythonでtomllibをimportする。実サービスは変更しない。"
+
   - id: TC-108
     title: "OpenAI枠切れ時に残存履歴とメモを新規会話へ渡す"
     feature: "部分復元による引き継ぎ救済"
