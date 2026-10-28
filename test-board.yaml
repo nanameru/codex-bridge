@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-111
+    title: "中継障害時にGPT直結の退避方法をエラーへ表示する"
+    feature: "中継障害からの手動退避案内"
+    scenario: "中継接続失敗・認証拒否・提供元制限・SSE失敗で案内し、入力不正には付けない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/codex-bridge.mjs, src/provider-help.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [137]
+    notes: "JSONエラーと開始後SSEの双方で codex --profile direct を確認。中継401のauthentication_requiredにも表示し、invalid_jsonと413には付けない。複合テストはtest/bridge-transport.test.mjsとtest/provider-help.test.mjsでも確認。"
+
   - id: TC-109
     title: "最小PATHでも検証済みPythonで本人認証を維持する"
     feature: "launchd認証のPython固定"

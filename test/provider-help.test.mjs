@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Readable } from 'node:stream';
-import { providerHelp, providerNoticeStream, PROVIDER_HELP } from '../src/provider-help.mjs';
+import { directRecoveryHelp, providerHelp, providerNoticeStream, PROVIDER_HELP } from '../src/provider-help.mjs';
 import { routedBody } from '../src/model-router.mjs';
 import { fetchManualProvider, MANUAL_PROVIDERS } from '../src/manual-providers.mjs';
 const transform=async(type,body)=>{
@@ -11,6 +11,15 @@ const transform=async(type,body)=>{
 test('各社の固定ログイン/支払いリンクを返し不明providerをリンク化しない',()=>{
   for(const [p,h]of Object.entries(PROVIDER_HELP)){assert.ok(providerHelp(p).includes(h.login));assert.ok(providerHelp(p).includes(h.billing));}
   assert.equal(providerHelp('https://evil.invalid'), '');assert.equal(providerHelp('__proto__'),'');
+});
+test('中継・提供元障害だけGPTのdirect退避方法を返す',()=>{
+  const command='codex --profile direct';
+  assert.ok(directRecoveryHelp(502,'upstream_error').includes(command));
+  assert.ok(directRecoveryHelp(401,'authentication_required').includes(command));
+  assert.ok(directRecoveryHelp(429,'provider_limits_exhausted').includes(command));
+  assert.ok(directRecoveryHelp(503,'anything').includes(command));
+  assert.equal(directRecoveryHelp(400,'invalid_json'),'');
+  assert.equal(directRecoveryHelp(413,'request_too_large'),'');
 });
 test('未課金/認証エラーへ固定リンクを出し上流URLやキーは出さない',async()=>{
   for(const status of [401,402,403]){

@@ -245,7 +245,9 @@ test("preserves the already-deployed native image and search endpoints independe
 test("rejects unknown models and missing authentication before forwarding", async (context) => {
   const { calls, send } = await fixture(context);
   assert.equal((await send({ model: "unknown" })).status, 400);
-  assert.equal((await send({ model: "gpt-test" }, { authorization: "" })).status, 401);
+  const unauthorized = await send({ model: "gpt-test" }, { authorization: "" });
+  assert.equal(unauthorized.status, 401);
+  assert.match(await unauthorized.text(), /codex --profile direct/);
   assert.equal(calls.length, 0);
 });
 
@@ -1264,6 +1266,7 @@ test("upstream stream failure sends a safe terminal error instead of becoming a 
   assert.match(text, /partial/);
   assert.match(text, /event: response.failed/);
   assert.match(text, /upstream_stream_error/);
+  assert.match(text, /codex --profile direct/);
   assert.equal(metric.outcome, 'failed');
   assert.equal(metric.termination_reason, 'upstream_stream_error');
   assert.doesNotMatch(text + JSON.stringify(metric), /secret-key|private-message|private\.example/);
@@ -1281,9 +1284,24 @@ test("stream timeout sends a terminal error and records the deadline separately"
   const metric = await recorded;
   assert.match(text, /event: response.failed/);
   assert.match(text, /request_timeout/);
+  assert.match(text, /codex --profile direct/);
   assert.equal(metric.outcome, 'timeout');
   assert.equal(metric.termination_reason, 'deadline_exceeded');
   assert.equal(cancelled, true);
+});
+
+test("relay connection failures include the direct GPT escape command but invalid JSON does not", async context => {
+  const { send, base } = await fixture(context, { fetcher: async () => { throw new Error('private upstream detail'); } });
+  const failed = await send({ model: 'gpt-test' });
+  const failedText = await failed.text();
+  assert.equal(failed.status, 502);
+  assert.match(failedText, /codex --profile direct/);
+  assert.doesNotMatch(failedText, /private upstream detail/);
+
+  const invalid = await fetch(base + '/responses', { method: 'POST', headers: { authorization: 'Bearer test' }, body: '{' });
+  const invalidText = await invalid.text();
+  assert.equal(invalid.status, 400);
+  assert.doesNotMatch(invalidText, /codex --profile direct/);
 });
 
 test("client cancellation stops upstream without recording a provider failure", async context => {

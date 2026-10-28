@@ -19,7 +19,7 @@ import { HISTORY_MODES, readHistoryMode, modeHelp } from "./history-mode.mjs";
 import { restoreRolloutHistory } from "./rollout-history.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
 import { CHAT_PROVIDERS, KIMI_MODEL, KIMI_SLUG, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
-import { providerHelp, allProviderHelp, providerNoticeStream } from "./provider-help.mjs";
+import { providerHelp, allProviderHelp, directRecoveryHelp, providerNoticeStream } from "./provider-help.mjs";
 import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel } from "./cli-model-sync.mjs";
 import { WhatstokenFreeGate } from "./whatstoken-free.mjs";
 import { AUTO_DEEPSEEK_MODEL, AUTO_DEEPSEEK_PROVIDERS, ProviderFallbackState,
@@ -103,14 +103,15 @@ export function routedBody(body, route, maxBytes) {
 }
 
 function fail(response, status, code, message) {
+  const safeMessage = message + directRecoveryHelp(status, code);
   if (response.headersSent) {
-    if (failHandoffStatus(response, status, code, message)) return;
+    if (failHandoffStatus(response, status, code, safeMessage)) return;
     if (!response.destroyed && !response.writableEnded
         && /^text\/event-stream\b/i.test(String(response.getHeader("content-type")))) {
       // Keep the HTTP stream alive long enough for Codex to receive the reason.
       response.end(`\n\nevent: response.failed\ndata: ${JSON.stringify({ type: "response.failed",
         response: { status: "failed", error: { code: "server_error",
-          message: `${code} (HTTP ${status}): ${message}` } } })}\n\n`);
+          message: `${code} (HTTP ${status}): ${safeMessage}` } } })}\n\n`);
       return;
     }
     response.destroy();
@@ -118,7 +119,7 @@ function fail(response, status, code, message) {
   }
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
     ...([401, 403].includes(status) ? { connection: "close" } : {}) });
-  response.end(JSON.stringify({ error: { type: code, message } }));
+  response.end(JSON.stringify({ error: { type: code, message: safeMessage } }));
 }
 
 export function estimateInputTokens(value) {

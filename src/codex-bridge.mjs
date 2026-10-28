@@ -24,6 +24,7 @@ import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.m
 import { chatToolContext, chatToolChoice, ToolSearchError } from "./tool-search.mjs";
 import http from "node:http";
 import { guardBridgeRequest, validateOpenCodeBase, fetchOpenCode, readOpenCodeApiKey } from "./local-security.mjs";
+import { DIRECT_RECOVERY_HELP } from "./provider-help.mjs";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -254,7 +255,7 @@ const server = http.createServer(async (req, res) => {
     const authInfo = getToken();
     if (!authInfo.token) {
       res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "認証トークンがありません。OpenCode にログインするか OPENCODE_API_KEY を設定してください" } }));
+      res.end(JSON.stringify({ error: { message: `認証トークンがありません。OpenCode にログインするか OPENCODE_API_KEY を設定してください${DIRECT_RECOVERY_HELP}` } }));
       return;
     }
 
@@ -348,7 +349,7 @@ const server = http.createServer(async (req, res) => {
       upstream = await doFetch("/chat/completions", chatBody);
     } catch (e) {
       res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: `upstream error: ${e.message}` } }));
+      res.end(JSON.stringify({ error: { message: `upstream error: ${e.message}${DIRECT_RECOVERY_HELP}` } }));
       return;
     }
 
@@ -362,7 +363,7 @@ const server = http.createServer(async (req, res) => {
           upstream = await doFetch("/responses", { ...body, model });
         } catch (e) {
           res.writeHead(502, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: { message: `upstream error: ${e.message}` } }));
+          res.end(JSON.stringify({ error: { message: `upstream error: ${e.message}${DIRECT_RECOVERY_HELP}` } }));
           return;
         }
         if (upstream.ok) {
