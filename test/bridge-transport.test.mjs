@@ -135,6 +135,32 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     body: JSON.stringify({ model: "kimi-k3.1-pro", input: "Hello", stream: false, ...explicit }) });
   assert.equal(sampled.status, 200, await sampled.text());
   for (const [field, value] of Object.entries(explicit)) assert.equal(calls.at(-1).body[field], value);
+  // The upstream rejects any tool_choice when tools is absent. Auto-compatible
+  // choices are omitted, while impossible required/named choices fail locally.
+  for (const toolChoice of ["auto", "none"]) {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
+      headers: { "content-type": "application/json", "x-codex-bridge-auth": internalKey },
+      body: JSON.stringify({ model: "deepseek-v4.1-flash", input: "Hello", stream: false, tool_choice: toolChoice }) });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal("tool_choice" in calls.at(-1).body, false);
+  }
+  const upstreamCalls = calls.length;
+  for (const toolChoice of ["required", { type: "function", name: "read" }]) {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
+      headers: { "content-type": "application/json", "x-codex-bridge-auth": internalKey },
+      body: JSON.stringify({ model: "deepseek-v4.1-flash", input: "Hello", stream: false, tool_choice: toolChoice }) });
+    assert.equal(response.status, 422, await response.text());
+    const rejected = await response.json();
+    assert.equal(rejected.error.code, "tool_choice_requires_tools");
+    assert.match(rejected.error.message, /tools/);
+  }
+  assert.equal(calls.length, upstreamCalls);
+  const supported = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
+    headers: { "content-type": "application/json", "x-codex-bridge-auth": internalKey },
+    body: JSON.stringify({ model: "deepseek-v4.1-flash", input: "Hello", stream: false,
+      tools: [{ type: "function", name: "read", parameters: { type: "object", properties: {} } }], tool_choice: "required" }) });
+  assert.equal(supported.status, 200, await supported.text());
+  assert.equal(calls.at(-1).body.tool_choice, "required");
   // Exercise both real auth boundaries together, not just isolated header assertions.
   await writeFile(join(directory, "auth.json"), JSON.stringify({ tokens: { access_token: "owner-test-token" } }), { mode: 0o600 });
   const router = createRouter({ codexRoot: directory, bridgeBase: `http://127.0.0.1:${port}/v1`,

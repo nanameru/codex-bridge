@@ -24,11 +24,29 @@ test('historical search call and matching discovered schema survive as a Chat to
 });
 
 import * as toolSearch from '../src/tool-search.mjs';
-const { chatToolContext, toolWireName, ToolSearchError, TOOL_SEARCH_REASON_CODES } = toolSearch;
+const { chatToolContext, chatToolChoice, toolWireName, ToolSearchError, TOOL_SEARCH_REASON_CODES } = toolSearch;
 import { chatToResponses, pipeChatStream } from '../src/chat-protocol.mjs';
 import { EventEmitter } from 'node:events';
 const fn = (name, extra={}) => ({type:'function',name,parameters:{type:'object',properties:{}},...extra});
 const answer = (name,args='{"query":"probe"}') => ({choices:[{finish_reason:'tool_calls',message:{tool_calls:[{id:'same_call',type:'function',function:{name,arguments:args}}]}}]});
+
+test('tool choice cannot be forwarded without an available tool', () => {
+  const empty = chatToolContext({input:'Hello'});
+  assert.equal(chatToolChoice(undefined, empty), undefined);
+  assert.equal(chatToolChoice('auto', empty), undefined);
+  assert.equal(chatToolChoice('none', empty), undefined);
+  for (const choice of ['required', {type:'function',name:'read'}, {type:'custom',name:'exec'}]) {
+    assert.throws(() => chatToolChoice(choice, empty), error =>
+      error instanceof ToolSearchError && error.reasonCode === 'tool_choice_requires_tools');
+  }
+
+  const available = chatToolContext({tools:[fn('read')],input:'Hello'});
+  assert.equal(chatToolChoice('auto', available), 'auto');
+  assert.equal(chatToolChoice('none', available), 'none');
+  assert.equal(chatToolChoice('required', available), 'required');
+  assert.deepEqual(chatToolChoice({type:'function',name:'read'}, available),
+    {type:'function',function:{name:'read'}});
+});
 
 test('search completion is restored to native client tool_search in JSON and split SSE', async () => {
   const context=chatToolContext({tools:[search]});
