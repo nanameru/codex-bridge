@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-116
+    title: "Windowsの既定文字コードでも統合カタログをUTF-8で生成する"
+    feature: "Windowsカタログ生成の文字コード固定"
+    scenario: "cp1252が既定のWindows Pythonで、日本語を含むmodels_cache.json・model-catalog.json・src/models.jsonを読み、統合カタログを書き出す"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/unified_config.py]
+    test_file: test/test_unified_config.py
+    issues: [143]
+    notes: "Path.read_textをencoding未指定時に失敗させる回帰テストで、Windows固有の既定文字コード依存を全環境で検出する。"
+
   - id: TC-112
     title: "統合router切替でRealtime音声URLを所有者付きで保持・復元する"
     feature: "Realtime音声接続先の非破壊切替"

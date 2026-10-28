@@ -312,6 +312,29 @@ class UnifiedConfigTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "models_cache.json").read_text()), native)
         self.assertEqual(json.loads((self.root / "model-catalog.json").read_text()), opencode)
 
+    def test_prepare_reads_utf8_even_when_windows_locale_is_not_utf8(self):
+        native = {"models": [{"slug": "gpt-test", "display_name": "日本語"}]}
+        opencode = {"models": [{"slug": "opencode-test", "display_name": "日本語"}]}
+        (self.root / "models_cache.json").write_text(json.dumps(native, ensure_ascii=False), encoding="utf-8")
+        (self.root / "model-catalog.json").write_text(json.dumps(opencode, ensure_ascii=False), encoding="utf-8")
+        source = self.root / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src/models.json").write_text('{"models":[{"id":"opencode-test"}]}', encoding="utf-8")
+
+        original_read_text = Path.read_text
+
+        def strict_read_text(path, encoding=None, errors=None):
+            if encoding is None:
+                raise UnicodeDecodeError("cp1252", b"\x9d", 0, 1, "simulated Windows locale")
+            return original_read_text(path, encoding=encoding, errors=errors)
+
+        with mock.patch.object(Path, "read_text", strict_read_text):
+            catalog_path = unified_config.prepare(self.root, source)
+
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        self.assertEqual([model["slug"] for model in catalog["models"]],
+                         ["gpt-test", "opencode/opencode-test"])
+
     def test_shared_cache_manual_and_auto_models_never_become_native(self):
         native = {"models": [{"slug": "gpt-test"}] + [{"slug": prefix + "/deepseek-v4.1-flash"}
                     for prefix in ["opencode", "commandcode", "ollama", "auto-commandcode", "auto-ollama", "auto-whatstoken"]]}
