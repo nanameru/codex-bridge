@@ -9,7 +9,7 @@ import time
 from switch_config import atomic_write
 
 IMPORT = 'import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.mjs";'
-TOOL_IMPORT = 'import { chatToolContext, chatToolChoice, ToolSearchError } from "./tool-search.mjs";'
+TOOL_IMPORT = 'import { chatToolContext, chatToolChoice, toolChoiceForTools, ToolSearchError } from "./tool-search.mjs";'
 HELPERS = ('chat-protocol.mjs', 'tool-search.mjs', 'usage.mjs')
 MANIFEST = '.chat-protocol.sha256'
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +25,8 @@ def patched_source(source):
         source = source.replace('import http from "node:http";', IMPORT + '\nimport http from "node:http";', 1)
     if TOOL_IMPORT not in source:
         for old in ['import { chatToolContext } from "./tool-search.mjs";',
-                    'import { chatToolContext, chatToolChoice } from "./tool-search.mjs";']:
+                    'import { chatToolContext, chatToolChoice } from "./tool-search.mjs";',
+                    'import { chatToolContext, chatToolChoice, ToolSearchError } from "./tool-search.mjs";']:
             if old in source:
                 source = source.replace(old, TOOL_IMPORT)
                 break
@@ -57,9 +58,12 @@ def patched_source(source):
                      '  messages = toChatMessages(body);', '} catch (error) {',
                      '  res.writeHead(422, { "content-type": "application/json" });',
                      '  const toolFailure = error instanceof ToolSearchError;',
+                     '  const message = toolFailure && error.reasonCode === "tool_choice_requires_tools"',
+                     '    ? error.message',
+                     '    : `ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`;',
                      '  res.end(JSON.stringify({error:{type:toolFailure ? "unsupported_tool_search" : "invalid_tool_history",',
                      '    code:toolFailure ? error.reasonCode : "chat_history_conversion_failed",',
-                     '    message:`ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`}}));',
+                     '    message}}));',
                      '  return;', '}']
             return '\n'.join(indent + line for line in lines)
         source, count = re.subn(pattern, guard, source)
@@ -74,9 +78,12 @@ def patched_source(source):
         lines = ['} catch (error) {',
                  '  res.writeHead(422, { "content-type": "application/json" });',
                  '  const toolFailure = error instanceof ToolSearchError;',
+                 '  const message = toolFailure && error.reasonCode === "tool_choice_requires_tools"',
+                 '    ? error.message',
+                 '    : `ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`;',
                  '  res.end(JSON.stringify({error:{type:toolFailure ? "unsupported_tool_search" : "invalid_tool_history",',
                  '    code:toolFailure ? error.reasonCode : "chat_history_conversion_failed",',
-                 '    message:`ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`}}));']
+                 '    message}}));']
         return '\n'.join(match[1] + line for line in lines)
     source = re.sub(previous_failure, improve_failure, source)
     if source.count('const toolFailure = error instanceof ToolSearchError;') != 1:
@@ -88,6 +95,21 @@ def patched_source(source):
     source = source.replace('if (toolChoice) chatBody.tool_choice = toolChoice;', desired_choice)
     if source.count(desired_choice) != 1:
         raise ValueError('bridgeのtool_choice境界が一致しません')
+    # The Responses fallback bypasses Chat conversion; apply the same guard.
+    legacy_fallback = 'upstream = await doFetch("/responses", { ...body, model });'
+    if 'const responsesBody = { ...body, model };' not in source and legacy_fallback in source:
+        pattern = r'(?m)^([ \t]*)' + re.escape(legacy_fallback) + r'$'
+        def fallback_guard(match):
+            indent = match[1]
+            lines = ['const responsesBody = { ...body, model };',
+                     'const responsesChoice = toolChoiceForTools(body.tool_choice, body.tools);',
+                     'if (responsesChoice === undefined) delete responsesBody.tool_choice;',
+                     'else responsesBody.tool_choice = responsesChoice;',
+                     'upstream = await doFetch("/responses", responsesBody);']
+            return '\n'.join(indent + line for line in lines)
+        source, count = re.subn(pattern, fallback_guard, source)
+        if count != 1:
+            raise ValueError('bridgeのResponsesフォールバック境界が一致しません')
     source = source.replace('const payload = toResponsesPayload(chat, model);',
                             'const payload = toResponsesPayload(chat, model, toolContext);')
     call_pattern = r'await pipeStream\(([^,\n]+), res, model, threadId(?:, activeHandle)?(?:, toolContext)?\);'

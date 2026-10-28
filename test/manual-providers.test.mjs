@@ -7,9 +7,22 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRouter } from '../src/model-router.mjs';
 import { MANUAL_PROVIDERS, manualModels, manualChatBody, readManualKey, fetchManualProvider } from '../src/manual-providers.mjs';
+import { ToolSearchError } from '../src/tool-search.mjs';
 const catalog = { models: [{ slug: 'gpt-test', router_provider: 'openai' },
   { slug: 'opencode/deepseek-test', router_provider: 'opencode', router_model: 'deepseek-test' }] };
 const answer = () => Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }] });
+
+test('手動Chat経路でもtoolsなしのtool_choiceを送らない', () => {
+  const body = { model:'deepseek-v4.1-flash', input:'hello' };
+  assert.equal(manualChatBody('ollama', {...body,tool_choice:'auto'}).tool_choice, undefined);
+  assert.equal(manualChatBody('ollama', {...body,tool_choice:'none'}).tool_choice, undefined);
+  assert.throws(() => manualChatBody('ollama', {...body,tool_choice:'required'}), error =>
+    error instanceof ToolSearchError && error.reasonCode === 'tool_choice_requires_tools');
+  const withTools = manualChatBody('ollama', {...body,
+    tools:[{type:'function',name:'read',parameters:{type:'object',properties:{}}}],tool_choice:'required'});
+  assert.equal(withTools.tool_choice, 'required');
+});
+
 async function fixture(t, extra = {}) {
   const calls = [];
   const fetcher = async (url, options) => { calls.push({ url, ...options, body: JSON.parse(options.body) }); return answer(); };

@@ -5,10 +5,14 @@ export const TOOL_SEARCH_REASON_CODES = Object.freeze([
   'unsupported_live_search', 'conflicting_current_definitions', 'invalid_search_history',
   'invalid_server_search_history', 'invalid_discovery_definition', 'unknown_or_unloaded_call',
   'invalid_search_arguments', 'invalid_custom_arguments', 'invalid_tool_choice',
+  'tool_choice_requires_tools',
 ]);
 export class ToolSearchError extends Error {
   constructor(reasonCode = 'unsupported_tool_search') {
-    super('このツール検索形式はChat経路で安全に変換できません。client検索と関数定義を確認してください。');
+    const message = reasonCode === 'tool_choice_requires_tools'
+      ? 'toolsがないためtool_choiceを適用できません（理由: tool_choice_requires_tools）。toolsを追加するか、tool_choiceを外してください。'
+      : 'このツール検索形式はChat経路で安全に変換できません。client検索と関数定義を確認してください。';
+    super(message);
     this.name = 'ToolSearchError';
     this.reasonCode = TOOL_SEARCH_REASON_CODES.includes(reasonCode) ? reasonCode : 'unsupported_tool_search';
   }
@@ -172,19 +176,28 @@ export function chatSearchHistory(item, context) {
   return item;
 }
 
-export function chatToolChoice(choice, context) {
+export function toolChoiceForTools(choice, tools) {
   if (choice == null) return undefined;
   if (typeof choice === 'string') {
     if (!['auto', 'none', 'required'].includes(choice)) fail('invalid_tool_choice');
-    return choice;
+    if ((tools?.length ?? 0) > 0) return choice;
+    if (choice === 'required') fail('tool_choice_requires_tools');
+    return undefined;
   }
   if (!object(choice)) fail('invalid_tool_choice');
-  if (choice.type === 'tool_search') {
+  if ((tools?.length ?? 0) > 0) return choice;
+  fail('tool_choice_requires_tools');
+}
+
+export function chatToolChoice(choice, context) {
+  const selected = toolChoiceForTools(choice, context.tools);
+  if (selected === undefined || typeof selected === 'string') return selected;
+  if (selected.type === 'tool_search') {
     if (!context.searchName || context.byName.get(context.searchName)?.kind !== 'search') fail('invalid_tool_choice');
     return {type:'function',function:{name:context.searchName}};
   }
-  if (['function','custom'].includes(choice.type)) {
-    const name = toolWireName(choice.name ?? choice.function?.name, choice.namespace);
+  if (['function','custom'].includes(selected.type)) {
+    const name = toolWireName(selected.name ?? selected.function?.name, selected.namespace);
     if (!context.selected.has(name)) fail('invalid_tool_choice');
     return {type:'function',function:{name}};
   }

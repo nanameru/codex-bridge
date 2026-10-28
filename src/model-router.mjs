@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import * as zlib from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeResponseStream, normalizeToolCallId, openCodeBody, toolResponseStream } from "./tool-adapter.mjs";
-import { ToolSearchError } from "./tool-search.mjs";
+import { toolChoiceForTools, ToolSearchError } from "./tool-search.mjs";
 import { budgetHistoryBoundary, budgetToolBoundary, preservedHandoffPrefix, compactionHandoff, HandoffError } from "./compaction-handoff.mjs";
 import { toolRecoveryPlan, recoverWithAnswer, answerOnlyStream } from "./tool-recovery.mjs";
 import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFailure } from "./handoff-status.mjs";
@@ -90,6 +90,9 @@ export function catalogRoutes(catalog) {
 
 export function routedBody(body, route, maxBytes) {
   const result = { ...body, model: route.model };
+  const toolChoice = toolChoiceForTools(body.tool_choice, body.tools);
+  if (toolChoice === undefined) delete result.tool_choice;
+  else result.tool_choice = toolChoice;
   if (route.provider === "opencode" && route.transport === "responses") return result;
   if (Array.isArray(body.input)) {
     result.input = body.input.filter((item) => {

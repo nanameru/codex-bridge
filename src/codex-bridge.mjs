@@ -21,7 +21,7 @@
  */
 
 import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.mjs";
-import { chatToolContext, chatToolChoice, ToolSearchError } from "./tool-search.mjs";
+import { chatToolContext, chatToolChoice, toolChoiceForTools, ToolSearchError } from "./tool-search.mjs";
 import http from "node:http";
 import { guardBridgeRequest, validateOpenCodeBase, fetchOpenCode, readOpenCodeApiKey } from "./local-security.mjs";
 import { DIRECT_RECOVERY_HELP } from "./provider-help.mjs";
@@ -302,9 +302,12 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       res.writeHead(422, { "content-type": "application/json" });
       const toolFailure = error instanceof ToolSearchError;
+      const message = toolFailure && error.reasonCode === "tool_choice_requires_tools"
+        ? error.message
+        : `ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`;
       res.end(JSON.stringify({error:{type:toolFailure ? "unsupported_tool_search" : "invalid_tool_history",
         code:toolFailure ? error.reasonCode : "chat_history_conversion_failed",
-        message:`ツール情報または履歴をChat形式へ変換できません（理由: ${toolFailure ? error.reasonCode : "chat_history_conversion_failed"}）。履歴は保持しています。`}}));
+        message}}));
       return;
     }
     if (hint) {
@@ -360,7 +363,11 @@ const server = http.createServer(async (req, res) => {
       if (/ModelProtocolUnsupported|does not support this protocol/i.test(t)) {
         dbg("chat非対応 → /responses にフォールバック:", model);
         try {
-          upstream = await doFetch("/responses", { ...body, model });
+          const responsesBody = { ...body, model };
+          const responsesChoice = toolChoiceForTools(body.tool_choice, body.tools);
+          if (responsesChoice === undefined) delete responsesBody.tool_choice;
+          else responsesBody.tool_choice = responsesChoice;
+          upstream = await doFetch("/responses", responsesBody);
         } catch (e) {
           res.writeHead(502, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: { message: `upstream error: ${e.message}${DIRECT_RECOVERY_HELP}` } }));
