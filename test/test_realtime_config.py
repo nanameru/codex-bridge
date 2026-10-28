@@ -277,9 +277,15 @@ class RealtimeDoctorTests(unittest.TestCase):
     def test_websocket_target_matches_codex_derivation(self):
         cases = {"http://127.0.0.1:8011": "ws://127.0.0.1:8011/v1/realtime",
                  "wss://api.openai.com/v1": "wss://api.openai.com/v1/realtime",
-                 "https://api.openai.com/v1/realtime": "wss://api.openai.com/v1/realtime"}
+                 "https://api.openai.com/v1/realtime": "wss://api.openai.com/v1/realtime",
+                 "http://[::1]:10100/v1": "ws://[::1]:10100/v1/realtime"}
         for base, expected in cases.items():
             self.assertEqual(realtime_config.websocket_target(base), expected)
+
+    def test_ipv6_targets_keep_url_brackets(self):
+        report = self.diagnose(f'{KEY}="wss://[::1]:10100/v1"\n', probe=False)
+        self.assertEqual(report["realtime_target"], "wss://[::1]:10100/v1/realtime")
+        self.assertEqual(report["realtime_setting"]["value"], "wss://[::1]:10100/v1")
 
 
 if __name__ == "__main__":

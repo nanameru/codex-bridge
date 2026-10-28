@@ -43,13 +43,19 @@ def is_loopback(host):
     return host in LOOPBACK_HOSTS or host.startswith("127.")
 
 
+def display_host(host):
+    """Bracket IPv6 literals when reconstructing a URL."""
+    host = host or ""
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
 def safe_url(value):
     """Display form without credentials, query or fragment."""
     if not isinstance(value, str):
         return value
     try:
         parts = urlsplit(value)
-        host = parts.hostname or ""
+        host = display_host(parts.hostname)
         port = f":{parts.port}" if parts.port else ""
     except ValueError:
         return "<解析不能なURL>"
@@ -153,7 +159,7 @@ def websocket_target(base):
     elif not path.endswith("/realtime"):
         path += "/realtime"
     port = f":{parts.port}" if parts.port else ""
-    return f"{scheme}://{parts.hostname}{port}{path}"
+    return f"{scheme}://{display_host(parts.hostname)}{port}{path}"
 
 
 def probe(target, timeout=3):
