@@ -5,6 +5,30 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-112
+    title: "統合router切替でRealtime音声URLを所有者付きで保持・復元する"
+    feature: "Realtime音声接続先の非破壊切替"
+    scenario: "未設定・空文字・公式URL・Bridge管理URL・第三者loopback proxy・Bridge router URL・リモート独自URL・有効化後の変更・中断後の再実行・旧state移行"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/realtime_config.py, scripts/unified_config.py, scripts/switch_config.py]
+    test_file: test/test_realtime_config.py
+    issues: [145]
+    notes: "一時CODEX_HOMEとmock healthのみ。第三者proxyは停止しファイル不変。offはBridgeが書いた値だけを削除。"
+
+  - id: TC-113
+    title: "doctorでテキストURLと音声Realtime接続先の不一致を検出する"
+    feature: "Realtime接続先の診断"
+    scenario: "既定・テキストloopback上書き・custom provider・公式固定・秘匿情報非出力・426を返すmock routerへのhandshake"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/realtime_config.py]
+    test_file: test/test_realtime_config.py
+    issues: [145]
+    notes: "probeはloopbackだけに認証なしhandshakeを送り、音声・認証情報を送らない。"
+
   - id: TC-111
     title: "中継障害時にGPT直結の退避方法をエラーへ表示する"
     feature: "中継障害からの手動退避案内"
