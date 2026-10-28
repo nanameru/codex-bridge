@@ -1290,6 +1290,48 @@ test("stream timeout sends a terminal error and records the deadline separately"
   assert.equal(cancelled, true);
 });
 
+test("a healthy stream that outlasts the router deadline is not cut or retried", async context => {
+  let record, calls = 0;
+  const recorded = new Promise(resolve => { record = resolve; });
+  const { send } = await fixture(context, { onMetric: record, timeoutMs: 150,
+    fetcher: async () => { calls++; let sent = 0; return new Response(new ReadableStream({ start(controller) {
+      const encode = text => new TextEncoder().encode(text);
+      const timer = setInterval(() => {
+        if (++sent < 8) return controller.enqueue(encode(`data: {"type":"response.output_text.delta","delta":"part${sent}"}\n\n`));
+        clearInterval(timer);
+        controller.enqueue(encode('data: {"type":"response.completed"}\n\n'));
+        controller.close();
+      }, 60);
+    } }), { headers: { 'content-type': 'text/event-stream' } }); } });
+  const started = Date.now();
+  const response = await send({ model: 'gpt-test', stream: true });
+  const text = await response.text();
+  const metric = await recorded;
+  assert.ok(Date.now() - started > 300, 'stream lasted longer than the deadline');
+  assert.match(text, /part7/);
+  assert.match(text, /response.completed/);
+  assert.doesNotMatch(text, /request_timeout/);
+  assert.equal(metric.outcome, 'complete');
+  assert.equal(calls, 1);
+});
+
+test("SSE heartbeats alone do not extend the router deadline", async context => {
+  let record, cancelled = false, timer;
+  const recorded = new Promise(resolve => { record = resolve; });
+  const { send } = await fixture(context, { onMetric: record, timeoutMs: 150,
+    fetcher: async () => new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
+      timer = setInterval(() => controller.enqueue(new TextEncoder().encode(': keep-alive\n\n')), 30);
+    }, cancel() { cancelled = true; clearInterval(timer); } }), { headers: { 'content-type': 'text/event-stream' } }) });
+  context.after(() => clearInterval(timer));
+  const response = await send({ model: 'gpt-test', stream: true });
+  const text = await response.text().catch(() => 'connection destroyed');
+  const metric = await recorded;
+  assert.match(text, /request_timeout/);
+  assert.equal(metric.outcome, 'timeout');
+  assert.equal(cancelled, true);
+});
+
 test("relay connection failures include the direct GPT escape command but invalid JSON does not", async context => {
   const { send, base } = await fixture(context, { fetcher: async () => { throw new Error('private upstream detail'); } });
   const failed = await send({ model: 'gpt-test' });

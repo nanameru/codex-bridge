@@ -27,6 +27,10 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     let text = "";
     for await (const chunk of request) text += chunk;
     calls.push({ body: JSON.parse(text), headers: request.headers });
+    if (calls.at(-1).body.model === "test-delayed-headers") {
+      await new Promise(resolve => setTimeout(resolve, 1300));
+    }
+    if (calls.at(-1).body.model === "test-no-headers") return;
     if (calls.at(-1).body.model === "test-quota") {
       response.writeHead(429, { "content-type": "application/json", "retry-after": "60" });
       response.end(JSON.stringify({ error: { type: "rate_limit_exceeded" } }));
@@ -83,6 +87,7 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   const child = spawn(process.execPath, [script], { env: { ...process.env, HOME: directory, CODEX_HOME: directory, PORT: String(port),
     OPENCODE_API_KEY: "dummy-test-token", UPSTREAM_BASE: `http://127.0.0.1:${mockPort}/v1`,
     CODEX_BRIDGE_TEST_UPSTREAM: "1",
+    UPSTREAM_CONNECT_TIMEOUT_MS: "1000", UPSTREAM_FIRST_BYTE_TIMEOUT_MS: "2500",
     ALLOW_REQUEST_DUMP: "0", DISABLE_DUMP: "0", DUMP_DIR: join(directory, "dumps"), PRUNE_EXISTING_DUMPS: "0", USAGE_HOST: "", LOG_LEVEL: "info" }, stdio: ["ignore", "pipe", "pipe"] });
   context.after(async () => {
     if (child.exitCode === null && child.signalCode === null) {
@@ -198,6 +203,25 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   assert.equal(limited.status, 429);
   assert.equal(limited.headers.get("retry-after"), "60");
   await limited.text();
+  if (process.env.LEGACY_BRIDGE_SOURCE) {
+    // fetch resolves after response headers, not after TCP/TLS connects. Model
+    // preparation may exceed the old connection timer while staying healthy.
+    const send = model => fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: "POST", signal: AbortSignal.timeout(5000),
+      headers: { "content-type": "application/json", "x-codex-bridge-auth": internalKey },
+      body: JSON.stringify({ model, input: "Hello", stream: false }),
+    });
+    const delayed = await send("test-delayed-headers");
+    assert.equal(delayed.status, 200, await delayed.text());
+    const before = calls.length;
+    const started = Date.now();
+    const missing = await send("test-no-headers");
+    assert.equal(missing.status, 504, await missing.text());
+    assert.ok(Date.now() - started >= 2200, "wait for response-header budget");
+    assert.equal(calls.length - before, 1, "do not retry an expensive request internally");
+    const healthy = await send("deepseek-v4.1-flash");
+    assert.equal(healthy.status, 200, await healthy.text());
+  }
 });
 
 test('thread guard preserves authentication and does not rate-limit another chat', { timeout:15000 },async context=>{

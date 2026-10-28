@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-106
+    title: "旧Bridgeの応答ヘッダー待機を接続期限で打ち切らない"
+    feature: "遅い上流応答の504再発防止"
+    scenario: "接続期限を超える正常応答・無応答の期限切れ・内部再送なし・後続要求の回復・更新の冪等性"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/patch_legacy_bridge.py]
+    test_file: test/test_patch_legacy_bridge.py
+    issues: [128]
+    notes: "test/bridge-transport.test.mjsをLEGACY_BRIDGE_SOURCE指定で併用。実API・認証・本番再起動なしで旧Bridgeのコピーを起動。修正前504→修正後200を確認。"
+
   - id: TC-111
     title: "中継障害時にGPT直結の退避方法をエラーへ表示する"
     feature: "中継障害からの手動退避案内"

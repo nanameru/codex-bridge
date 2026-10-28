@@ -141,3 +141,30 @@ HomebrewなどでPythonを削除・入れ替えた場合は、利用可能なPyt
 通信idle時に更新してください。正常な認証も含め常に401になる場合、healthの成功と
 不正Bearerの拒否だけでは本人認証の成功を証明できません。
 今回の本番はPATH修復済みであり、本修正のコミットだけで稼働runtimeが切り替わることはありません。
+
+## 旧Bridgeで30秒の504が繰り返す場合（Issue #128）
+
+旧Bridgeの `doFetch()` は `fetch()` がHTTP応答ヘッダーを返すまで待ちます。
+この期間にはモデルの応答準備が含まれるため、TCP接続のつもりで設定した
+`UPSTREAM_CONNECT_TIMEOUT_MS=30000` を使うと、正常な推論も30秒で中断します。
+
+`scripts/patch_legacy_bridge.py` は、この待機を既存の
+`UPSTREAM_FIRST_BYTE_TIMEOUT_MS`（既定180秒）へ変更します。
+旧LaunchAgentに接続期限30秒が残っていても、この待機には適用しません。
+ヘッダー後の最初の本文、ストリームの無通信、クライアント中断の処理は維持します。
+内部で同じ要求を自動再送しません。180秒を超える無応答や上流自体の504は発生し得ます。
+
+統合ルーターの要求期限（既定300秒）は、ストリーム開始後はSSEデータを受信するたびに延長し、
+無通信の時間だけを制限します。keep-aliveコメントでは延長しません。
+以前は300秒を超える正常な長い応答も切断され、Codexが同じ要求を再送していました。
+
+Codex自体も504や途中切断を既定で再試行します（要求4回×ストリーム5回、最大30回の送信）。
+これは中継側の再送ではなく、`[model_providers.<名前>]` の `request_max_retries` と
+`stream_max_retries` で制御されます。既定値は変更していません。
+
+更新前に確認モードを実行し、本番適用・再起動は別途承認を得てください。
+
+```sh
+python3 scripts/patch_legacy_bridge.py ~/home-runner/bridge/codex-bridge.mjs
+LEGACY_BRIDGE_SOURCE=~/home-runner/bridge/codex-bridge.mjs node --test test/bridge-transport.test.mjs
+```
