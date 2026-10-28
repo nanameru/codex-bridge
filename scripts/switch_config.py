@@ -117,7 +117,7 @@ def switch(mode, root):
             'stream_idle_timeout_ms = 300000\n'
         )
     if (root / "unified-router-state.json").exists():
-        from unified_config import edit_table
+        from unified_config import edit_table, pin_realtime, write_state
 
         values = selection(tomllib.loads(candidate))
         values["model_catalog_json"] = str(root / "unified-model-catalog.json")
@@ -130,8 +130,12 @@ def switch(mode, root):
                 or endpoint.path != "/v1" or endpoint.username or endpoint.password
                 or endpoint.query or endpoint.fragment):
             raise ValueError("統合routerのloopback接続定義を確認してください")
-        candidate = edit_table(candidate, (), {"openai_base_url": router_url})
+        unified_path = root / "unified-router-state.json"
+        realtime, unified_state = pin_realtime(tomllib.loads(candidate), json.loads(unified_path.read_text()))
+        candidate = edit_table(candidate, (), {"openai_base_url": router_url, **realtime})
     tomllib.loads(candidate)
+    if (root / "unified-router-state.json").exists():
+        write_state(unified_path, unified_state)
     if candidate != source:
         descriptor, backup_path = tempfile.mkstemp(prefix="config.toml.bak.switch.", dir=root)
         with os.fdopen(descriptor, "w") as backup:

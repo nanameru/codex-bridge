@@ -63,9 +63,10 @@ export function manualChatBody(provider, body) {
   const kimi = body.model === KIMI_MODEL;
   const result = { model: body.model, messages: chatMessages(body, !kimi && body.reasoning?.effort !== 'none'), stream: body.stream === true };
   if (result.stream) result.stream_options = { include_usage: true };
-  const tools = chatToolContext(body).tools;
-  if (tools?.length) result.tools = tools;
-  if (body.tool_choice !== undefined) result.tool_choice = chatToolChoice(body.tool_choice, chatToolContext(body));
+  const toolContext = chatToolContext(body);
+  if (toolContext.tools?.length) result.tools = toolContext.tools;
+  const toolChoice = chatToolChoice(body.tool_choice, toolContext);
+  if (toolChoice !== undefined) result.tool_choice = toolChoice;
   if (body.max_output_tokens !== undefined) result.max_tokens = body.max_output_tokens;
   for (const key of ['temperature','top_p','frequency_penalty','presence_penalty']) if (body[key] !== undefined) result[key] = body[key];
   if (provider === 'commandcode' || provider === 'whatstoken') Object.assign(result, reasoningOptions(body.model.split('/').at(-1), body.reasoning?.effort));

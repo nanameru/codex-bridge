@@ -43,7 +43,7 @@ test('router requests a single tool-free answer preserving results and native re
   const input=history(3),original=structuredClone(input);
   const send=model=>fetch(`http://127.0.0.1:${router.address().port}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test'},body:JSON.stringify({model,input})});
   const recovered=await send('opencode/test');assert.equal(recovered.status,200);assert.match(await recovered.text(),/BUILD_OK/);
-  assert.equal(calls[0].tool_choice,'none');assert.deepEqual(calls[0].tools,[]);assert.deepEqual(calls[0].input.slice(0,-1),original);
+  assert.equal('tool_choice' in calls[0],false);assert.deepEqual(calls[0].tools,[]);assert.deepEqual(calls[0].input.slice(0,-1),original);
   assert.equal(calls[0].input.at(-1).role,'developer');assert.deepEqual(input,original);
   await (await send('gpt-test')).text();assert.equal(calls[1].tool_choice,undefined);
 });
@@ -78,7 +78,7 @@ test('length recovery grows output once without executing tools or replaying the
     const retry= !['filter','explicit-cap'].includes(mode);
     assert.equal(calls.length,retry?2:1);
     assert.equal(calls[0].max_output_tokens,mode==='explicit-cap'?1024:8192);
-    for(const call of calls){assert.deepEqual(call.tools,[]);assert.equal(call.tool_choice,'none');}
+    for(const call of calls){assert.deepEqual(call.tools,[]);assert.equal('tool_choice' in call,false);}
     if(retry){assert.equal(calls[1].max_output_tokens,16384);assert.deepEqual(calls[1].input,calls[0].input);}
     if(['success','high-cap'].includes(mode))assert.match(text,/RECOVERED/);else assert.doesNotMatch(text,/RECOVERED/);
     assert.doesNotMatch(text,/unsafe|danger|function_call/);
@@ -128,7 +128,7 @@ test('encrypted history expansion keeps the recovery instruction after recent us
  context.after(async()=>{router.closeAllConnections();await new Promise(r=>router.close(r));});
  const response=await fetch(`http://127.0.0.1:${router.address().port}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test'},body:JSON.stringify({model:'opencode/test',prompt_cache_key:'thread-review',tools:[{type:'function',name:'unsafe'}],input:[{type:'compaction',encrypted_content:'fixture'},...history(3)]})});
  assert.equal(response.status,200);await response.text();assert.equal(sent.length,1);
- assert.deepEqual(sent[0].tools,[]);assert.equal(sent[0].tool_choice,'none');
+ assert.deepEqual(sent[0].tools,[]);assert.equal('tool_choice' in sent[0],false);
  assert.equal(sent[0].input.at(-1).role,'developer');assert.match(sent[0].input.at(-1).content,/Tool execution is paused/);
  assert.ok(sent[0].input.findIndex(i=>i.role==='user'&&i.content==='check and answer')<sent[0].input.length-1);
 });
@@ -150,7 +150,7 @@ test('empty recovery shares one retry budget with length and preserves explicit 
   try{
    const response=await fetch(`http://127.0.0.1:${router.address().port}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test'},body:JSON.stringify({model:'opencode/test',tools:[{type:'function',name:'unsafe'}],input:history(3),stream,...(['explicit-cap','overlapping-reasons'].includes(mode)?{max_output_tokens:512}:{})})});
    const text=await response.text();assert.equal(calls.length,2);
-   for(const c of calls){assert.deepEqual(c.tools,[]);assert.equal(c.tool_choice,'none');assert.equal(c.max_output_tokens,['explicit-cap','overlapping-reasons'].includes(mode)?512:8192);}
+   for(const c of calls){assert.deepEqual(c.tools,[]);assert.equal('tool_choice' in c,false);assert.equal(c.max_output_tokens,['explicit-cap','overlapping-reasons'].includes(mode)?512:8192);}
    assert.deepEqual(calls[0].input,calls[1].input);
    assert.doesNotMatch(text,/unsafe|function_call/);
    if(['repeat-empty','then-length','tool','retry-unavailable'].includes(mode))assert.match(text,/failed/);else assert.match(text,/ANSWER/);

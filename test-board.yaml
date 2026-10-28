@@ -6,6 +6,42 @@ project:
 source_roots: [src, scripts]
 cases:
   - id: TC-112
+    title: "統合router切替でRealtime音声URLを所有者付きで保持・復元する"
+    feature: "Realtime音声接続先の非破壊切替"
+    scenario: "未設定・空文字・公式URL・Bridge管理URL・第三者loopback proxy・Bridge router URL・リモート独自URL・有効化後の変更・中断後の再実行・旧state移行"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/realtime_config.py, scripts/unified_config.py, scripts/switch_config.py]
+    test_file: test/test_realtime_config.py
+    issues: [145]
+    notes: "一時CODEX_HOMEとmock healthのみ。第三者proxyは停止しファイル不変。offはBridgeが書いた値だけを削除。"
+
+  - id: TC-113
+    title: "doctorでテキストURLと音声Realtime接続先の不一致を検出する"
+    feature: "Realtime接続先の診断"
+    scenario: "既定・テキストloopback上書き・custom provider・公式固定・秘匿情報非出力・426を返すmock routerへのhandshake"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/realtime_config.py]
+    test_file: test/test_realtime_config.py
+    issues: [145]
+    notes: "probeはloopbackだけに認証なしhandshakeを送り、音声・認証情報を送らない。"
+
+  - id: TC-114
+    title: "toolsが空のときにtool_choiceを転送しない"
+    feature: "toolsなしChatのtool_choice互換性"
+    scenario: "Chat変換、OpenCode Responses直結、Chat非対応時のResponsesフォールバック、手動経路でauto/noneを省略し、required/名前付きは上流要求0件のローカル422にし、toolsありの指定は維持する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/tool-search.mjs, src/codex-bridge.mjs, src/manual-providers.mjs, src/model-router.mjs]
+    test_file: test/bridge-transport.test.mjs
+    issues: [146]
+    notes: "test/tool-search.test.mjsで共通規則、test/manual-providers.test.mjsで手動経路、test/bridge-transport.test.mjsで実HTTP境界とResponsesフォールバック、test/model-router.test.mjsでOpenCode Responses直結を検証。"
+
+  - id: TC-115
     title: "Windowsの旧OpenCode専用カタログを検出し公式モデルと共存させる"
     feature: "Windowsカタログ診断・移行"
     scenario: "旧model_catalog_jsonの検出・gpt-6.1-solのカタログ欠落とプラン側未提供の区別・CRLF保持のバックアップ付き移行・冪等・競合/不明/BOM/リンク/router未起動での拒否・秘密非出力"

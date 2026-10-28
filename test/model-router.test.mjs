@@ -136,6 +136,30 @@ test("direct Responses fails closed without OpenCode credentials and never falls
   assert.equal(calls.length, 0);
 });
 
+test("direct Responses omits auto-compatible choices without tools and rejects impossible choices locally", async (context) => {
+  const { calls, send } = await fixture(context);
+  for (const extra of [{ tool_choice: "auto" }, { tools: [], tool_choice: "none" }]) {
+    const response = await send({ model: "opencode/direct-test", input: "continue", ...extra });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal("tool_choice" in calls.at(-1).body, false);
+  }
+
+  const forwarded = calls.length;
+  for (const tool_choice of ["required", { type: "function", name: "exec" }]) {
+    const response = await send({ model: "opencode/direct-test", input: "continue", tool_choice });
+    const body = await response.clone().text();
+    assert.equal(response.status, 422, body);
+    assert.match(await response.text(), /tool_choice_requires_tools/);
+  }
+  assert.equal(calls.length, forwarded);
+
+  const supported = await send({ model: "opencode/direct-test", input: "continue",
+    tools: [{ type: "function", name: "exec", parameters: { type: "object", properties: {} } }],
+    tool_choice: "required" });
+  assert.equal(supported.status, 200, await supported.text());
+  assert.equal(calls.at(-1).body.tool_choice, "required");
+});
+
 test("existing sessions without the direct marker keep their legacy transport", async (context) => {
   const { calls, send } = await fixture(context);
   const response = await send({ model: "direct-test", tools: [{ type: "custom", name: "exec" }] }, { "x-codex-bridge-direct": "" });

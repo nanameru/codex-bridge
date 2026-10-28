@@ -9,6 +9,7 @@ from urllib.request import urlopen
 
 from switch_config import atomic_write
 from local_security import SECURITY_VERSION
+import realtime_config
 
 
 ROOT_KEYS = ("openai_base_url", "model_catalog_json")
@@ -107,6 +108,19 @@ def edit_table(source, target, values):
     return result
 
 
+def pin_realtime(data, state):
+    """Root changes that keep voice on the official Realtime URL while text uses the router."""
+    changes, entry, warnings = realtime_config.plan(data, state.get("realtime"))
+    for warning in warnings:
+        print("注意: " + warning)
+    return changes, {**state, "realtime": entry}
+
+
+def write_state(path, state):
+    if not path.exists() or json.loads(path.read_text()) != state:
+        atomic_write(path, json.dumps(state, ensure_ascii=False))
+
+
 def prepare(root, source_root):
     native = json.loads((root / "models_cache.json").read_text())["models"]
     opencode = json.loads((root / "model-catalog.json").read_text())["models"]
@@ -178,6 +192,8 @@ def configure(root, mode, port):
     if mode == "on":
         if any(bridge.get(key) for key in ["env_key", "auth", "experimental_bearer_token"]):
             raise ValueError("codex-bridgeに独自認証があります。自動では変更しません")
+        saved = json.loads(state_path.read_text()) if state_path.exists() else {}
+        realtime_config.plan(data, saved.get("realtime"))
         catalog = root / "unified-model-catalog.json"
         model_ids = {model["slug"] for model in json.loads(catalog.read_text())["models"]}
         with urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as response:
@@ -191,8 +207,9 @@ def configure(root, mode, port):
             "bridge": {key: bridge.get(key) for key in BRIDGE_KEYS},
             "bridge_existed": bool(bridge),
         }
+        realtime, state = pin_realtime(data, state)
         candidate = edit_table(source, (), {
-            "openai_base_url": f"http://127.0.0.1:{port}/v1", "model_catalog_json": str(catalog),
+            "openai_base_url": f"http://127.0.0.1:{port}/v1", "model_catalog_json": str(catalog), **realtime,
         })
         changes = {"base_url": f"http://127.0.0.1:{port}/v1", "requires_openai_auth": True, "wire_api": "responses"}
         if not bridge:
@@ -204,19 +221,24 @@ def configure(root, mode, port):
             return
         state = json.loads(state_path.read_text())
         candidate = edit_table(source, (), state["root"])
+        realtime_changes, warnings = realtime_config.restore(data, state.get("realtime"))
+        for warning in warnings:
+            print("注意: " + warning)
+        if realtime_changes:
+            candidate = edit_table(candidate, (), realtime_changes)
         changes = state["bridge"] if state["bridge_existed"] else {
             "base_url": "http://127.0.0.1:8788/v1", "requires_openai_auth": None, "wire_api": "responses",
         }
         candidate = edit_table(candidate, BRIDGE_TABLE, changes)
     if path.is_symlink() or path.read_text() != source:
         raise ValueError("設定が変更されたかリンクです。再確認してください")
+    if mode == "on":
+        write_state(state_path, state)
     if candidate != source:
         import tempfile
         descriptor, backup_path = tempfile.mkstemp(prefix="config.toml.bak.unified.", dir=root)
         with os.fdopen(descriptor, "w") as backup:
             backup.write(source)
-        if mode == "on" and not state_path.exists():
-            atomic_write(state_path, json.dumps(state, ensure_ascii=False))
         atomic_write(path, candidate, path.stat().st_mode & 0o777)
         print(f"バックアップ: {backup_path}")
     if mode == "off":
@@ -316,10 +338,21 @@ def activate_normal(root, port):
         raise ValueError("先に共通履歴対応routerを起動してください")
     candidate = edit_table(source, (), {"model_provider": "codex-bridge"})
     candidate = edit_table(candidate, ("model_providers", "codex-bridge", "http_headers"), {"x-codex-bridge-direct": None if common_history else "1"})
-    if tomllib.loads(candidate) == parsed:
-        return
+    state_path = root / "unified-router-state.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else None
+    if state is not None:
+        realtime, state = pin_realtime(parsed, state)
+        if realtime:
+            candidate = edit_table(candidate, (), realtime)
+    else:
+        print("注意: 統合routerのstateがないため音声(Realtime)接続先は変更しません。"
+              "python3 scripts/realtime_config.py doctor で確認してください")
     if path.is_symlink() or path.read_text() != source:
         raise ValueError("設定が変更されたかリンクです。再確認してください")
+    if state is not None:
+        write_state(state_path, state)
+    if tomllib.loads(candidate) == parsed:
+        return
     import tempfile
     descriptor, backup_path = tempfile.mkstemp(prefix="config.toml.bak.normal-direct.", dir=root)
     with os.fdopen(descriptor, "w") as backup:
