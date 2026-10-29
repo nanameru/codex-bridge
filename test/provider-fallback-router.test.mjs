@@ -13,6 +13,43 @@ const catalog = { models: [
 const quota = (window = 'short', seconds = 60, status = 429) => Response.json({ error: {
   code: 'usage_exceeded', window, resets_at: new Date(Date.now() + seconds * 1000).toISOString(),
 } }, { status });
+
+for (const status of [400, 422]) test(`自動Command Codeの${status}拒否は履歴とtoolsを保持してOllamaへ進む`, async t => {
+  const f = await fixture(t, p => p === 'opencode' ? quota() : p === 'commandcode'
+    ? Response.json({error:{message:'Unrecognized request PRIVATE'}}, {status}) : answer(p));
+  const tools = [{type:'function',name:'read',parameters:{type:'object',properties:{path:{type:'string'}}}}];
+  const input = [{role:'user',content:'previous'}, {role:'assistant',content:'earlier'}, {role:'user',content:'latest'}];
+  const r = await f.send({tools,input});
+  assert.equal(r.status, 200); assert.match(await r.text(), /ollama/);
+  assert.deepEqual(f.calls.map(c => c.provider), ['opencode','commandcode','ollama']);
+  assert.deepEqual(f.calls[1].body.messages, f.calls[2].body.messages);
+  assert.deepEqual(f.calls[1].body.tools, f.calls[2].body.tools);
+  assert.equal(f.state.available('commandcode'), true);
+  assert.equal(f.metrics.at(-1).provider_request_rejected_status, status);
+  assert.doesNotMatch(JSON.stringify(f.metrics), /PRIVATE/);
+});
+
+test('Command Codeの400でも手動選択とcontent_filter拒否は他社へ再送しない', async t => {
+  for (const scenario of ['manual','filtered','filtered-type']) {
+    const f = await fixture(t, p => p === 'opencode' ? quota() : Response.json({error:{
+      code: scenario === 'filtered' ? 'content_filter' : scenario === 'filtered-type' ? 'unknown_error' : 'invalid_request_error',
+      type: 'content_filter', message: 'PRIVATE',
+    }}, {status:400}));
+    const r = await f.send({model: scenario === 'manual' ? 'commandcode/deepseek-v4.1-flash' : model});
+    assert.equal(r.status,400); await r.text();
+    assert.deepEqual(f.calls.map(c => c.provider), scenario === 'manual' ? ['commandcode'] : ['opencode','commandcode']);
+  }
+});
+
+test('Command Codeの400で次候補がない場合と全候補拒否では有限回で停止する', async t => {
+  for (const noKey of [true,false]) {
+    const f = await fixture(t, p => p === 'opencode' ? quota() : Response.json({error:'request rejected'}, {status:400}),
+      noKey ? {manualKey:p => p === 'ollama' ? null : p+'-only'} : {});
+    const r = await f.send(); assert.equal(r.status,400);
+    const body = await r.json(); assert.equal(body.error.code,'unknown_error');
+    assert.deepEqual(f.calls.map(c => c.provider), noKey ? ['opencode','commandcode'] : ['opencode','commandcode','ollama']);
+  }
+});
 const answer = provider => provider === 'opencode' || provider === 'openai'
   ? Response.json({ id: 'resp_ok', status: 'completed', output: [{ type: 'message', role: 'assistant',
     content: [{ type: 'output_text', text: provider }] }] })

@@ -213,7 +213,7 @@ export async function readUpstreamFailure(response, { maxBytes = 16384, timeoutM
           [/(?:messages|role).{0,40}(?:invalid|unsupported|must)|(?:invalid|unsupported).{0,30}(?:messages|role)/i, "invalid_chat_messages"],
         ]) if (pattern.test(message)) { code = category; break; }
       }
-      return { code, type: safe(error?.type), read: "parsed" };
+      return { code, type: safe(error?.upstream_error_type ?? error?.type), read: "parsed" };
     };
     return await Promise.race([readBody(), new Promise(resolve => {
       timer = setTimeout(() => resolve(fallback("timeout")), timeoutMs);

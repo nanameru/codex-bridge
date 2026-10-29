@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-117
+    title: "自動Command Codeの要求形式拒否で次の設定済み提供元へ進む"
+    feature: "400/422からの自動継続"
+    scenario: "Command Codeの400/422で履歴・toolsを保持してOllamaへ進み、手動選択・content_filter・次候補なし・全候補拒否では勝手な迂回や無限再送をしない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/handoff-status.mjs]
+    test_file: test/provider-fallback-router.test.mjs
+    issues: [151]
+    notes: "要求固有の拒否を利用枠として永続化しない。成功は次候補の利用可否に依存し、全社拒否を隠さない。"
+
   - id: TC-116
     title: "Command Codeの400を安全に分類し認証・利用枠と混同しない"
     feature: "上流拒否理由の診断"
