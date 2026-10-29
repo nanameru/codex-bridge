@@ -45,7 +45,8 @@ export function toolRecoveryPlan(input, { maxRounds = 64, repeatedResults = 3 } 
   return null;
 }
 export function recoverWithAnswer(body) {
-  return { ...body, tools: [], tool_choice: 'none', max_output_tokens: Math.min(body.max_output_tokens ?? 8192, 8192),
+  const { tool_choice, ...withoutChoice } = body;
+  return { ...withoutChoice, tools: [], max_output_tokens: Math.min(body.max_output_tokens ?? 8192, 8192),
     input: [...body.input, { type: 'message', role: 'developer', content:
       'Tool execution is paused for this turn. Use the tool results already in this conversation to answer the latest user request now. '
       + 'Do not call or simulate more tools. State completed work, remaining work and uncertainty honestly. If observation is still pending, report that status. '

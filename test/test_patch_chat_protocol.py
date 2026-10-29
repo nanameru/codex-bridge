@@ -80,6 +80,14 @@ class ChatProtocolPatchTests(unittest.TestCase):
         self.assertNotIn('このツール検索または履歴はChat経路', patched)
         subprocess.run(['node', '--check', '--input-type=module'], input=patched, text=True, capture_output=True, check=True)
 
+    def test_deployed_legacy_fallback_normalizes_tools_and_preserves_fetch_arguments(self):
+        call = 'attempt = await doFetch("/responses", { ...body, model }, authInfo.token, clientAbort.signal, upstreamSession(body, SESSION_ID));'
+        source = LEGACY.replace('  return payload;', '  ' + call + '\n  return payload;')
+        patched = patched_source(source)
+        self.assertIn('toolChoiceForTools(body.tool_choice, body.tools)', patched)
+        self.assertIn('attempt = await doFetch("/responses", responsesBody, authInfo.token, clientAbort.signal, upstreamSession(body, SESSION_ID));', patched)
+        self.assertEqual(patched_source(patched), patched)
+
     def test_drift_refused_and_backups_created_once(self):
         with self.assertRaises(ValueError):
             patched_source('unrecognized')

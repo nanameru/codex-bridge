@@ -5,6 +5,30 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-118
+    title: "既存の外部モデル会話でremote compactと巨大履歴を引き継ぐ"
+    feature: "既存会話の圧縮互換性"
+    scenario: "selectedのremote compactはnative形式で処理し次のOpenCode選択を維持。64MiB超ログを上限付きで復元し、8MiB超の内容はcheckpointから引き継ぐ。ask・rollback・権限不正は停止する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/history-mode.mjs, src/rollout-history.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [153]
+    notes: "実際の既存ログ2件はread-only/mocked上流で200。実paneへの指示送信は本人依頼により行わない。"
+
+  - id: TC-119
+    title: "旧bridgeの認証付きResponsesフォールバックでもtool_choiceを正規化する"
+    feature: "旧中継の更新互換性"
+    scenario: "attempt代入と末尾の認証・timeout引数を維持してauto/noneを省略する更新を適用。toolsなし回答復帰でも指定を除去する"
+    status: done
+    priority: high
+    type: regression
+    source: [scripts/patch_chat_protocol.py, src/tool-recovery.mjs]
+    test_file: test/test_patch_chat_protocol.py
+    issues: [153, 146]
+    notes: "test/tool-loop.test.mjsとOpenCode実APIのtool call/result・空toolsでも確認。"
+
   - id: TC-117
     title: "自動Command Codeの要求形式拒否で次の設定済み提供元へ進む"
     feature: "400/422からの自動継続"

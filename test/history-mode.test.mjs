@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, symlinkSync, statSync } from 'node:fs';
+import { appendFileSync, truncateSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -54,7 +54,7 @@ async function fixture(t, options = {}) {
     }, ...options });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  const send = (body = request, token = 'owner-native-token') => fetch(`http://127.0.0.1:${server.address().port}/v1/responses`, {
+  const send = (body = request, token = 'owner-native-token', path = '/v1/responses') => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
     method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   return { root, calls, metrics, send };
 }
@@ -85,8 +85,8 @@ test('production summary override keeps cheap GPT compaction and selected extern
   assert.equal(calls.at(-1).body.model, 'gpt-cheap');
   const count = calls.length;
   const external = await send({ model: 'opencode/deepseek-test', input });
-  assert.equal(external.status, 422, await external.text());
-  assert.equal(calls.length, count); // selected never falls back to native GPT.
+  assert.equal(external.status, 200, await external.text());
+  assert.equal(calls.length, count + 1); // Legacy wire compaction uses the native summary only.
   const normal = await send({ model: 'gpt-test', input: [{ role: 'user', content: 'continue' }] });
   assert.equal(normal.status, 200, await normal.text());
   assert.equal(calls.at(-1).body.model, 'gpt-test');
@@ -201,12 +201,21 @@ test('missing originals and ask mode stop before any upstream request; changing 
   assert.equal(f.calls[0].headers.authorization, 'Bearer owner-native-token');
 });
 
-test('external native compaction cannot silently use OpenAI in selected or ask mode', async t => {
+test('legacy external remote compaction uses the native wire model; ask mode still stops', async t => {
   for (const mode of ['selected', 'ask']) {
     const f = await fixture(t, { historyMode: mode });
     const response = await f.send({ ...request, input: [{ role: 'user', content: 'continue' }, { type: 'compaction_trigger' }] });
-    assert.equal(response.status, 422); assert.match(await response.text(), /history_mode_requires_plaintext/);
-    assert.equal(f.calls.length, 0);
+    assert.equal(response.status, mode === 'ask' ? 422 : 200);
+    await response.text();
+    assert.equal(f.calls.length, mode === 'ask' ? 0 : 1);
+    if (mode === 'selected') {
+      assert.match(f.calls[0].url, /9998/);
+      assert.equal(f.calls[0].body.model, 'gpt-test');
+      assert.equal(f.metrics.at(-1).remote_compaction_fallback, 'openai');
+      const next = await f.send({ ...request, input: [{ role: 'user', content: 'next turn' }] });
+      assert.equal(next.status, 200); await next.text();
+      assert.equal(f.calls.at(-1).body.model, 'deepseek-test');
+    }
   }
 });
 
@@ -262,4 +271,52 @@ test('selected whatstoken stops with actionable 422 when auxiliary summaries are
   assert.match(text, /history_mode_summary_unsupported/);
   assert.match(text, /履歴は保持しています/);
   assert.equal(compacted.calls.length, 0);
+});
+
+test('large owner logs stream past 64MiB without accepting oversized files or a later rollback', async t => {
+  const root = home(t), path = rollout(root);
+  // Large logs commonly contain duplicate event_msg records outside response history.
+  const padding = JSON.stringify({ type: 'event_msg', payload: { text: 'x'.repeat(1024 * 1024) } }) + '\n';
+  for (let i = 0; i < 66; i++) appendFileSync(path, padding);
+  const restored = await restoreRolloutHistory(request, { root, threadId: thread });
+  assert.ok(restored.body.input.some(item => item.content === 'ORIGINAL REQUIREMENT'));
+  appendFileSync(path, JSON.stringify({ type: 'event_msg', payload: { type: 'thread_rolled_back' } }) + '\n');
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  truncateSync(path, 512 * 1024 * 1024 + 1);
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+});
+
+test('large restored histories use only the native checkpoint then continue on OpenCode', async t => {
+  const f = await fixture(t, { restoreHistory: async body => ({ body: { ...body,
+    input: [{ role: 'user', content: 'x'.repeat(9 * 1024 * 1024) }, ...body.input.slice(-1)] }, prefixEnd: 1 }) });
+  const response = await f.send();
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls[0].body.model, 'gpt-test');
+  assert.ok(f.calls[0].body.input.some(item => item.encrypted_content === opaque.encrypted_content));
+  assert.ok(JSON.stringify(f.calls[0].body).length < 10000);
+  assert.equal(f.calls[1].body.model, 'deepseek-test');
+  assert.ok(!f.calls[1].body.input.some(item => item.type === 'compaction'));
+  assert.equal(f.metrics.at(-1).history_source, 'native_checkpoint');
+});
+
+test('legacy compact endpoint uses the native model without changing selected mode', async t => {
+  const f = await fixture(t, { historyMode: 'selected' });
+  const response = await f.send({ model: request.model, input: [{ role: 'user', content: 'remember' }] },
+    'owner-native-token', '/v1/responses/compact');
+  assert.equal(response.status, 200, await response.text());
+  assert.match(f.calls[0].url, /9998\/v1\/responses\/compact$/);
+  assert.equal(f.calls[0].body.model, 'gpt-test');
+  assert.equal(readHistoryMode(f.root), 'selected');
+});
+
+test('native remote compaction SSE remains valid when upstream omits content-type', async t => {
+  const f = await fixture(t, { fetcher: async () => new Response(Buffer.from(
+    'event: response.output_item.done\ndata: '+JSON.stringify({ type: 'response.output_item.done', output_index: 0,
+      item: {type: 'compaction', encrypted_content: 'native-summary'} })+'\n\n'
+    +'event: response.completed\ndata: '+JSON.stringify({ type: 'response.completed', response: {status: 'completed',output: []} })+'\n\n')) });
+  const response = await f.send({ model: request.model, stream: true, input: [{ role: 'user', content: 'remember' }, {type:'compaction_trigger'}] });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /text\/event-stream/);
+  assert.match(await response.text(), /native-summary/);
 });

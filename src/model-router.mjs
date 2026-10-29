@@ -531,13 +531,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.input_bytes = Array.isArray(body.input) ? Buffer.byteLength(JSON.stringify(body.input)) : 0;
       // Codex remote compaction v2 sends a normal Responses request ending in
       // compaction_trigger and requires one compaction output item. The Chat
-      // conversion cannot produce that wire item, so use the native summary
+      // conversion cannot produce that wire item. Legacy threads use the native summary
       // model for this request while the surrounding turn keeps its selection.
       const remoteCompaction = !directResponses && path === "/v1/responses"
         && Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger");
-      const nativeCompactEndpoint = !directResponses && route.provider === "openai" && path === "/v1/responses/compact";
+      const nativeCompactEndpoint = !directResponses && path === "/v1/responses/compact";
       if (remoteCompaction || nativeCompactEndpoint) {
-        if (route.provider !== 'openai' && mode !== 'openai') {
+        if (route.provider !== 'openai' && mode === 'ask') {
           fail(response, 422, 'history_mode_requires_plaintext',
             'この会話はOpenAI固有の圧縮形式を要求しています。OpenAIへは送信していません。'
             + '選択モデルで圧縮する新規会話は python3 scripts/portable_history.py --apply で設定してください。'
@@ -640,6 +640,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
         diagnose: details => Object.assign(metric, details),
         threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id ?? request.headers.session_id };
+      const nativeHandoffOptions = { ...handoffOptions };
       const selected = mode === 'selected' && route.provider !== 'openai';
       const selectedSummaryUnsupported = selected && route.provider === 'whatstoken';
       const summaryContext = selected ? route.contextWindow : routes.get(summaryModel)?.contextWindow;
@@ -746,11 +747,23 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
               metric.history_source = 'portable_prefix_cache';
             } else {
               const restored = await restoreHistory(body, { root: codexRoot, threadId: handoffOptions.threadId, signal: abort.signal });
-              body = restored.body;
-              restoredPlan = { prefixEnd: restored.prefixEnd };
-              metric.history_source = 'owner_rollout';
+              if (Buffer.byteLength(JSON.stringify(restored.body)) > 8 * 1024 * 1024) {
+                // Replaying multi-day raw tool output can exceed the bounded chunk
+                // budget. Decode the authenticated native checkpoint instead;
+                // never send the reconstructed raw log or change the next model.
+                if (routes.get(summaryModel)?.provider !== 'openai' || !summaryHeaders.authorization) {
+                  throw new HandoffError('大きな既存履歴の引き継ぎにはOpenAI形式のcheckpoint読み取りが必要です。認証と要約モデルを確認してください。元ログは保持しています。');
+                }
+                body = await expandCompaction(body, nativeHandoffOptions);
+                metric.history_source = 'native_checkpoint';
+                providerNotices.push(HISTORY_MODES.openai.notice);
+              } else {
+                body = restored.body;
+                restoredPlan = { prefixEnd: restored.prefixEnd };
+                metric.history_source = 'owner_rollout';
+              }
             }
-            providerNotices.push(HISTORY_MODES.selected.notice);
+            if (metric.history_source !== 'native_checkpoint') providerNotices.push(HISTORY_MODES.selected.notice);
           }
           const threshold = softLimitTokens > 0
             ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
@@ -1051,7 +1064,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, upstream.status, "upstream_error", message);
         return;
       }
-      const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store" };
+      const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? (body.stream ? "text/event-stream" : "application/json"), "cache-control": "no-store" };
       if (metric.auto_fallback) responseHeaders["x-codex-bridge-provider"] = route.provider;
       for (const name of ["retry-after", "x-request-id", "x-codex-imagegen-request-id"]) {
         if (upstream.headers.has(name)) responseHeaders[name] = upstream.headers.get(name);
