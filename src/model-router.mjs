@@ -1020,6 +1020,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 502, "empty_upstream", "転送先から応答がありません");
         return;
       }
+      if (!handoffStatus.started && !upstream.ok) {
+        const detail = await readUpstreamFailure(upstream.clone());
+        Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
+      }
       if (handoffStatus.started && !upstream.ok) {
         const detail = await readUpstreamFailure(upstream);
         Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });

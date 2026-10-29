@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-116
+    title: "Command Codeの400を安全に分類し認証・利用枠と混同しない"
+    feature: "上流拒否理由の診断"
+    scenario: "入れ子error・文字列error・message・detailを固定カテゴリへ変換し、生の本文と秘密情報を応答・ログへ残さない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/handoff-status.mjs, src/manual-providers.mjs, src/model-router.mjs]
+    test_file: test/manual-providers.test.mjs
+    issues: [151]
+    notes: "test/handoff-status.test.mjsで分類と秘匿、test/manual-providers.test.mjsでHTTP境界と案内を確認。実際の400原因と対象会話の復旧は未確認。"
+
   - id: TC-112
     title: "統合router切替でRealtime音声URLを所有者付きで保持・復元する"
     feature: "Realtime音声接続先の非破壊切替"

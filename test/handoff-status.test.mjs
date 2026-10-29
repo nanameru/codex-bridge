@@ -362,3 +362,22 @@ test("ready restores Working for both handoff modes and keeps completion in hist
     } finally { status.dispose(); }
   }
 });
+
+test('gateway error shapes classify incompatibilities without leaking raw data', async () => {
+  const cases = [
+    [{error:'Invalid function parameters schema: PRIVATE sk-secret'}, 'invalid_tool_definition'],
+    [{message:'max_tokens must be within range PRIVATE'}, 'invalid_output_limit'],
+    [{detail:'Unsupported reasoning_effort PRIVATE'}, 'invalid_reasoning_options'],
+    [{error:{message:'Request body size exceeds limit PRIVATE'}}, 'request_too_large'],
+    [{error:{message:'messages role must be user PRIVATE'}}, 'invalid_chat_messages'],
+    [{code:'invalid_request_error',message:'PRIVATE'}, 'invalid_request_error'],
+    [{error:{code:'invalid_request_error',message:'Invalid function parameters schema PRIVATE'}}, 'invalid_tool_definition'],
+    [{error:{code:'sk-secret',message:'PRIVATE'}}, 'unknown_error'],
+  ];
+  for (const [body, expected] of cases) {
+    const detail = await readUpstreamFailure(Response.json(body));
+    assert.equal(detail.code, expected);
+    assert.equal(detail.read, 'parsed');
+    assert.doesNotMatch(JSON.stringify(detail), /PRIVATE|sk-secret/);
+  }
+});
