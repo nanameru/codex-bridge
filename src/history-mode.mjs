@@ -7,8 +7,8 @@ import { codexRoot, readPrivateFile } from './local-security.mjs';
 
 export const HISTORY_MODES = {
   selected: {
-    label: '選択中のモデルで要約（既定）',
-    notice: '保存された会話ログを選択中のモデルで要約し直します。外部モデル選択中は、この引き継ぎ要約でOpenAIの利用枠を消費しませんが、元ログの不足や再要約により、過去の指示・判断・細部が引き継がれない場合があります。選択モデルの要約分の利用量は発生します。',
+    label: '選択モデルで要約・既存の圧縮形式は互換処理（既定）',
+    notice: '保存された会話ログを選択中のモデルで要約し直します。既存会話のremote compactと8MiB超の履歴のcheckpoint読み取りはOpenAIを使用します。通常の文章履歴の再要約は選択モデルを使用しますが、元ログの不足や再要約により、過去の指示・判断・細部が引き継がれない場合があります。選択モデルの要約分の利用量は発生します。',
   },
   openai: {
     label: 'OpenAIで引き継ぐ',

@@ -96,20 +96,18 @@ def patched_source(source):
     if source.count(desired_choice) != 1:
         raise ValueError('bridgeのtool_choice境界が一致しません')
     # The Responses fallback bypasses Chat conversion; apply the same guard.
-    legacy_fallback = 'upstream = await doFetch("/responses", { ...body, model });'
-    if 'const responsesBody = { ...body, model };' not in source and legacy_fallback in source:
-        pattern = r'(?m)^([ \t]*)' + re.escape(legacy_fallback) + r'$'
-        def fallback_guard(match):
-            indent = match[1]
-            lines = ['const responsesBody = { ...body, model };',
-                     'const responsesChoice = toolChoiceForTools(body.tool_choice, body.tools);',
-                     'if (responsesChoice === undefined) delete responsesBody.tool_choice;',
-                     'else responsesBody.tool_choice = responsesChoice;',
-                     'upstream = await doFetch("/responses", responsesBody);']
-            return '\n'.join(indent + line for line in lines)
-        source, count = re.subn(pattern, fallback_guard, source)
-        if count != 1:
-            raise ValueError('bridgeのResponsesフォールバック境界が一致しません')
+    # Both repo and deployed legacy bridges use this call, with different
+    # assignment targets and trailing authentication/timeout arguments.
+    pattern = r'(?m)^([ \t]*)(upstream|attempt) = await doFetch\("/responses", \{ \.\.\.body, model \}(.*)\);$'
+    def fallback_guard(match):
+        indent, target, tail = match.groups()
+        lines = ['const responsesBody = { ...body, model };',
+                 'const responsesChoice = toolChoiceForTools(body.tool_choice, body.tools);',
+                 'if (responsesChoice === undefined) delete responsesBody.tool_choice;',
+                 'else responsesBody.tool_choice = responsesChoice;',
+                 f'{target} = await doFetch("/responses", responsesBody{tail});']
+        return '\n'.join(indent + line for line in lines)
+    source = re.sub(pattern, fallback_guard, source)
     source = source.replace('const payload = toResponsesPayload(chat, model);',
                             'const payload = toResponsesPayload(chat, model, toolContext);')
     call_pattern = r'await pipeStream\(([^,\n]+), res, model, threadId(?:, activeHandle)?(?:, toolContext)?\);'
