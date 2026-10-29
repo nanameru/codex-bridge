@@ -5,6 +5,30 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-117
+    title: "自動Command Codeの要求形式拒否で次の設定済み提供元へ進む"
+    feature: "400/422からの自動継続"
+    scenario: "Command Codeの400/422で履歴・toolsを保持してOllamaへ進み、手動選択・content_filter・次候補なし・全候補拒否では勝手な迂回や無限再送をしない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/handoff-status.mjs]
+    test_file: test/provider-fallback-router.test.mjs
+    issues: [151]
+    notes: "要求固有の拒否を利用枠として永続化しない。成功は次候補の利用可否に依存し、全社拒否を隠さない。"
+
+  - id: TC-116
+    title: "Command Codeの400を安全に分類し認証・利用枠と混同しない"
+    feature: "上流拒否理由の診断"
+    scenario: "入れ子error・文字列error・message・detailを固定カテゴリへ変換し、生の本文と秘密情報を応答・ログへ残さない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/handoff-status.mjs, src/manual-providers.mjs, src/model-router.mjs]
+    test_file: test/manual-providers.test.mjs
+    issues: [151]
+    notes: "test/handoff-status.test.mjsで分類と秘匿、test/manual-providers.test.mjsでHTTP境界と案内を確認。実際の400原因と対象会話の復旧は未確認。"
+
   - id: TC-112
     title: "統合router切替でRealtime音声URLを所有者付きで保持・復元する"
     feature: "Realtime音声接続先の非破壊切替"

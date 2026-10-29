@@ -173,7 +173,8 @@ const SAFE_UPSTREAM_CODES = new Set(["invalid_request_error", "invalid_prompt", 
   "credits_exhausted", "billing_hard_limit_reached", "monthly_limit_exceeded", "weekly_limit_exceeded",
   "authentication_error", "permission_error", "server_error",
   "content_filter", "invalid_api_key", "not_found_error", "overloaded_error", "invalid_tool_history",
-  "chat_history_conversion_failed", ...TOOL_SEARCH_REASON_CODES]);
+  "chat_history_conversion_failed", "invalid_output_limit", "invalid_reasoning_options", "invalid_chat_messages",
+  "request_too_large", ...TOOL_SEARCH_REASON_CODES]);
 export async function readUpstreamFailure(response, { maxBytes = 16384, timeoutMs = 1000 } = {}) {
   const reader = response.body.getReader();
   let timer;
@@ -191,18 +192,28 @@ export async function readUpstreamFailure(response, { maxBytes = 16384, timeoutM
       let parsed;
       try { parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
       catch { return fallback("invalid_json"); }
-      const error = parsed?.error;
+      // Gateways also return {error: "..."}, {message: "..."}, or
+      // FastAPI-style {detail: ...}. Never expose any of those raw values.
+      const error = parsed?.error && typeof parsed.error === 'object' ? parsed.error : parsed;
       const safe = value => SAFE_UPSTREAM_CODES.has(value) ? value : "unknown_error";
       let code = safe(error?.code);
       // Only emit fixed categories; never a substring from the upstream message.
-      if (code === "unknown_error" && typeof error?.message === "string") {
+      const message = typeof parsed?.error === 'string' ? parsed.error
+        : typeof error?.message === 'string' ? error.message
+        : typeof parsed?.detail === 'string' ? parsed.detail : '';
+      if (["unknown_error", "invalid_request_error", "invalid_prompt"].includes(code) && message) {
         for (const [pattern, category] of [
           [/context (?:length|window)|maximum context|too many tokens/i, "context_length_exceeded"],
+          [/(?:request|body|payload).{0,40}(?:too large|size.{0,15}(?:limit|exceed))|maximum.{0,20}(?:body|payload) size/i, "request_too_large"],
           [/image.{0,30}(?:invalid|unsupported)|(?:invalid|unsupported).{0,30}image/i, "invalid_image"],
+          [/(?:max_tokens|max_completion_tokens|max_output_tokens).{0,100}(?:invalid|must|maximum|limit|exceed|range)|(?:invalid|unsupported).{0,40}(?:max_tokens|max_output_tokens)/i, "invalid_output_limit"],
+          [/(?:thinking|reasoning_effort).{0,60}(?:invalid|unsupported|must)|(?:invalid|unsupported).{0,40}(?:thinking|reasoning_effort)/i, "invalid_reasoning_options"],
+          [/(?:tool|function).{0,30}(?:schema|parameters|definition|name).{0,60}(?:invalid|unsupported|must|maximum|limit)|(?:invalid|unsupported).{0,30}(?:tool|function).{0,30}(?:schema|parameters|definition|name)/i, "invalid_tool_definition"],
           [/tool_call_id|tool (?:call|result)|function (?:call|response)/i, "invalid_tool_history"],
-        ]) if (pattern.test(error.message)) { code = category; break; }
+          [/(?:messages|role).{0,40}(?:invalid|unsupported|must)|(?:invalid|unsupported).{0,30}(?:messages|role)/i, "invalid_chat_messages"],
+        ]) if (pattern.test(message)) { code = category; break; }
       }
-      return { code, type: safe(error?.type), read: "parsed" };
+      return { code, type: safe(error?.upstream_error_type ?? error?.type), read: "parsed" };
     };
     return await Promise.race([readBody(), new Promise(resolve => {
       timer = setTimeout(() => resolve(fallback("timeout")), timeoutMs);

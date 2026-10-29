@@ -111,9 +111,14 @@ export async function fetchManualProvider(provider, url, options, fetcher, maxBy
     const limit = await classifyProviderLimit(upstream);
     const detail = upstream.body ? await readUpstreamFailure(upstream) : { code: "unknown_error" };
     const retryAfter = upstream.headers.get('retry-after');
+    const authFailure = [401,403].includes(upstream.status);
+    const advice = limit ? '利用枠とリセット時刻を確認してください。' : authFailure ? '認証設定を確認してください。'
+      : upstream.status === 400 || upstream.status === 422 ? '送信したツール定義・履歴・オプションの互換性を確認してください。'
+      : '提供元の稼働状況を確認してください。';
     return Response.json({ error: { type: 'provider_error', code: limit ? 'usage_exceeded' : detail.code,
+      upstream_error_type: detail.type ?? 'unknown_error', upstream_error_read: detail.read ?? 'empty',
       ...(limit ? { window: limit.window, ...(limit.resetKnown ? { resets_at: new Date(limit.resetAt).toISOString() } : {}), reset_known: limit.resetKnown } : {}),
-      message: `${config.label}が要求を拒否しました（HTTP ${upstream.status}、${detail.code}）。利用枠と認証設定を確認してください。${limit || [401,403].includes(upstream.status) ? providerHelp(provider) : ''}` } },
+      message: `${config.label}が要求を拒否しました（HTTP ${upstream.status}、${detail.code}、詳細取得: ${detail.read ?? 'empty'}）。${advice}${limit || authFailure ? providerHelp(provider) : ''}` } },
     { status: upstream.status, headers: /^\d{1,6}$/.test(retryAfter ?? '') ? { 'retry-after': retryAfter } : {} });
   }
   if (!upstream.body) throw new Error('manual_empty_response');

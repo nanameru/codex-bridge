@@ -896,7 +896,19 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         const conversationId = body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id;
         const skipped = [];
         for (;;) {
-          if (upstream.ok || (route.provider !== 'whatstoken' && ![402, 429].includes(upstream.status))) break;
+          // An automatic Command Code route can reject a request that another
+          // configured provider accepts. Try the remaining chain once, without
+          // modifying history/tools or marking a request-specific failure as quota.
+          let requestRejection = null;
+          if (route.provider === 'commandcode' && [400, 422].includes(upstream.status) && upstream.body) {
+            const detail = await readUpstreamFailure(upstream.clone());
+            if (detail.type !== 'content_filter' && [
+              'unknown_error', 'invalid_request_error', 'invalid_prompt', 'invalid_tool_definition',
+              'invalid_output_limit', 'invalid_reasoning_options', 'invalid_chat_messages',
+              'invalid_tool_history', 'context_length_exceeded', 'request_too_large',
+            ].includes(detail.code)) requestRejection = detail;
+          }
+          if (upstream.ok || (!requestRejection && route.provider !== 'whatstoken' && ![402, 429].includes(upstream.status))) break;
           const limit = await classifyProviderLimit(upstream, {
             now: state.now(), unknownCooldownMs: providerFallbackCooldownMs,
           });
@@ -910,9 +922,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             state.recordTransient(route.provider, transient);
             metric.provider_transient_provider = route.provider;
           }
-          if (!limit && !transient && route.provider !== 'whatstoken') break;
+          if (!limit && !transient && !requestRejection && route.provider !== 'whatstoken') break;
+          if (requestRejection) {
+            metric.provider_request_rejected_code = requestRejection.code;
+            metric.provider_request_rejected_status = upstream.status;
+          }
           if (route.provider === 'whatstoken') freeGate.unavailable?.();
-          providerNotices.push(transient ? `${route.provider}が一時制限中のため、別の提供元へ切り替えます。` : route.provider === 'whatstoken'
+          providerNotices.push(requestRejection ? 'Command Codeが要求形式を受け付けなかったため、次の設定済み提供元を試します。'
+            : transient ? `${route.provider}が一時制限中のため、別の提供元へ切り替えます。` : route.provider === 'whatstoken'
             ? 'WhatsTokenの無料経路が利用できないため、既存の提供元へ切り替えます。' + providerHelp('whatstoken')
             : `提供元の利用枠を確認してください。${providerHelp(route.provider)}`);
           if (limit) {
@@ -1019,6 +1036,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       if (!upstream.body) {
         fail(response, 502, "empty_upstream", "転送先から応答がありません");
         return;
+      }
+      if (!handoffStatus.started && !upstream.ok) {
+        const detail = await readUpstreamFailure(upstream.clone());
+        Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
       }
       if (handoffStatus.started && !upstream.ok) {
         const detail = await readUpstreamFailure(upstream);

@@ -202,3 +202,20 @@ test('Kimi K3.1 Proを一覧から選び正式なCommand Code IDへ送り、ツ�
   assert.match(second,/KIMI_OK/);assert.match(second,/"input_tokens":20/);
   for(const s of sent){assert.equal(s.url,MANUAL_PROVIDERS.commandcode.base+'/chat/completions');assert.equal(s.body.model,'moonshotai/Kimi-K3.1-Pro');assert.equal(s.headers.authorization,'Bearer commandcode-key');assert.equal(s.body.temperature,undefined);assert.equal(s.body.reasoning_effort,undefined);assert.ok(!JSON.stringify(s).includes('native-secret'));}
 });
+
+test('Command Code 400 exposes only fixed diagnostics and does not imply invalid credentials', async t => {
+  const metrics = [];
+  const {send} = await fixture(t, {onMetric: m => metrics.push(m), fetcher: async () => Response.json({
+    error: 'Invalid function parameters schema PRIVATE native-secret commandcode-key'
+  }, {status:400})});
+  const r = await send({model:'commandcode/deepseek-v4.1-flash',input:'synthetic'});
+  assert.equal(r.status,400);
+  const text=await r.text(); const error=JSON.parse(text).error;
+  assert.equal(error.code,'invalid_tool_definition');
+  assert.equal(error.upstream_error_read,'parsed');
+  assert.match(error.message,/互換性/);
+  assert.doesNotMatch(text,/PRIVATE|native-secret|commandcode-key|利用枠と認証設定/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(metrics.at(-1).upstream_error_code, 'invalid_tool_definition');
+  assert.doesNotMatch(JSON.stringify(metrics), /PRIVATE|native-secret|commandcode-key/);
+});
