@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-126
+    title: "Command Codeの応答前通信中断を一度だけ再試行し変換失敗を区別する"
+    feature: "提供元の接続回復"
+    scenario: "同じ認証・履歴・toolsで応答前だけ再試行し、変換不正と応答形式不正を区別し、途中のstreamは再送しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/manual-providers.mjs, src/chat-protocol.mjs, src/model-router.mjs]
+    test_file: test/manual-providers.test.mjs
+    issues: [167]
+
   - id: TC-125
     title: "共通DeepSeekの画像入力と自動切替を維持する"
     feature: "共通モデル画像入力"

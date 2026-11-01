@@ -1,10 +1,10 @@
 /** Chat -> Responses: execute tools only after an explicit, valid completion. */
 import { randomUUID } from 'node:crypto';
-import { chatToolContext, chatSearchHistory } from './tool-search.mjs';
+import { chatToolContext, chatSearchHistory, ToolSearchError } from './tool-search.mjs';
 import { chatUsageToResponses } from './usage.mjs';
 const id = prefix => prefix + randomUUID().replaceAll('-', '');
 const encodeReasoning = text => 'cxb1:' + Buffer.from(text).toString('base64url');
-class ProtocolError extends Error {}
+export class ProtocolError extends Error {}
 const errorCode = error => error.reason === 'invalid_tool_arguments' ? 'server_error' : 'invalid_prompt';
 function primaryChoice(chunk) {
   if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) throw new ProtocolError('Chat応答の形式が不正です。');
@@ -166,6 +166,9 @@ export async function pipeChatStream(upstream, response, model, threadId, option
       ...(normalizedUsage ? { usage: normalizedUsage } : {}) } });
     response.end();
   } catch (error) {
+    const reason = error instanceof ToolSearchError ? error.reasonCode
+      : ['empty_output','max_output_tokens','invalid_tool_arguments'].includes(error.reason) ? error.reason : 'stream_error';
+    try { options.diagnose?.({ provider_response_status: 'failed', provider_response_failure_reason: reason }); } catch {}
     emit('response.failed', { response: { ...envelope, status: 'failed', output: [], error: { code: error instanceof ProtocolError ? errorCode(error) : 'server_error',
       ...(error.reason ? { reason: error.reason } : {}), message: error instanceof ProtocolError ? error.message : 'Chatストリームが中断しました。ツールは実行していません。' } } });
     response.end();

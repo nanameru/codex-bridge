@@ -909,7 +909,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           candidateRoute.provider === 'whatstoken' ? [
             ...Object.keys(CHAT_PROVIDERS).map(manualKey), bridgeKey(), openCodeKey(),
             request.headers.authorization?.replace(/^Bearer /i, ''),
-          ] : [], candidateRoute.commonModel); }
+          ] : [], candidateRoute.commonModel, details => Object.assign(metric, details)); }
           catch (error) {
             if (error instanceof ToolSearchError || candidateRoute.provider !== 'whatstoken' || options.signal?.aborted) throw error;
             return Response.json({ error: { code: 'whatstoken_unavailable' } }, { status: 503 });
@@ -1153,12 +1153,17 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       await pipeline(...streams, sink, { signal: abort.signal });
       metric.upstream_stream_ms = Math.round(performance.now() - streamStart);
       metric.stage = "complete";
+      if (metric.provider_response_status === 'failed') terminationReason = 'provider_response_failed';
     } catch (error) {
       terminationReason ??= metric.stage === "upstream_stream" ? "upstream_stream_error" : "upstream_error";
       const safeCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_SOCKET",
         "ERR_STREAM_PREMATURE_CLOSE", "ERR_STREAM_DESTROYED", "ABORT_ERR"]);
       const errorCode = [error?.code, error?.cause?.code].find(code => safeCodes.has(code));
       if (errorCode && !terminationReason.startsWith("client_")) metric.transport_error_code = errorCode;
+      if (!terminationReason.startsWith('client_')) {
+        const kinds = new Set(['TypeError', 'SyntaxError', 'RangeError', 'Error', 'ProtocolError', 'ToolSearchError']);
+        metric.failure_error_class = kinds.has(error?.constructor?.name) ? error.constructor.name : 'OtherError';
+      }
       const timeout = terminationReason === "deadline_exceeded";
       if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, error instanceof ToolSearchError ? 422 : error instanceof HandoffError && error.status === 422 ? 422 : timeout ? 504 : 502,
         error instanceof ToolSearchError ? "unsupported_tool_search" : error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,
