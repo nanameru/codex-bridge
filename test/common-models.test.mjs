@@ -114,3 +114,9 @@ test('ストリーミングでも同一モデルのまま切替し提供元通�
   assert.doesNotMatch(text,/Command Code|OpenCode|切り替え|利用枠/);
   assert.equal(f.calls.at(-1).body.model,'zai-org/GLM-5.3');assert.deepEqual(f.sync,[]);
 });
+
+test('既存の提供元無効化設定がある場合はCommand Codeへ自動送信しない',async t=>{
+  const f=await fixture(t,()=>quota(),{manualProvidersEnabled:false});
+  const r=await f.send();assert.equal(r.status,429);await r.text();
+  assert.ok(f.calls.every(c=>c.provider==='opencode'));
+});
