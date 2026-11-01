@@ -2,7 +2,7 @@
 import { constants } from 'node:fs';
 import { lstat, readdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
-import { HandoffError } from './compaction-handoff.mjs';
+import { HandoffError, budgetHistoryBoundary } from './compaction-handoff.mjs';
 
 // Bound the on-disk scan separately from materialized conversation content.
 const LIMIT = 512 * 1024 * 1024;
@@ -41,7 +41,7 @@ export async function restoreRolloutHistory(body, { root, threadId, signal }) {
     if (!UUID.test(threadId ?? '') || !Array.isArray(body.input)) throw failure();
     const end = body.input.findLastIndex(item => item.type === 'compaction');
     const opaque = body.input[end]?.encrypted_content;
-    if (typeof opaque !== 'string' || !opaque || end >= body.input.length - 1) throw failure();
+    if (typeof opaque !== 'string' || !opaque) throw failure();
     signal?.throwIfAborted();
     await directory(root);
     const candidates = [];
@@ -106,8 +106,12 @@ export async function restoreRolloutHistory(body, { root, threadId, signal }) {
       // Current directives override old directives. Never change the on-disk rollout.
       const directives = body.input.slice(0, end + 1).filter(item => ['system', 'developer'].includes(item.role));
       const original = restored.filter(item => !['system', 'developer'].includes(item.role));
-      return { body: { ...body, input: [...directives, ...original, ...body.input.slice(end + 1)] },
-        prefixEnd: directives.length + original.length };
+      const input = [...directives, ...original, ...body.input.slice(end + 1)];
+      // Mid-turn auto-compaction can leave the checkpoint as the final item.
+      // Retain the latest task and its tool batch instead of summarizing every
+      // restored item or inventing an extra user instruction.
+      const boundary = end === body.input.length - 1 ? budgetHistoryBoundary(input) : directives.length + original.length;
+      return { body: { ...body, input }, prefixEnd: boundary > 0 ? boundary : undefined };
     } finally { await fd.close(); }
   } catch (error) {
     if (signal?.aborted) throw error;
