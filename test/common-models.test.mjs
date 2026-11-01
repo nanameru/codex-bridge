@@ -120,3 +120,35 @@ test('既存の提供元無効化設定がある場合はCommand Codeへ自動�
   const r=await f.send();assert.equal(r.status,429);await r.text();
   assert.ok(f.calls.every(c=>c.provider==='opencode'));
 });
+
+test('DeepSeekだけ画像対応として公開し、異なる世代や未検証モデルは昇格しない',()=>{
+  const models=publicCommonCatalog(commonCatalog(catalog)).models;
+  const ds=models.find(m=>m.slug==='shared/deepseek-v4.1-flash');
+  assert.deepEqual(ds.input_modalities,['text','image']);
+  assert.equal(ds.supports_image_detail_original,true);
+  assert.deepEqual(models.find(m=>m.slug==='shared/glm-5.3').input_modalities,['text']);
+  const other=commonCatalog(catalog,[cmd('unverified/deepseek-v4.1-flash')]);
+  assert.deepEqual(other.models[1].input_modalities,['text']);
+});
+
+test('ユーザー画像とview_imageの画像結果を同一DeepSeekの自動切替で保持する',async t=>{
+  const url='data:image/png;base64,iVBORw0KGgo=';
+  for(const toolResult of [false,true]){
+    const f=await fixture(t,c=>c.provider==='opencode'?quota():ok(c));
+    const image={type:'input_image',image_url:url,detail:'original'};
+    const input=toolResult?[
+      {role:'user',content:'Read the screenshot'},
+      {type:'function_call',call_id:'view',name:'view_image',arguments:'{}'},
+      {type:'function_call_output',call_id:'view',output:[image]},
+    ]:[{role:'user',content:[{type:'input_text',text:'Read the screenshot'},image]}];
+    const before=structuredClone(input);
+    const r=await f.send('shared/deepseek-v4.1-flash',{input});
+    assert.equal(r.status,200);await r.text();assert.deepEqual(input,before);
+    assert.deepEqual(f.calls.map(c=>c.provider),['opencode','commandcode']);
+    assert.equal(f.calls[1].body.model,'deepseek/deepseek-v4.1-flash');
+    const messages=f.calls[1].body.messages;
+    const images=messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).filter(p=>p.type==='image_url');
+    assert.equal(images.length,1);assert.equal(images[0].image_url.url,url);
+    assert.equal(images[0].image_url.detail,'high');
+  }
+});

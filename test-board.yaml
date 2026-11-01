@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-125
+    title: "共通DeepSeekの画像入力と自動切替を維持する"
+    feature: "共通モデル画像入力"
+    scenario: "DeepSeekだけを画像対応として公開し、ユーザー画像とツール画像がOpenCodeからCommand Codeへの切替でも欠落しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/common-models.mjs]
+    test_file: test/common-models.test.mjs
+    issues: [165]
+
   - id: TC-124
     title: "自動圧縮直後の末尾checkpointを復元する"
     feature: "履歴圧縮の引き継ぎ"
