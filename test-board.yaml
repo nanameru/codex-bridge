@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-121
+    title: "会話IDをキャッシュIDより優先して履歴を復元する"
+    feature: "履歴復元"
+    scenario: "UUID以外または別UUIDのprompt_cache_keyでも正しいsession_idの会話ログを復元する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [157]
+
   - id: TC-120
     title: "要約キャッシュ再利用時に要約案内を繰り返さない"
     feature: "履歴要約通知"

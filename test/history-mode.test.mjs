@@ -54,8 +54,8 @@ async function fixture(t, options = {}) {
     }, ...options });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  const send = (body = request, token = 'owner-native-token', path = '/v1/responses') => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
-    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const send = (body = request, token = 'owner-native-token', path = '/v1/responses', extraHeaders = {}) => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', ...extraHeaders }, body: JSON.stringify(body) });
   return { root, calls, metrics, send };
 }
 
@@ -161,6 +161,19 @@ test('default selected mode reconstructs opaque history and calls only the selec
   assert.equal(f.calls.length, 5, 'owner authentication change cannot reuse another cache scope');
   const other = await f.send({ ...request, prompt_cache_key: '01a1777d-4508-72a1-9dbe-dcd799f721aa' });
   assert.equal(other.status, 422); await other.text(); assert.equal(f.calls.length, 5);
+});
+
+test('owner session ID takes precedence over unrelated prompt cache identifiers', async t => {
+  for (const cacheKey of ['prefix-cache-not-a-thread', '01a1777d-4508-72a1-9dbe-dcd799f721aa']) {
+    const f = await fixture(t);
+    rollout(f.root);
+    const body = { ...request, prompt_cache_key: cacheKey };
+    const response = await f.send(body, 'owner-native-token', '/v1/responses', { session_id: thread });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(f.metrics[0].history_source, 'owner_rollout');
+    assert.ok(f.calls.every(call => call.url.includes('9997')));
+    assert.equal(f.calls.at(-1).body.prompt_cache_key, cacheKey);
+  }
 });
 
 test('OpenAI handoff cache hits stay quiet and changed authentication still notifies', async t => {
