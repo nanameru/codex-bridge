@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-120
+    title: "要約キャッシュ再利用時に要約案内を繰り返さない"
+    feature: "履歴要約通知"
+    scenario: "初回の実要約は通知し、portable prefixと文章要約cache hitでは通知せず、認証変更で再要約する場合は通知する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [155]
+
   - id: TC-118
     title: "既存の外部モデル会話でremote compactと巨大履歴を引き継ぐ"
     feature: "既存会話の圧縮互換性"

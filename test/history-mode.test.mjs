@@ -151,7 +151,9 @@ test('default selected mode reconstructs opaque history and calls only the selec
   assert.equal(f.metrics[0].history_source, 'owner_rollout');
   assert.equal(readFileSync(path, 'utf8'), original);
   const next = { ...request, input: [...request.input, { role: 'assistant', content: 'ANSWER' }, { role: 'user', content: 'NEXT REQUEST' }] };
-  const second = await f.send(next); assert.equal(second.status, 200, await second.text());
+  const second = await f.send(next); const secondText = await second.text();
+  assert.equal(second.status, 200, secondText);
+  assert.doesNotMatch(secondText, /保存された会話ログを|msg_bridge_handoff_provider_/);
   assert.equal(f.calls.length, 3, 'successful portable prefix avoids repeated log reads and summaries');
   assert.equal(f.metrics[1].history_source, 'portable_prefix_cache');
   assert.match(JSON.stringify(f.calls.at(-1).body), /NEXT REQUEST/);
@@ -159,6 +161,24 @@ test('default selected mode reconstructs opaque history and calls only the selec
   assert.equal(f.calls.length, 5, 'owner authentication change cannot reuse another cache scope');
   const other = await f.send({ ...request, prompt_cache_key: '01a1777d-4508-72a1-9dbe-dcd799f721aa' });
   assert.equal(other.status, 422); await other.text(); assert.equal(f.calls.length, 5);
+});
+
+test('OpenAI handoff cache hits stay quiet and changed authentication still notifies', async t => {
+  const f = await fixture(t, { historyMode: 'openai' });
+  const first = await f.send();
+  assert.equal(first.status, 200);
+  assert.match(await first.text(), /追加の利用量/);
+  const next = { ...request, input: [...request.input, { role: 'assistant', content: 'ANSWER' },
+    { role: 'user', content: 'NEXT REQUEST' }] };
+  const second = await f.send(next);
+  assert.equal(second.status, 200);
+  assert.doesNotMatch(await second.text(), /msg_bridge_handoff_provider_/);
+  assert.equal(f.metrics.at(-1).summary_cache, 'hit');
+  assert.equal(f.calls.length, 3);
+  const changed = await f.send(next, 'changed-owner-token');
+  assert.equal(changed.status, 200);
+  assert.match(await changed.text(), /追加の利用量/);
+  assert.equal(f.calls.length, 5);
 });
 
 test('DeepSeek and Kimi auxiliary summaries use only their selected Command Code or Ollama credentials', async t => {
