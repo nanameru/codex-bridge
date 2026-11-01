@@ -1,4 +1,7 @@
 /** Explicit, owner-selected DeepSeek endpoints. No provider fallback. */
+import { setTimeout as delay } from 'node:timers/promises';
+import { ToolSearchError } from './tool-search.mjs';
+import { ProtocolError } from './chat-protocol.mjs';
 import { PassThrough, Readable } from 'node:stream';
 import { readPrivateFile, codexRoot } from './local-security.mjs';
 import { buildCatalog } from './make-catalog.mjs';
@@ -89,7 +92,48 @@ async function boundedJSON(response, maxBytes) {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-export async function fetchManualProvider(provider, url, options, fetcher, maxBytes, maxInputTokens, credentials = [], allowedModel) {
+const RETRYABLE_CONNECTION_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT',
+  'EAI_AGAIN', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT']);
+export async function fetchManualProvider(provider, url, options, fetcher, maxBytes, maxInputTokens, credentials = [], allowedModel, diagnose = () => {}) {
+  let phase = 'chat_conversion';
+  const report = details => { try { diagnose(details); } catch {} };
+  const observedFetch = async (target, init) => {
+    phase = 'upstream_request';
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await fetcher(target, init);
+        phase = 'upstream_response';
+        report({ manual_upstream_status: response.status });
+        return response;
+      } catch (error) {
+        const code = [error?.code, error?.cause?.code].find(value => RETRYABLE_CONNECTION_CODES.has(value));
+        if (code) report({ transport_error_code: code });
+        // No HTTP response or stream has been exposed. Repeat exactly once;
+        // schema/auth/quota failures and post-header stream failures never retry.
+        if (attempt || !code || init.signal?.aborted) throw error;
+        report({ manual_transport_retries: 1 });
+        await delay(250, undefined, { signal: init.signal });
+      }
+    }
+  };
+  try {
+    return await fetchManualProviderOnce(provider, url, options, observedFetch, maxBytes,
+      maxInputTokens, credentials, allowedModel, report);
+  } catch (error) {
+    report({ provider_failure_phase: phase,
+      provider_failure_kind: error instanceof ProtocolError ? 'invalid_chat_history'
+        : error instanceof ToolSearchError ? 'invalid_tool_definition'
+        : error?.message === 'manual_stream_required' ? 'unexpected_response_format'
+        : phase === 'upstream_request' ? 'connection_failed' : 'provider_response_failed' });
+    if (error instanceof ProtocolError) return Response.json({ error: { type: 'invalid_tool_history',
+      message: '履歴をChat形式へ変換できませんでした。元の履歴を保持して停止しました。' } }, { status: 422 });
+    if (error?.message === 'manual_stream_required') return Response.json({ error: {
+      type: 'upstream_response_format', message: '提供元がストリーミング要求に異なる応答形式を返しました。履歴は保持しています。' } }, { status: 502 });
+    throw error;
+  }
+}
+
+async function fetchManualProviderOnce(provider, url, options, fetcher, maxBytes, maxInputTokens, credentials = [], allowedModel, diagnose) {
   const config = CHAT_PROVIDERS[provider];
   if (!config || url !== config.base + '/responses') throw new Error('manual_destination_invalid');
   const body = JSON.parse(options.body);
@@ -132,7 +176,7 @@ export async function fetchManualProvider(provider, url, options, fetcher, maxBy
   options.signal?.addEventListener('abort', abort, { once: true });
   queueMicrotask(() => {
     if (options.signal?.aborted) { abort(); return; }
-    pipeChatStream(upstream, output, body.model, undefined, { maxBytes, toolContext: chatToolContext(body) }).catch(() => output.destroy());
+    pipeChatStream(upstream, output, body.model, undefined, { maxBytes, toolContext: chatToolContext(body), diagnose }).catch(() => output.destroy());
   });
   return new Response(web, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' } });
 }
