@@ -353,3 +353,34 @@ test('native remote compaction SSE remains valid when upstream omits content-typ
   assert.match(response.headers.get('content-type'), /text\/event-stream/);
   assert.match(await response.text(), /native-summary/);
 });
+
+test('末尾checkpointは単一依頼を捨てずに復元し、要約不能なら全履歴を保持する', async t => {
+  const root=home(t), path=rollout(root), before=readFileSync(path,'utf8');
+  const restored=await restoreRolloutHistory({...request,input:request.input.slice(0,-1)},{root,threadId:thread});
+  assert.equal(restored.prefixEnd,undefined);
+  assert.ok(restored.body.input.some(i=>i.content==='ORIGINAL REQUIREMENT'));
+  assert.ok(restored.body.input.some(i=>i.output==='ORIGINAL TOOL RESULT'));
+  assert.equal(restored.body.input.some(i=>i.type==='compaction'),false);
+  assert.equal(readFileSync(path,'utf8'),before);
+});
+
+test('末尾checkpointでは最新依頼とそのツール結果を要約suffixに保持する',async t=>{
+  const root=home(t);rollout(root,{before:[
+    {type:'response_item',payload:{type:'message',role:'user',content:'LATEST TASK'}},
+    {type:'response_item',payload:{type:'function_call',call_id:'recent',name:'read',arguments:'{}'}},
+    {type:'response_item',payload:{type:'function_call_output',call_id:'recent',output:'LATEST TOOL RESULT'}},
+  ]});
+  const r=await restoreRolloutHistory({...request,input:[opaque]},{root,threadId:thread});
+  assert.ok(r.prefixEnd>0&&r.prefixEnd<r.body.input.length);
+  assert.equal(r.body.input[r.prefixEnd].content,'LATEST TASK');
+  assert.equal(r.body.input.at(-1).output,'LATEST TOOL RESULT');
+});
+
+test('末尾checkpointの通常ルーター経由で422にせず同じモデルが応答する',async t=>{
+  const f=await fixture(t);rollout(f.root);
+  const response=await f.send({...request,input:request.input.slice(0,-1)});
+  assert.equal(response.status,200,await response.text());
+  assert.equal(f.calls.length,1);
+  assert.ok(f.calls[0].body.input.some(i=>i.content==='ORIGINAL REQUIREMENT'));
+  assert.ok(f.calls[0].body.input.some(i=>i.output==='ORIGINAL TOOL RESULT'));
+});

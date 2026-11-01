@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-124
+    title: "自動圧縮直後の末尾checkpointを復元する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "末尾compactionでも元ログから復元し、最新依頼とツール結果を保持して安全な古いprefixだけを要約する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/rollout-history.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [163]
+
   - id: TC-123
     title: "呼び出しIDなしの引き継ぎツール結果を参考データとして保持する"
     feature: "Chat履歴互換性"
