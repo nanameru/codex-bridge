@@ -118,12 +118,15 @@ export function commonCatalog(catalog, entries = COMMAND_MODEL_SEED) {
     const target = byIdentity.get(commandIdentity(id));
     if (!target) continue;
     const context = Math.min(model.context_window ?? 128000, target.context_length);
+    // DeepSeek Flash documents native vision; the Command Code API was verified
+    // with an image-only code/count challenge. Do not infer vision for other IDs.
+    const vision = id === 'deepseek-v4.1-flash' && target.id === 'deepseek/deepseek-v4.1-flash';
     shared.push({ ...model, slug: 'shared/' + id,
       display_name: (model.display_name ?? id).replace(/^OpenCode · /, ''),
       description: '選択した同じモデルを利用可能な経路へ自動切替します。',
       context_window: context, max_context_window: context,
       auto_compact_token_limit: Math.min(model.auto_compact_token_limit ?? 500000, Math.floor(context * 0.8)),
-      input_modalities: ['text'], supports_image_detail_original: false,
+      input_modalities: vision ? ['text', 'image'] : ['text'], supports_image_detail_original: vision,
       router_transport: 'chat', router_common_model: target.id });
   }
   return { models: [...catalog.models.filter(model => model.router_provider === 'openai'), ...shared] };
