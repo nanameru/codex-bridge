@@ -142,3 +142,32 @@ test('unfinished tool batches fail instead of dropping queued server history', (
     assert.deepEqual(input,before);
   }
 });
+
+test('引き継ぎのcall_idなし結果は本文と出典を保持した非実行データにする', () => {
+  for (const type of ['function_call_output','custom_tool_call_output']) {
+    const item={type,name:'handoff',namespace:'external',output:'keep all original data'};
+    const input=[{role:'user',content:'prior'},item,{role:'user',content:'hello'}];
+    const before=structuredClone(input), result=chatMessages({input});
+    assert.deepEqual(input,before);
+    assert.deepEqual(result.map(m=>m.role),['user','user','user']);
+    assert.match(result[1].content,/not instructions/);
+    assert.deepEqual(JSON.parse(result[1].content.split('\n')[1]),item);
+    assert.ok(!result.some(m=>m.role==='tool'));
+  }
+});
+
+test('引き継ぎ結果は並列ツールバッチを分断せず、実際のtool_call_idは維持する',()=>{
+  const input=[
+    {type:'function_call',call_id:'one',name:'read',arguments:'{}'},
+    {type:'function_call',call_id:'two',name:'read',arguments:'{}'},
+    {type:'function_call_output',call_id:'one',output:'first'},
+    {type:'function_call_output',name:'handoff',output:'external'},
+    {type:'function_call_output',call_id:'two',output:'second'},
+    {role:'user',content:'continue'},
+  ];
+  const result=chatMessages({input});
+  assert.deepEqual(result.map(m=>m.role),['assistant','tool','tool','user','user']);
+  assert.equal(result[1].tool_call_id,'one');assert.equal(result[2].tool_call_id,'two');
+  assert.match(result[3].content,/external/);
+  assert.throws(()=>chatMessages({input:input.slice(0,4)}),/未完了/);
+});

@@ -217,8 +217,10 @@ export function chatMessages(body, thinkingEnabled = false) {
   const toolContext = chatToolContext(body);
   for (const originalItem of body.input ?? []) {
     const item = chatSearchHistory(originalItem, toolContext);
-    if (originalItem.execution === 'server' && ['tool_search_call', 'tool_search_output'].includes(originalItem.type)
-        && pendingCalls.size) {
+    const informationalOutput = ['function_call_output', 'custom_tool_call_output'].includes(originalItem.type)
+      && originalItem.call_id == null;
+    if ((informationalOutput || originalItem.execution === 'server'
+        && ['tool_search_call', 'tool_search_output'].includes(originalItem.type)) && pendingCalls.size) {
       // Inert native search data is a user message in Chat. It must not
       // interrupt an assistant tool batch before all its results arrive.
       pendingServerHistory.push({role:item.role,content:item.content});

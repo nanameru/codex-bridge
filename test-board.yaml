@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-123
+    title: "呼び出しIDなしの引き継ぎツール結果を参考データとして保持する"
+    feature: "Chat履歴互換性"
+    scenario: "call_idなしの結果を不正なrole:toolとして送らず、本文を維持し並列ツール結果の間にも挿入しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-search.mjs]
+    test_file: test/chat-protocol.test.mjs
+    issues: [161]
+
   - id: TC-122
     title: "共通モデルを統合表示し同一モデルだけで自動切替する"
     feature: "共通モデル自動ルーティング"
