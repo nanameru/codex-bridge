@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-122
+    title: "共通モデルを統合表示し同一モデルだけで自動切替する"
+    feature: "共通モデル自動ルーティング"
+    scenario: "提供元名と重複を除外し、OpenCodeの制限時に同じCommand Codeモデルへ切替、解除で復帰、別モデルと他社へは切替しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/common-models.mjs, src/live-catalog.mjs, src/model-router.mjs, src/manual-providers.mjs]
+    test_file: test/common-models.test.mjs
+    issues: [159]
+
   - id: TC-121
     title: "会話IDをキャッシュIDより優先して履歴を復元する"
     feature: "履歴復元"

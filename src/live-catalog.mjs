@@ -1,3 +1,4 @@
+import { commonCatalog, COMMAND_MODEL_SEED, COMMAND_MODELS_URL, commandModelEntries } from "./common-models.mjs";
 import { createHash } from "node:crypto";
 import { buildCatalog } from "./make-catalog.mjs";
 import { mergeRemoteModels, parsePayload } from "./sync-models.mjs";
@@ -47,7 +48,8 @@ export function discoveredModels(payload, entries, seed) {
 }
 
 export function createLiveCatalog({ initial, seed, fetcher = fetch, key, now = Date.now,
-  ttlMs = 300000, retryMs = 30000, onUpdate = () => {}, onStatus = () => {} }) {
+  commonModelsEnabled = false, ttlMs = 300000, retryMs = 30000, onUpdate = () => {}, onStatus = () => {} }) {
+  let command = COMMAND_MODEL_SEED, commandDue = 0, commandJob;
   let go = initial.models.filter(m => m.router_provider === "opencode");
   let goDue = 0; let goJob; let goIdentity;
   let metadataEntries = []; let metadataDue = 0;
@@ -82,6 +84,17 @@ export function createLiveCatalog({ initial, seed, fetcher = fetch, key, now = D
     })().finally(() => { goJob = undefined; });
     return goJob;
   }
+  async function refreshCommand() {
+    if (!commonModelsEnabled || now() < commandDue) return;
+    if (commandJob) return commandJob;
+    commandJob = (async () => {
+      try {
+        command = commandModelEntries(await getJSON(COMMAND_MODELS_URL, {}, 1024 * 1024));
+        commandDue = now() + ttlMs; report('command_updated');
+      } catch { commandDue = now() + retryMs; report('command_refresh_failed'); }
+    })().finally(() => { commandJob = undefined; });
+    return commandJob;
+  }
   return {
     async get(headers, version) {
       if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) throw new Error("catalog_client_version_required");
@@ -114,16 +127,17 @@ export function createLiveCatalog({ initial, seed, fetcher = fetch, key, now = D
               // Preserve version-specific OpenAI capabilities and instructions,
               // but never accept prototype keys or upstream routing overrides.
               const safe = Object.fromEntries(Object.entries(m).filter(([name]) =>
-                !["__proto__", "constructor", "prototype", "router_provider", "router_model", "router_transport"].includes(name)));
+                !["__proto__", "constructor", "prototype", "router_provider", "router_model", "router_transport", "router_common_model"].includes(name)));
               return { ...safe, router_provider: "openai", router_model: m.slug };
             });
             entry.models = models; entry.due = now() + ttlMs;
           } catch { entry.due = now() + retryMs; report("native_refresh_failed"); }
         })().finally(() => { entry.job = undefined; });
       }
-      await Promise.all([entry.job, refreshGo()]);
+      await Promise.all([entry.job, refreshGo(), refreshCommand()]);
       if (!entry.models) throw new Error("native_catalog_unavailable");
-      const catalog = { models: [...entry.models, ...go] };
+      const source = { models: [...entry.models, ...go] };
+      const catalog = commonModelsEnabled ? commonCatalog(source, command) : source;
       if (Buffer.byteLength(JSON.stringify(catalog)) > 1024 * 1024) throw new Error("catalog_too_large");
       onUpdate(catalog);
       return catalog;

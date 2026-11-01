@@ -51,3 +51,19 @@ python3 test/live-catalog-app-e2e.py
 実app-serverと模擬提供元で、一覧取得、新ID追加、同じプロセスでのTTL後の反映、新モデルの模擬応答、native圧縮、再圧縮、再起動resumeを検証する。APIキー/ChatGPT認証の取り違え、他accountやバージョンのキャッシュ混用、未認証取得、件数/容量/ID不正も検証する。
 
 実CLIの検証はapp-serverの`model/list`検証と区別する。隔離CODEX_HOMEの古い合成スレッドを`--no-daemon`でresumeし、実際に`/model`を開く。模擬提供元では追加したFuture Test、本番カタログではKimi K3.1 Proの表示を確認した（0.164.0）。一覧表示だけの検証であり、Kimiへの実推論やユーザーの実スレッドへの送信は行っていない。
+
+## 提供元を統合した共通モデル（Issue #159）
+
+routerの通常起動は、OpenCodeとCommand Codeの両方にあるChat Completions対応モデルだけを表示します。
+モデルIDの照合では提供元の名前空間と大小文字だけを正規化します。バージョン、無料版、contributor版、高速版を同一視しません。
+Command Codeの`/messages`専用モデルは既存変換で扱えないため対象外です。
+
+選択IDは`shared/<model-id>`、表示名はモデル名だけです。OpenCodeからCommand Codeの同じモデルへ制限時に切替し、制限解除後はOpenCodeに復帰します。
+OllamaやWhatsToken、別モデルへは切替しません。通常の成功した切替では提供元通知も選択名の書き換えも行いません。
+OpenAI公式モデルは保持します。新規依存は追加せず、既存のChat変換と利用枠管理を再利用します。
+
+元の`unified-model-catalog.json`は上流一覧として維持し、公開用`shared-model-catalog.json`を起動時とライブ更新時に生成します。
+サービス更新スクリプトは検証後に`config.toml`の公開カタログと既定モデルを移行し、元設定をバックアップします。
+両社の一覧取得に失敗した場合は直前の検証済み一覧（初回は同梱の公開APIスナップショット）を維持します。
+
+参照: [Command Code Provider API](https://commandcode.ai/docs/provider)、[OpenCode Go](https://opencode.ai/v2/docs/console/go/)

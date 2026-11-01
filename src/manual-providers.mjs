@@ -57,9 +57,9 @@ export function withManualModels(catalog, options = {}) {
     ...automaticModels(options)] };
 }
 
-export function manualChatBody(provider, body) {
+export function manualChatBody(provider, body, allowedModel) {
   const config = CHAT_PROVIDERS[provider];
-  if (!config || !(body.model === config.model || (provider === 'commandcode' && body.model === KIMI_MODEL))) throw new Error('manual_model_invalid');
+  if (!config || !(body.model === config.model || (provider === 'commandcode' && (body.model === KIMI_MODEL || allowedModel && body.model === allowedModel)))) throw new Error('manual_model_invalid');
   const kimi = body.model === KIMI_MODEL;
   const result = { model: body.model, messages: chatMessages(body, !kimi && body.reasoning?.effort !== 'none'), stream: body.stream === true };
   if (result.stream) result.stream_options = { include_usage: true };
@@ -89,11 +89,11 @@ async function boundedJSON(response, maxBytes) {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-export async function fetchManualProvider(provider, url, options, fetcher, maxBytes, maxInputTokens, credentials = []) {
+export async function fetchManualProvider(provider, url, options, fetcher, maxBytes, maxInputTokens, credentials = [], allowedModel) {
   const config = CHAT_PROVIDERS[provider];
   if (!config || url !== config.base + '/responses') throw new Error('manual_destination_invalid');
   const body = JSON.parse(options.body);
-  const chat = manualChatBody(provider, body);
+  const chat = manualChatBody(provider, body, allowedModel);
   let serialized = JSON.stringify(chat);
   if (provider === 'whatstoken') {
     // Preserve the local history. Only the outgoing request loses known keys.
