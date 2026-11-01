@@ -729,7 +729,6 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           fail(response, 422, "summary_model_required", "圧縮履歴の引き継ぎに使うOpenAIモデルがカタログにありません");
           return;
         }
-        if (!selected) providerNotices.push(HISTORY_MODES.openai.notice);
         metric.stage = "handoff";
         const summaryStart = performance.now();
         try {
@@ -763,7 +762,6 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
                 metric.history_source = 'owner_rollout';
               }
             }
-            if (metric.history_source !== 'native_checkpoint') providerNotices.push(HISTORY_MODES.selected.notice);
           }
           const threshold = softLimitTokens > 0
             ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
@@ -776,7 +774,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           if (extend && plan.preserveRecentUsers) metric.budget_intra_turn = true;
           if (!selected || restoredPlan) {
             body = await expandHistory(body, { ...handoffOptions, ...(extend ? plan : {}), ...restoredPlan,
-              observe: ({ cache }) => { metric.summary_cache = cache; handoffStatus.observe(cache, extend ? "budget" : "handoff"); } });
+              observe: ({ cache }) => {
+                metric.summary_cache = cache;
+                handoffStatus.observe(cache, extend ? "budget" : "handoff");
+                if (cache !== 'hit') providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
+              } });
             if (selected && restoredCacheKey && !abort.signal.aborted) {
               const prefix = body.input.slice(0, body.input.length - sourceSuffix.length);
               if (Buffer.byteLength(JSON.stringify(prefix)) <= 65536) {
@@ -819,12 +821,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             }
             if (minimum < hardLimitTokens && minimumBytes < maxBytes && (selected || routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization)) {
               metric.stage = "budget_handoff";
-              providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
               if (plan.preserveRecentUsers) metric.budget_intra_turn = true;
               const summaryStart = performance.now();
               try {
                 body = await expandHistory(body, { ...handoffOptions, ...plan,
-                  observe: ({ cache }) => { metric.budget_summary_cache = cache; handoffStatus.observe(cache, "budget"); } });
+                  observe: ({ cache }) => {
+                    metric.budget_summary_cache = cache;
+                    handoffStatus.observe(cache, "budget");
+                    if (cache !== 'hit') providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
+                  } });
               } finally { metric.budget_summary_ms = Math.round(performance.now() - summaryStart); }
               routedObject = routedBody(body, route, maxBytes);
               routed = JSON.stringify(routedObject);
