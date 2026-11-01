@@ -105,7 +105,7 @@ if(!health.model_ids.includes(id))throw new Error('packaged runtime missing '+id
             module.install_models(root)
             self.assertIn('auto-whatstoken/deepseek-v4.1-flash', [m['slug'] for m in json.loads(catalog.read_text())['models']])
 
-    def test_runtime_preserves_existing_manual_provider_opt_out(self):
+    def test_runtime_hides_provider_choices_with_either_manual_provider_flag(self):
         import socket
         import time
         import urllib.request
@@ -131,7 +131,9 @@ if(!health.model_ids.includes(id))throw new Error('packaged runtime missing '+id
                             if process.poll() is not None or time.monotonic() >= deadline:
                                 self.fail('isolated router did not start')
                             time.sleep(0.05)
-                    self.assertEqual('commandcode/deepseek-v4.1-flash' in health['model_ids'], flag == '1')
+                    self.assertEqual(health['model_ids'], ['gpt-test'])
+                    public = json.loads((root / 'shared-model-catalog.json').read_text())
+                    self.assertEqual([m['slug'] for m in public['models']], ['gpt-test'])
                     self.assertFalse(health['whatstoken_free']['enabled'])
                 finally:
                     process.terminate()

@@ -65,6 +65,7 @@ class ServicePythonTests(unittest.TestCase):
                         mock.patch.object(install_router_service.shutil, 'which', return_value='/node/bin/node'), \
                         mock.patch.object(subprocess, 'run', side_effect=run), \
                         mock.patch.object(install_router_service, 'wait_for_idle'), \
+                        mock.patch.object(install_router_service, 'select_common_models', return_value='shared/deepseek-v4.1-flash'), \
                         mock.patch.object(install_router_service, 'replace_registration') as replace:
                     install_router_service.install()
                 environment = replace.call_args.args[1]['EnvironmentVariables']
@@ -103,7 +104,8 @@ class ServicePythonTests(unittest.TestCase):
                     mock.patch.object(install_router_service.shutil, 'which', return_value='/node/bin/node'), \
                     mock.patch.object(subprocess, 'run', side_effect=run), \
                     mock.patch.object(install_router_service, 'wait_for_idle') as wait_for_idle, \
-                    mock.patch.object(install_router_service, 'replace_registration') as replace:
+                    mock.patch.object(install_router_service, 'select_common_models', return_value='shared/deepseek-v4.1-flash'), \
+                        mock.patch.object(install_router_service, 'replace_registration') as replace:
                 install_router_service.install()
             payload = replace.call_args.args[1]
             self.assertEqual(payload['Label'], label)
