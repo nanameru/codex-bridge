@@ -639,7 +639,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         enabled: body.stream === true && route.provider !== "openai" && !directResponses, delayMs: handoffStatusDelayMs });
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
         diagnose: details => Object.assign(metric, details),
-        threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id ?? request.headers.session_id };
+        // Cache keys may identify a prefix rather than the owning conversation.
+        // Resolve an explicit conversation ID before considering the cache key.
+        threadId: [body.client_metadata?.thread_id, request.headers.session_id,
+          body.client_metadata?.session_id, body.prompt_cache_key].find(value =>
+          typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value))
+          ?? body.client_metadata?.thread_id ?? body.prompt_cache_key
+          ?? body.client_metadata?.session_id ?? request.headers.session_id };
       const nativeHandoffOptions = { ...handoffOptions };
       const selected = mode === 'selected' && route.provider !== 'openai';
       const selectedSummaryUnsupported = selected && route.provider === 'whatstoken';
