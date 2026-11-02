@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-173-SUMMARY-FALLBACK
+    title: "共通モデルの履歴要約にも同一モデルの提供元切替を適用する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "要約中の提供元429で同一モデルへ切替し、全候補制限は429で停止、成功済みchunkと履歴を保持して制限解除後に再開する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/compaction-handoff.mjs, src/handoff-status.mjs]
+    test_file: test/common-models.test.mjs
+    issues: [173]
+    notes: "認証分離、実要約先の計測、local guard・401・content_filterの切替禁止、HTTP/SSEを含む8テスト追加。全Node418件成功。実提供元の利用制限再現と実画面E2Eは未実施。"
+
   - id: TC-171-SUMMARY
     title: "要約履歴を実行データから分離しtypeのみの上流エラーを分類する"
     feature: "履歴圧縮の引き継ぎ"

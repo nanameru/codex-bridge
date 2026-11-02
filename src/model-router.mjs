@@ -301,16 +301,62 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   // Store only successful portable prefixes, never a second raw transcript.
   const restoredSummaries = new Map();
   const selectedSummary = route => {
-    const key = JSON.stringify([route.provider, route.model, route.transport]);
+    const key = JSON.stringify(route.commonModel && autoProviderFallback
+      ? ['shared', route.commonModel] : [route.provider, route.model, route.transport]);
     if (selectedSummaries.has(key)) return selectedSummaries.get(key);
     const summarize = compactionHandoff({ model: route.model, maxBytes, maxInputBytes: maxBytes,
       inputLimitTokens: summaryInputLimitTokens, measureTokens: estimateInputTokens,
-      fetcher: async (url, options) => {
+      fetcher: async (url, options, context) => {
         const body = JSON.parse(options.body);
         // No opaque OpenAI data or native credentials may enter this path.
         if (body.input.some(item => item.type === 'compaction' || item.type === 'reasoning' && item.encrypted_content)) {
           throw new HandoffError('選択モデルへ暗号化履歴は送信できません。元ログを確認してください');
         }
+        if (route.commonModel && autoProviderFallback) {
+          const state = getFallbackState();
+          for (const provider of SHARED_PROVIDERS) {
+            options.signal.throwIfAborted();
+            if (!state.available(provider)) continue;
+            const isGo = provider === 'opencode';
+            const key = isGo ? bridgeKey() : manualKey(provider);
+            if (!key) continue;
+            const guard = manualGuard.check(context.threadId);
+            if (!guard.allowed) {
+              throw Object.assign(new HandoffError('要約要求の頻度制限中です。履歴は保持しています。時間を置いて再試行してください。'),
+                { status: 429, upstreamCode: 'summary_local_rate_limit', retryable: false, retryAfterSeconds: guard.retryAfterSeconds });
+            }
+            const candidate = { ...route, provider, model: isGo ? commandIdentity(route.commonModel) : route.commonModel };
+            // Rebuild credentials for each owner. In particular, never forward
+            // native authorization or the local bridge key to Command Code.
+            const headers = { 'content-type': 'application/json', accept: 'text/event-stream, application/json',
+              ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: 'Bearer ' + key }) };
+            const target = isGo ? bridge.href.replace(/\/$/, '') : CHAT_PROVIDERS[provider].base;
+            const request = { ...options, headers, body: JSON.stringify(routedBody(body, candidate, maxBytes)) };
+            context.diagnose({ summary_provider: provider, summary_model: candidate.model });
+            const upstream = isGo ? await fetcher(target + '/responses', request)
+              : await fetchManualProvider(provider, target + '/responses', request, fetcher, maxBytes, undefined, [], route.commonModel);
+            if (![402, 429].includes(upstream.status)) return upstream;
+            const limit = await classifyProviderLimit(upstream, { now: state.now(), unknownCooldownMs: providerFallbackCooldownMs });
+            const transient = !limit ? await classifyTransientProviderLimit(upstream, { now: state.now() }) : null;
+            // Keep local guards and unrecognized refusals on their own route.
+            if (!limit && !transient) {
+              if (upstream.status !== 429) return upstream;
+              void upstream.body?.cancel().catch(() => {});
+              throw Object.assign(new HandoffError('要約要求の頻度制限中です。履歴は保持しています。時間を置いて再試行してください。'),
+                { status: 429, upstreamCode: 'summary_local_rate_limit', retryable: false });
+            }
+            if (limit) {
+              try { state.recordLimit(provider, limit); } catch { /* In-memory limit remains active. */ }
+            } else state.recordTransient(provider, transient);
+            context.diagnose({ summary_limited_provider: provider });
+            void upstream.body?.cancel().catch(() => {});
+          }
+          const earliest = state.earliestUnblockAt(SHARED_PROVIDERS);
+          throw Object.assign(new HandoffError('選択モデルの要約先が利用枠制限中です。履歴と完了済みの要約を保持しています。制限解除後に再試行してください。'),
+            { status: 429, upstreamCode: 'summary_provider_limits_exhausted', retryable: false,
+              ...(earliest ? { retryAfterSeconds: Math.max(1, Math.ceil((earliest - state.now()) / 1000)) } : {}) });
+        }
+        context.diagnose({ summary_provider: route.provider, summary_model: route.model });
         const request = { ...options, body: JSON.stringify(routedBody(body, route, maxBytes)) };
         return CHAT_PROVIDERS[route.provider]
           ? fetchManualProvider(route.provider, url, request, fetcher, maxBytes, undefined, [], route.commonModel)
@@ -679,7 +725,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         } else expandHistory = selectedSummary(route);
         handoffOptions.destination = destination;
         handoffOptions.headers = { ...headers };
-        handoffOptions.cacheIdentity = createHash('sha256').update(codexRoot).update('\0').update(request.headers.authorization).digest('hex');
+        if (route.commonModel && autoProviderFallback) {
+          // Provider selection may change between chunks/retries. Keep the
+          // logical job identity stable; the summary sender builds real auth.
+          handoffOptions.destination = bridge.href.replace(/\/$/, '');
+          handoffOptions.headers = { 'content-type': 'application/json', accept: 'text/event-stream, application/json' };
+        }
+        handoffOptions.cacheIdentity = createHash('sha256').update(JSON.stringify([codexRoot, request.headers.authorization,
+          request.headers['chatgpt-account-id'],
+          ...(route.commonModel ? [bridgeKey(), manualKey('commandcode')] : [])])).digest('hex');
       }
       if (remoteCompaction) {
         const reserved = Math.max(16384, Number.isSafeInteger(body.max_output_tokens) ? body.max_output_tokens : 0);
@@ -813,6 +867,26 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             compactionExpanded = true;
           }
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
+      }
+      // A successful auxiliary summary may have exhausted the initially
+      // selected provider. Continue on its healthy same-model fallback instead
+      // of immediately hitting that blocked provider again for the answer.
+      if (metric.auto_fallback && route.commonModel && metric.summary_provider && !getFallbackState().available(route.provider)) {
+        const index = fallbackRoutes.findIndex(candidate => candidate.provider === metric.summary_provider
+          && getFallbackState().available(candidate.provider));
+        if (index >= 0) {
+          const candidate = fallbackRoutes[index];
+          const isGo = candidate.provider === 'opencode';
+          const key = isGo ? bridgeKey() : manualKey(candidate.provider);
+          if (key) {
+            route = fallbackRoutes.splice(index, 1)[0];
+            manual = CHAT_PROVIDERS[route.provider];
+            destination = isGo ? bridge.href.replace(/\/$/, '') : manual.base;
+            headers = { 'content-type': 'application/json', accept: 'text/event-stream, application/json',
+              ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: 'Bearer ' + key }) };
+            metric.provider = route.provider;
+          }
+        }
       }
       const suffix = nativeTool ? path.slice(3) : path.endsWith("/compact") ? "/responses/compact" : "/responses";
       let routed;
@@ -1165,7 +1239,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.failure_error_class = kinds.has(error?.constructor?.name) ? error.constructor.name : 'OtherError';
       }
       const timeout = terminationReason === "deadline_exceeded";
-      if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, error instanceof ToolSearchError ? 422 : error instanceof HandoffError && error.status === 422 ? 422 : timeout ? 504 : 502,
+      if (error instanceof HandoffError && error.status === 429 && !response.headersSent && error.retryAfterSeconds) {
+        response.setHeader('retry-after', String(error.retryAfterSeconds));
+      }
+      if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, error instanceof ToolSearchError ? 422 : error instanceof HandoffError && [422, 429].includes(error.status) ? error.status : timeout ? 504 : 502,
         error instanceof ToolSearchError ? "unsupported_tool_search" : error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,
         error instanceof ToolSearchError ? error.message : error instanceof HandoffError ? error.message : timeout ? "応答の待機がタイムアウトしました" : "転送先への接続が中断されました");
     } finally {

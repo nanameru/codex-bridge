@@ -19,6 +19,7 @@ function summaryFailure(code, status, stage, attempts) {
   const http = status === undefined ? "上流HTTP応答なし" : `HTTP ${status}`;
   const error = new HandoffError(`引き継ぎ要約に失敗しました（${safeCode}、${http}、試行${attempts}回）。履歴は保持しています。`);
   Object.assign(error, { upstreamCode: safeCode, upstreamStatus: status, failureStage: stage, attempts,
+    ...(status === 429 ? { status: 429 } : {}),
     retryable: safeCode === "server_error" || safeCode === "rate_limit_exceeded" || ["empty_summary", "summary_stream_truncated", "summary_max_output_tokens", "summary_connect_timeout"].includes(safeCode) || (stage === "http" && [408,500,502,503,504].includes(status)) });
   return error;
 }
@@ -242,10 +243,10 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
           try {
             if (++requestCount > maxSummaryRequests) throw new HandoffError("分割要約の要求数上限に達しました。履歴は保持しています");
             const body = summaryBody(items, outputLimit);
-            report({ summary_output_limit: outputLimit, summary_requests: requestCount, summary_input_tokens: measureTokens(body) });
+            report({ summary_model: model, summary_output_limit: outputLimit, summary_requests: requestCount, summary_input_tokens: measureTokens(body) });
             const response = await fetcher(destination.replace(/\/$/, "") + "/responses", {
               method: "POST", headers, signal, redirect: "manual", body: JSON.stringify(body),
-            });
+            }, { diagnose: report, threadId });
             upstreamStatus = response.status;
             if (!response.ok || !response.body) {
               const detail = response.body ? await readUpstreamFailure(response) : {};

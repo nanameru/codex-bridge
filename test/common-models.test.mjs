@@ -30,12 +30,12 @@ test('共通集合は名前空間と大小文字だけ正規化し、専用モ�
 });
 
 async function fixture(t, handler, extra = {}) {
-  let now = Date.now(); const calls = [], sync = [];
+  let now = Date.now(); const calls = [], sync = [], metrics = [];
   const state = new ProviderFallbackState({now:()=>now});
   const server = createRouter({catalog, commonModelsEnabled:true, manualProvidersEnabled:true,
     cliModelSyncEnabled:true, cliModelSync:{prepare(){sync.push('prepare');},sync(){sync.push('sync');}},
     historyMode:'openai', authenticate:()=>true, bridgeKey:()=> 'bridge-key', manualKey:p=>p+'-key',
-    providerFallbackState:state, fetcher:async(url,init)=>{
+    providerFallbackState:state, onMetric: metric => metrics.push(metric), fetcher:async(url,init)=>{
       const provider = url.includes('commandcode.ai') ? 'commandcode' : url.includes('127.0.0.1:8788') ? 'opencode' : 'other';
       const call = {provider,url,headers:init.headers,body:JSON.parse(init.body)}; calls.push(call);
       return handler(call);
@@ -44,7 +44,7 @@ async function fixture(t, handler, extra = {}) {
   t.after(()=>{server.closeAllConnections();return new Promise(r=>server.close(r));});
   const base = `http://127.0.0.1:${server.address().port}`;
   const send=(model='shared/glm-5.3',body={})=> fetch(base+'/v1/responses', {method:'POST',headers:{authorization:'Bearer native-secret','chatgpt-account-id':'native-account','content-type':'application/json'},body:JSON.stringify({model,input:[{role:'user',content:'keep-history'}],...body})});
-  return {send,calls,state,sync,base,advance:ms=>{now+=ms;}};
+  return {send,calls,state,sync,metrics,base,advance:ms=>{now+=ms;}};
 }
 const quota = () => Response.json({error:{code:'usage_exceeded',window:'short'}},{status:429,headers:{'retry-after':'60'}});
 const ok = ({provider}) => provider==='commandcode'
@@ -151,4 +151,79 @@ test('ユーザー画像とview_imageの画像結果を同一DeepSeekの自動�
     assert.equal(images.length,1);assert.equal(images[0].image_url.url,url);
     assert.equal(images[0].image_url.detail,'high');
   }
+});
+
+const summaryRequest = call => JSON.stringify(call.body).includes('Produce only a conversation handoff summary.');
+const summaryAnswer = call => call.provider === 'opencode' ? ok(call) : new Response(
+  'data: '+JSON.stringify({choices:[{index:0,delta:{role:'assistant',content:'PORTABLE SUMMARY'},finish_reason:null}]})+'\n\n'+
+  'data: '+JSON.stringify({choices:[{index:0,delta:{},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n',
+  {headers:{'content-type':'text/event-stream'}});
+const restoreSummary = body => ({body:{...body,input:[{role:'user',content:'ORIGINAL FACT'},...body.input.slice(-1)]},prefixEnd:1});
+const compactedInput = [{type:'compaction',encrypted_content:'PRIVATE OPAQUE'}, {role:'user',content:'LATEST REQUEST'}];
+
+for (const limit of ['quota','transient']) test(`共通DeepSeekの要約中${limit}429を同一モデルで切り替え履歴を継続する`,async t=>{
+  const f=await fixture(t,c=>c.provider==='opencode' ? (limit==='quota'?quota():Response.json(
+    {error:{code:'rate_limit_exceeded'}},{status:429,headers:{'retry-after':'30'}})) : summaryRequest(c)?summaryAnswer(c):ok(c),
+    {historyMode:'selected',restoreHistory:restoreSummary});
+  const r=await f.send('shared/deepseek-v4.1-flash',{input:compactedInput});
+  assert.equal(r.status,200);const text=await r.text();assert.match(text,/OK/);
+  const summaries=f.calls.filter(summaryRequest);
+  assert.deepEqual(summaries.map(c=>c.provider),['opencode','commandcode']);
+  assert.deepEqual(f.calls.map(c=>c.provider),['opencode','commandcode','commandcode']);
+  assert.equal(summaries[0].body.model,'deepseek-v4.1-flash');
+  assert.equal(summaries[1].body.model,'deepseek/deepseek-v4.1-flash');
+  assert.doesNotMatch(JSON.stringify(f.calls),/native-secret|native-account|PRIVATE OPAQUE/);
+  assert.doesNotMatch(JSON.stringify(summaries[1]),/bridge-key/);
+  assert.equal(summaries[1].headers.authorization,'Bearer commandcode-key');
+  assert.match(JSON.stringify(summaries[1].body.messages),/ORIGINAL FACT/);
+  assert.match(JSON.stringify(f.calls.at(-1).body),/LATEST REQUEST/);
+  assert.equal(f.metrics.at(-1).summary_provider,'commandcode');
+  assert.equal(f.metrics.at(-1).summary_model,'deepseek/deepseek-v4.1-flash');
+  assert.equal(f.state.available('opencode'),false);
+});
+
+for(const stream of [false,true]) test(`要約の全候補制限は429で有限停止しGPT案内を出さない stream=${stream}`,async t=>{
+  const f=await fixture(t,()=>quota(),{historyMode:'selected',restoreHistory:restoreSummary,handoffStatusDelayMs:0});
+  const r=await f.send('shared/deepseek-v4.1-flash',{input:compactedInput,stream});
+  const text=await r.text();
+  if(stream && r.status===200){assert.match(text,/rate_limit_exceeded/);assert.match(text,/HTTP 429/);}
+  else assert.equal(r.status,429);
+  assert.doesNotMatch(text,/directプロファイル|codex --profile direct|HTTP 502/);
+  assert.deepEqual(f.calls.map(c=>c.provider),['opencode','commandcode']);
+  assert.equal(f.metrics.at(-1).summary_error_code,'summary_provider_limits_exhausted');
+  const again=await f.send('shared/deepseek-v4.1-flash',{input:compactedInput});
+  assert.equal(again.status,429);await again.text();assert.equal(f.calls.length,2);
+});
+
+for(const kind of ['local','auth','filter']) test(`要約の${kind}拒否は他社に再送しない`,async t=>{
+  const f=await fixture(t,()=>Response.json({error:{code:kind==='filter'?'content_filter':'invalid_request_error',
+    message:kind==='local'?'codex-bridge: thread guard':'PRIVATE ERROR'}},{status:kind==='local'?429:kind==='auth'?401:400}),
+    {historyMode:'selected',restoreHistory:restoreSummary});
+  const r=await f.send('shared/deepseek-v4.1-flash',{input:compactedInput});await r.text();
+  assert.equal(f.calls.length,1);assert.equal(f.calls[0].provider,'opencode');
+  assert.equal(f.state.available('opencode'),true);
+});
+
+test('途中chunkの成功を提供元切替後の再送でも再利用する',async t=>{
+  let recovering=false, first=true;
+  const f=await fixture(t,c=>{
+    if(summaryRequest(c) && first){first=false;return summaryAnswer(c);}
+    if(!recovering)return Response.json({error:{code:'rate_limit_exceeded'}},
+      {status:429,headers:{'retry-after':c.provider==='opencode'?'120':'1'}});
+    return summaryRequest(c)?summaryAnswer(c):ok(c);
+  },{historyMode:'selected',summaryInputLimitTokens:24000,restoreHistory:body=>({body:{...body,
+    input:[{role:'user',content:'FACT '.repeat(40000)},...body.input.slice(-1)]},prefixEnd:1})});
+  const before=structuredClone(compactedInput);
+  const session = {input:compactedInput,prompt_cache_key:'01a1777d-4508-72a1-9dbe-dcd799f721ab'};
+  const fail=await f.send('shared/deepseek-v4.1-flash',session);
+  assert.equal(fail.status,429);await fail.text();
+  const initial=f.calls[0];assert.equal(f.calls.length,3);
+  recovering=true;f.advance(2000);
+  const start=f.calls.length;
+  const success=await f.send('shared/deepseek-v4.1-flash',session);
+  assert.equal(success.status,200);await success.text();
+  assert.ok(f.calls.slice(start).every(c=>c.provider==='commandcode'));
+  assert.equal(f.metrics.at(-1).summary_checkpoint_hits,1);
+  assert.ok(!JSON.stringify(f.calls.slice(start)).includes(initial.body.input[0].content));
+  assert.deepEqual(compactedInput,before);
 });

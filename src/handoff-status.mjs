@@ -89,8 +89,8 @@ export class HandoffStatus {
     if (!this.started || this.terminal || this.response.destroyed || this.response.writableEnded) return false;
     this.finish("\n処理に失敗しました。元の会話履歴を保持して停止しました。");
     this.terminal = true;
-    const errorCode = code === "compaction_handoff_failed" || [400, 413, 422].includes(status)
-      ? "invalid_prompt" : status === 429 ? "rate_limit_exceeded" : "server_error";
+    const errorCode = status === 429 ? "rate_limit_exceeded"
+      : code === "compaction_handoff_failed" || [400, 413, 422].includes(status) ? "invalid_prompt" : "server_error";
     this.emit({ type: "response.failed", response: { ...this.envelope("failed", [this.item()]),
       error: { code: errorCode, message: `${code} (HTTP ${status}): ${message}` } } });
     this.response.end();
