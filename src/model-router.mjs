@@ -822,6 +822,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             if (cached) {
               body = { ...body, input: [...cached, ...sourceSuffix] };
               metric.history_source = 'portable_prefix_cache';
+              metric.summary_cache = 'hit';
             } else {
               const restored = await restoreHistory(body, { root: codexRoot, threadId: handoffOptions.threadId, signal: abort.signal });
               if (Buffer.byteLength(JSON.stringify(restored.body)) > 8 * 1024 * 1024) {
@@ -831,9 +832,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
                 if (routes.get(summaryModel)?.provider !== 'openai' || !summaryHeaders.authorization) {
                   throw new HandoffError('大きな既存履歴の引き継ぎにはOpenAI形式のcheckpoint読み取りが必要です。認証と要約モデルを確認してください。元ログは保持しています。');
                 }
-                body = await expandCompaction(body, nativeHandoffOptions);
+                body = await expandCompaction(body, { ...nativeHandoffOptions,
+                  observe: ({ cache }) => {
+                    metric.summary_cache = cache;
+                    handoffStatus.observe(cache, 'handoff');
+                    if (cache !== 'hit') providerNotices.push(HISTORY_MODES.openai.notice);
+                  } });
                 metric.history_source = 'native_checkpoint';
-                providerNotices.push(HISTORY_MODES.openai.notice);
               } else {
                 body = restored.body;
                 restoredPlan = { prefixEnd: restored.prefixEnd };
@@ -857,14 +862,16 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
                 handoffStatus.observe(cache, extend ? "budget" : "handoff");
                 if (cache !== 'hit') providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
               } });
-            if (selected && restoredCacheKey && !abort.signal.aborted) {
-              const prefix = body.input.slice(0, body.input.length - sourceSuffix.length);
-              if (Buffer.byteLength(JSON.stringify(prefix)) <= 65536) {
-                if (restoredSummaries.size >= 32) restoredSummaries.delete(restoredSummaries.keys().next().value);
-                restoredSummaries.set(restoredCacheKey, prefix);
-              }
-            }
             compactionExpanded = true;
+          }
+          // Both owner-rollout summaries and decoded native checkpoints are
+          // portable prefixes. Reuse them before re-reading a multi-day log.
+          if (selected && restoredCacheKey && !abort.signal.aborted) {
+            const prefix = body.input.slice(0, body.input.length - sourceSuffix.length);
+            if (Buffer.byteLength(JSON.stringify(prefix)) <= 65536) {
+              if (restoredSummaries.size >= 32) restoredSummaries.delete(restoredSummaries.keys().next().value);
+              restoredSummaries.set(restoredCacheKey, prefix);
+            }
           }
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
       }

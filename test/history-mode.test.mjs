@@ -392,6 +392,34 @@ test('large restored histories use only the native checkpoint then continue on O
   assert.equal(f.metrics.at(-1).history_source, 'native_checkpoint');
 });
 
+test('large checkpoint continuation reuses the portable prefix without repeating the notice or reading the rollout', async t => {
+  let restores = 0;
+  const f = await fixture(t, { restoreHistory: async body => {
+    restores++;
+    return { body: { ...body, input: [{ role: 'user', content: 'x'.repeat(9 * 1024 * 1024) },
+      ...body.input.slice(-1)] }, prefixEnd: 1 };
+  } });
+  const first = await f.send();
+  assert.equal(first.status, 200);
+  assert.match(await first.text(), /暗号化履歴の読み取り/);
+  const continued = { ...request, input: [...request.input,
+    { role: 'user', content: 'NEW REQUEST MUST SURVIVE' }] };
+  const second = await f.send(continued);
+  assert.equal(second.status, 200);
+  assert.doesNotMatch(await second.text(), /暗号化履歴の読み取り|msg_bridge_handoff_provider_/);
+  assert.equal(restores, 1);
+  assert.equal(f.calls.filter(c => c.body.model === 'gpt-test').length, 1);
+  assert.equal(f.metrics.at(-1).history_source, 'portable_prefix_cache');
+  assert.match(JSON.stringify(f.calls.at(-1).body), /NEW REQUEST MUST SURVIVE/);
+  const changed = await f.send({ ...continued, input: continued.input.map(i => i === opaque
+    ? { ...opaque, encrypted_content: 'changed-checkpoint' } : i) });
+  assert.equal(changed.status, 200); await changed.text();
+  assert.equal(restores, 2);
+  const otherOwner = await f.send(continued, 'different-owner');
+  assert.equal(otherOwner.status, 200); await otherOwner.text();
+  assert.equal(restores, 3);
+});
+
 test('legacy compact endpoint uses the native model without changing selected mode', async t => {
   const f = await fixture(t, { historyMode: 'selected' });
   const response = await f.send({ model: request.model, input: [{ role: 'user', content: 'remember' }] },
