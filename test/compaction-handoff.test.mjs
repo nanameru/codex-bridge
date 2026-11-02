@@ -94,11 +94,72 @@ test("repairs legacy custom tool IDs in native handoff summaries without editing
   const expand = compactionHandoff({ model: "gpt-test", maxBytes: 10000,
     fetcher: async (_url, init) => {
       const sent = JSON.parse(init.body).input;
-      assert.deepEqual(sent.slice(0, 2), [{ ...legacy, id: "ctc_legacy" }, output]);
+      assert.deepEqual(sent.slice(0, 2).map(item => JSON.parse(item.content.split("\n").slice(1).join("\n"))),
+        [{ ...legacy, id: "ctc_legacy" }, output]);
       return completed();
     } });
   await expand({ input }, options());
   assert.equal(legacy.id, "fc_legacy");
+});
+
+test("single-request handoff treats tool history as data and preserves opaque checkpoints and images", async () => {
+  const history = [
+    { role: "user", content: "original request" },
+    { type: "tool_search_call", execution: "client", call_id: "search", arguments: "{}" },
+    { type: "tool_search_output", execution: "client", call_id: "search", status: "completed", tools: [] },
+    { type: "function_call", call_id: "read", name: "read_file", arguments: "{}" },
+    { type: "function_call_output", call_id: "read", output: "important result" },
+    { type: "function_call_output", call_id: "image", output: [{ type: "input_image", image_url: "data:image/png;base64,test" }] },
+    { type: "compaction", encrypted_content: "opaque" },
+    { role: "user", content: "latest request" },
+  ];
+  const original = structuredClone(history);
+  let calls = 0;
+  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 100000, fetcher: async (_url, init) => {
+    calls++;
+    const sent = JSON.parse(init.body);
+    assert.deepEqual(sent.tools, []);
+    assert.equal(sent.input.some(item => /^(function|custom_tool|tool_search)_/.test(item.type ?? "")), false);
+    const data = sent.input.slice(0, 5).map(item => JSON.parse(item.content.split("\n").slice(1).join("\n")));
+    assert.deepEqual(data, history.slice(0, 5));
+    assert.deepEqual(sent.input[5].content[1], history[5].output[0]);
+    assert.deepEqual(sent.input[6], history[6]);
+    return completed();
+  } });
+  const result = await expand({ input: history }, options());
+  assert.equal(calls, 1);
+  assert.deepEqual(history, original);
+  assert.deepEqual(result.input.at(-1), history.at(-1));
+});
+
+test("type-only summary failures are classified privately and retry only transient errors", async () => {
+  for (const transport of ["error", "response.failed", "json", "http"]) {
+    for (const type of ["server_error", "invalid_request_error", "PRIVATE_SENTINEL"]) {
+      let calls = 0;
+      const diagnostics = [];
+      const expand = compactionHandoff({ model: "gpt-test", maxBytes: 100000, retryDelayMs: 0,
+        fetcher: async () => {
+          if (++calls === 2) return completed();
+          const error = { code: null, type, message: "PRIVATE_SENTINEL" };
+          if (transport === "http") return Response.json({ error }, { status: 400 });
+          const response = { status: "failed", error, output: [] };
+          if (transport === "json") return Response.json(response);
+          const event = transport === "error" ? { type: transport, error } : { type: transport, response };
+          return new Response("data: " + JSON.stringify(event) + "\n\n", { headers: { "content-type": "text/event-stream" } });
+        } });
+      const run = expand(body, { ...options(), diagnose: data => diagnostics.push(data) });
+      if (type === "server_error") { await run; assert.equal(calls, 2); }
+      else {
+        await assert.rejects(run, error => {
+          assert.equal(error.upstreamCode, type === "PRIVATE_SENTINEL" ? "unknown_error" : type);
+          assert.doesNotMatch(error.message, /PRIVATE_SENTINEL/);
+          return true;
+        });
+        assert.equal(calls, 1);
+      }
+      assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_SENTINEL/);
+    }
+  }
 });
 
 test("releases a completed SSE handoff without waiting for the connection to close", { timeout: 2000 }, async () => {
