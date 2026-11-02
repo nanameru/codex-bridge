@@ -1,5 +1,17 @@
 # 履歴引き継ぎ502の診断と一時復帰（Issue #55）
 
+## 現行Codexの会話IDと422の診断（Issue #177）
+
+現行Codexでは`thread-id`が物理会話IDで、`session-id`や`prompt_cache_key`が同じ値とは限らない。`client_metadata["x-codex-turn-metadata"]`のJSON内の`session_id`にも実セッションのIDが入る。旧Bridgeは旧形式の`session_id`しか読まず、cache識別子を使って存在しないログを探し、履歴がある要求でも422にしていた。
+
+公式テスト: [Responses headers](https://github.com/openai/codex/blob/main/codex-rs/codex-api/tests/clients.rs)、[cache affinityと分岐会話](https://github.com/openai/codex/blob/main/codex-rs/core/tests/suite/prompt_cache_key.rs)。依存ライブラリの追加は不要で、既存のID解決とcheckpoint完全一致検証を使う。
+
+解決順序は`thread-id` → 本文の`thread_id` → turn metadataの`session_id` → 旧`session_id`ヘッダー → `session-id`ヘッダー → 本文の`session_id` → `prompt_cache_key`。UUIDのみを受け付け、turn metadataは8KiB以内で構文を検証する。選ばれたIDのログが一致しない場合、他のチャットやcache IDへ自動で探索を広げない。
+
+`router_request.history_identity_source`にはID解決元の固定分類だけ、`history_restore_reason`には`invalid_thread_id`、`invalid_checkpoint`、`log_not_found`、`ambiguous_log`、`unsafe_log`、`checkpoint_not_found`、`rollback_detected`、`metadata_mismatch`、`invalid_log`だけを記録する。ID値、パス、本文、暗号化履歴、認証情報、パーサーの例外文は記録しない。旧ログの`OtherError`のみでは既存障害の個別原因は確定できない。
+
+検証: 現行形式のIDと異なるcache keyを送る2回帰テストは修正前に失敗、修正後に成功。Python 3.11をPATH先頭にした`python3 scripts/run_test_inventory.py`はNode423件・Python186件、全609件成功。実APIへの追加送信、稼働サービスの再起動、既存会話の変更は行っていない。
+
 ## 確認した問題
 
 該当するユーザーチャットのtask_completeに `compaction_handoff_failed (HTTP 502)` と同じエラーが残っていた。中継は上流のresponse.failed/errorをすべて同じ文へ変換していたため、元の失敗コードを後から確認できない。初回実障害が一時的なserver_errorだったとは確定していない。

@@ -48,6 +48,16 @@ test('UUID以外のcache keyをthread操作へ使わない',()=>{
   assert.equal(cliThreadId({}, {session_id:id}),id);
 });
 
+test('物理thread IDをcache affinityより優先し、不正なturn metadataを安全に無視する',()=>{
+  const affinity='019a12ab-1234-7654-a123-123456789013';
+  const metadata=value=>({prompt_cache_key:affinity,client_metadata:{'x-codex-turn-metadata':value}});
+  assert.equal(cliThreadId({prompt_cache_key:affinity},{'thread-id':id,'session-id':affinity}),id);
+  assert.equal(cliThreadId(metadata(JSON.stringify({session_id:id.toUpperCase()}))),id);
+  assert.equal(cliThreadId(metadata('{private malformed text'),{'thread-id':id}),id);
+  for(const value of ['null','[]','"text"','{',JSON.stringify({session_id:'x'.repeat(9000)})])
+    assert.equal(cliThreadId(metadata(value),{'session-id':id}),id);
+});
+
 test('自動用2項目は提供元を明示し手動用の固定IDと区別できる',async()=>{
   const {withManualModels}=await import('../src/manual-providers.mjs');
   const {catalogRoutes}=await import('../src/model-router.mjs');

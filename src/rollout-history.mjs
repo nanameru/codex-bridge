@@ -30,10 +30,19 @@ async function* snapshotLines(fd, size, signal) {
   // Incomplete final JSON/UTF-8 belongs to the active writer; never consume it.
 }
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const failure = () => Object.assign(new HandoffError('元の会話ログから安全に復元できません。ログの欠落・分岐・巻き戻し・サイズ・権限を確認してください。暗号化履歴は保持しています。OpenAIは使用していません。残存情報と手動メモを新規会話へ渡すには python3 scripts/rescue_handoff.py --thread <会話ID> --memo <メモファイル> を利用してください。'), { status: 422 });
+const RESTORE_REASONS = new Set(['invalid_log', 'invalid_thread_id', 'invalid_checkpoint', 'log_not_found',
+  'ambiguous_log', 'unsafe_log', 'checkpoint_not_found', 'rollback_detected', 'metadata_mismatch']);
+export class RolloutHistoryError extends HandoffError {
+  constructor(reason) {
+    super('元の会話ログから安全に復元できません。ログの欠落・分岐・巻き戻し・サイズ・権限を確認してください。暗号化履歴は保持しています。OpenAIは使用していません。残存情報と手動メモを新規会話へ渡すには python3 scripts/rescue_handoff.py --thread <会話ID> --memo <メモファイル> を利用してください。');
+    this.status = 422;
+    this.reason = RESTORE_REASONS.has(reason) ? reason : 'invalid_log';
+  }
+}
+const failure = reason => new RolloutHistoryError(reason);
 async function directory(path) {
   const info = await lstat(path);
-  if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) throw failure();
+  if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) throw failure('unsafe_log');
 }
 
 export async function restoreRolloutHistory(body, { root, threadId, signal }) {
@@ -44,10 +53,11 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
   try {
     if (ancestors.has(threadId) || ancestors.size >= 8) throw failure();
     ancestors = new Set([...ancestors, threadId]);
-    if (!UUID.test(threadId ?? '') || !Array.isArray(body.input)) throw failure();
+    if (!UUID.test(threadId ?? '')) throw failure('invalid_thread_id');
+    if (!Array.isArray(body.input)) throw failure('invalid_checkpoint');
     const end = body.input.findLastIndex(item => item.type === 'compaction');
     const opaque = body.input[end]?.encrypted_content;
-    if (typeof opaque !== 'string' || !opaque) throw failure();
+    if (typeof opaque !== 'string' || !opaque) throw failure('invalid_checkpoint');
     signal?.throwIfAborted();
     await directory(root);
     const candidates = [];
@@ -65,11 +75,11 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
     }
     // Archived logs are deliberately not scanned: active source must be unambiguous.
     await find(join(root, 'sessions'), 3);
-    if (candidates.length !== 1) throw failure();
+    if (candidates.length !== 1) throw failure(candidates.length ? 'ambiguous_log' : 'log_not_found');
     const fd = await open(candidates[0], constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const info = await fd.stat();
-      if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o022) || info.nlink !== 1 || info.size > LIMIT) throw failure();
+      if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o022) || info.nlink !== 1 || info.size > LIMIT) throw failure('unsafe_log');
       const restored = [];
       let meta = false, parentId, inheritedMeta = false, found = false, firstCompaction = true, hasUser = false, contentBytes = 0;
       let lineNumber = 0;
@@ -81,7 +91,7 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
         const event = JSON.parse(line), item = event.payload;
         if (event.type === 'session_meta') {
           if (!meta) {
-            if (item?.id !== threadId) throw failure();
+            if (item?.id !== threadId) throw failure('metadata_mismatch');
             parentId = item.forked_from_id;
             if (parentId != null && (!UUID.test(parentId) || parentId === threadId)) throw failure();
             meta = true;
@@ -92,7 +102,7 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
           }
         }
         if (!meta) throw failure();
-        if (/rollback|rolled_back/i.test(event.type) || event.type === 'event_msg' && /rollback|rolled_back/i.test(item?.type ?? '')) throw failure();
+        if (/rollback|rolled_back/i.test(event.type) || event.type === 'event_msg' && /rollback|rolled_back/i.test(item?.type ?? '')) throw failure('rollback_detected');
         if (found) continue;
         if (event.type === 'compacted') {
           if (firstCompaction && !hasUser && !parentId) throw failure();
@@ -116,7 +126,7 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
         if (contentBytes > CONTENT_LIMIT) throw failure();
         restored.push(item);
       }
-      if (!found) throw failure();
+      if (!found) throw failure('checkpoint_not_found');
       if (parentId) {
         // Never use replacement_history as a substitute for missing originals.
         // The parent must independently prove the exact requested checkpoint.
@@ -135,6 +145,6 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
     } finally { await fd.close(); }
   } catch (error) {
     if (signal?.aborted) throw error;
-    throw failure(); // Do not disclose transcript content, paths, or parser details.
+    throw error instanceof RolloutHistoryError ? error : failure(); // Never disclose parser details or content.
   }
 }
