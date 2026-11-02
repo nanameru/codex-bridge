@@ -37,7 +37,13 @@ async function directory(path) {
 }
 
 export async function restoreRolloutHistory(body, { root, threadId, signal }) {
+  return restoreHistory(body, { root, threadId, signal }, new Set());
+}
+
+async function restoreHistory(body, { root, threadId, signal }, ancestors) {
   try {
+    if (ancestors.has(threadId) || ancestors.size >= 8) throw failure();
+    ancestors = new Set([...ancestors, threadId]);
     if (!UUID.test(threadId ?? '') || !Array.isArray(body.input)) throw failure();
     const end = body.input.findLastIndex(item => item.type === 'compaction');
     const opaque = body.input[end]?.encrypted_content;
@@ -65,7 +71,7 @@ export async function restoreRolloutHistory(body, { root, threadId, signal }) {
       const info = await fd.stat();
       if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o022) || info.nlink !== 1 || info.size > LIMIT) throw failure();
       const restored = [];
-      let meta = false, found = false, firstCompaction = true, hasUser = false, contentBytes = 0;
+      let meta = false, parentId, inheritedMeta = false, found = false, firstCompaction = true, hasUser = false, contentBytes = 0;
       let lineNumber = 0;
       // Snapshot size is fixed at open; later appends never enter this request.
       for await (const line of snapshotLines(fd, info.size, signal)) {
@@ -74,14 +80,22 @@ export async function restoreRolloutHistory(body, { root, threadId, signal }) {
         if (!line.trim()) continue;
         const event = JSON.parse(line), item = event.payload;
         if (event.type === 'session_meta') {
-          if (meta || item?.id !== threadId || item.forked_from_id) throw failure();
-          meta = true;
+          if (!meta) {
+            if (item?.id !== threadId) throw failure();
+            parentId = item.forked_from_id;
+            if (parentId != null && (!UUID.test(parentId) || parentId === threadId)) throw failure();
+            meta = true;
+          } else {
+            // Native forks can prepend child metadata to the inherited parent log.
+            if (!parentId || inheritedMeta || lineNumber !== 2 || item?.id !== parentId) throw failure();
+            inheritedMeta = true;
+          }
         }
         if (!meta) throw failure();
         if (/rollback|rolled_back/i.test(event.type) || event.type === 'event_msg' && /rollback|rolled_back/i.test(item?.type ?? '')) throw failure();
         if (found) continue;
         if (event.type === 'compacted') {
-          if (firstCompaction && !hasUser) throw failure();
+          if (firstCompaction && !hasUser && !parentId) throw failure();
           firstCompaction = false;
           // Do not replay replacement_history: it repeats originals or carries opaque state.
           if (item?.replacement_history?.some(value => value.type === 'compaction' && value.encrypted_content === opaque)) {
@@ -90,7 +104,7 @@ export async function restoreRolloutHistory(body, { root, threadId, signal }) {
         }
         if (event.type !== 'response_item') continue;
         if (item?.type === 'compaction') {
-          if (!hasUser) throw failure();
+          if (!hasUser && !parentId) throw failure();
           if (item.encrypted_content === opaque) { found = true; continue; }
           continue;
         }
@@ -102,7 +116,13 @@ export async function restoreRolloutHistory(body, { root, threadId, signal }) {
         if (contentBytes > CONTENT_LIMIT) throw failure();
         restored.push(item);
       }
-      if (!found || !hasUser || !restored.length) throw failure();
+      if (!found) throw failure();
+      if (parentId) {
+        // Never use replacement_history as a substitute for missing originals.
+        // The parent must independently prove the exact requested checkpoint.
+        return await restoreHistory(body, { root, threadId: parentId, signal }, ancestors);
+      }
+      if (!hasUser || !restored.length) throw failure();
       // Current directives override old directives. Never change the on-disk rollout.
       const directives = body.input.slice(0, end + 1).filter(item => ['system', 'developer'].includes(item.role));
       const original = restored.filter(item => !['system', 'developer'].includes(item.role));
