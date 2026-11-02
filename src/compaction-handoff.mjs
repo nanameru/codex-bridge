@@ -11,11 +11,15 @@ const SAFE_FAILURE_CODES = new Set(["server_error", "rate_limit_exceeded", "inva
   "summary_incomplete", "summary_too_large", "summary_invalid_response", "summary_unexpected_item", "summary_connect_timeout"]);
 const TRANSIENT_CONNECTION_CODES = new Set(["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
   "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EHOSTDOWN", "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "EAI_AGAIN"]);
+// Some upstream errors carry only `type`, or a null/unknown `code`.
+// Select a fixed category without ever retaining the upstream message.
+const failureCode = error => [error?.code, error?.type].find(code => SAFE_FAILURE_CODES.has(code));
 function summaryFailure(code, status, stage, attempts) {
   const safeCode = SAFE_FAILURE_CODES.has(code) ? code : "unknown_error";
   const http = status === undefined ? "上流HTTP応答なし" : `HTTP ${status}`;
   const error = new HandoffError(`引き継ぎ要約に失敗しました（${safeCode}、${http}、試行${attempts}回）。履歴は保持しています。`);
   Object.assign(error, { upstreamCode: safeCode, upstreamStatus: status, failureStage: stage, attempts,
+    ...(status === 429 ? { status: 429 } : {}),
     retryable: safeCode === "server_error" || safeCode === "rate_limit_exceeded" || ["empty_summary", "summary_stream_truncated", "summary_max_output_tokens", "summary_connect_timeout"].includes(safeCode) || (stage === "http" && [408,500,502,503,504].includes(status)) });
   return error;
 }
@@ -239,14 +243,14 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
           try {
             if (++requestCount > maxSummaryRequests) throw new HandoffError("分割要約の要求数上限に達しました。履歴は保持しています");
             const body = summaryBody(items, outputLimit);
-            report({ summary_output_limit: outputLimit, summary_requests: requestCount, summary_input_tokens: measureTokens(body) });
+            report({ summary_model: model, summary_output_limit: outputLimit, summary_requests: requestCount, summary_input_tokens: measureTokens(body) });
             const response = await fetcher(destination.replace(/\/$/, "") + "/responses", {
               method: "POST", headers, signal, redirect: "manual", body: JSON.stringify(body),
-            });
+            }, { diagnose: report, threadId });
             upstreamStatus = response.status;
             if (!response.ok || !response.body) {
               const detail = response.body ? await readUpstreamFailure(response) : {};
-              throw summaryFailure(detail.code, response.status, "http", attempt);
+              throw summaryFailure(failureCode(detail), response.status, "http", attempt);
             }
             const chunks = [];
             let size = 0;
@@ -291,7 +295,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             let completed;
             if (terminalEvent) {
               responseKind = "sse";
-              if (["response.failed", "error"].includes(terminalEvent.type)) throw summaryFailure(terminalEvent.response?.error?.code ?? terminalEvent.error?.code ?? terminalEvent.code,
+              if (["response.failed", "error"].includes(terminalEvent.type)) throw summaryFailure(failureCode(terminalEvent.response?.error ?? terminalEvent.error ?? terminalEvent),
                 response.status, "event", attempt);
               completed = terminalEvent.response;
             } else if (response.headers.get("content-type")?.includes("text/event-stream") || /^(event:|data:|:)/.test(text.trimStart())) {
@@ -304,7 +308,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
                   .map((line) => line.slice(5).trimStart()).join("\n").trim();
                 if (!data || data === "[DONE]") continue;
                 const value = JSON.parse(data);
-                if (value.type === "response.failed" || value.type === "error") throw summaryFailure(value.response?.error?.code ?? value.error?.code ?? value.code,
+                if (value.type === "response.failed" || value.type === "error") throw summaryFailure(failureCode(value.response?.error ?? value.error ?? value),
                   response.status, "event", attempt);
                 if (["response.completed", "response.incomplete"].includes(value.type)) completed = value.response;
               }
@@ -315,7 +319,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             }
             report({ summary_response_status: ["completed", "incomplete", "failed"].includes(completed?.status) ? completed.status : "missing" });
             if (!completed) throw summaryFailure(terminalEvent ? "summary_invalid_response" : "summary_stream_truncated", response.status, responseKind, attempt);
-            if (completed.status === "failed") throw summaryFailure(completed.error?.code, response.status, "json", attempt);
+            if (completed.status === "failed") throw summaryFailure(failureCode(completed.error), response.status, "json", attempt);
             if (completed.status === "incomplete") {
               const reason = completed.incomplete_details?.reason;
               throw summaryFailure(reason === "max_output_tokens" ? "summary_max_output_tokens" : reason === "content_filter" ? "content_filter" : "summary_incomplete", response.status, responseKind, attempt);
@@ -393,17 +397,20 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
         };
         const generate = async signal => {
           let limit = Math.min(inputLimitTokens, inputBudgetTokens);
+          // Summary requests have no tools. Never replay historical calls as
+          // executable items, even when the complete history fits one request.
+          const fragments = transcriptFragments(input);
           let result;
           let queue;
-          if (fits(input, limit)) {
-            try { result = await generateStep(input, signal); }
+          if (fits(fragments, limit)) {
+            try { result = await generateStep(fragments, signal); }
             catch (error) {
               if (error.upstreamCode !== "context_length_exceeded") throw error;
-              limit = smallerLimit(input, limit);
+              limit = smallerLimit(fragments, limit);
             }
           }
           if (result === undefined) {
-            queue = transcriptFragments(input);
+            queue = fragments.slice();
             let carry = "";
             while (queue.length) {
               signal.throwIfAborted();

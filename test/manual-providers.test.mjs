@@ -219,3 +219,66 @@ test('Command Code 400 exposes only fixed diagnostics and does not imply invalid
   assert.equal(metrics.at(-1).upstream_error_code, 'invalid_tool_definition');
   assert.doesNotMatch(JSON.stringify(metrics), /PRIVATE|native-secret|commandcode-key/);
 });
+
+test('Command Codeの応答前ソケット中断は同じ送信内容で一度だけ復旧する', async t => {
+  const metrics=[], calls=[];
+  const f=await fixture(t,{onMetric:m=>metrics.push(m),fetcher:async(url,init)=>{
+    calls.push({url,headers:{...init.headers},body:init.body});
+    if(calls.length===1)throw new TypeError('PRIVATE transport details',{cause:Object.assign(new Error('PRIVATE'),{code:'UND_ERR_SOCKET'})});
+    return answer();
+  }});
+  const r=await f.send({model:'commandcode/deepseek-v4.1-flash',input:'keep this',tools:[{type:'function',name:'read',parameters:{type:'object'}}]});
+  assert.equal(r.status,200);await r.text();assert.equal(calls.length,2);assert.deepEqual(calls[0],calls[1]);
+  assert.equal(metrics.at(-1).manual_transport_retries,1);
+  assert.doesNotMatch(JSON.stringify(metrics),/PRIVATE|commandcode-key|native-secret/);
+});
+
+test('継続する通信中断は2試行で止まり、理由を固定コードとして残す',async t=>{
+  let count=0;const metrics=[];
+  const f=await fixture(t,{onMetric:m=>metrics.push(m),fetcher:async()=>{count++;throw Object.assign(new Error('PRIVATE'),{code:'ECONNRESET'});}});
+  const r=await f.send({model:'commandcode/deepseek-v4.1-flash',input:'hello'});
+  assert.equal(r.status,502);assert.doesNotMatch(await r.text(),/PRIVATE/);assert.equal(count,2);
+  assert.equal(metrics.at(-1).provider_failure_phase,'upstream_request');
+  assert.equal(metrics.at(-1).provider_failure_kind,'connection_failed');
+  assert.equal(metrics.at(-1).transport_error_code,'ECONNRESET');
+});
+
+test('Chat履歴の変換エラーを接続中断502として隠さず422で停止する',async t=>{
+  let count=0;const metrics=[];
+  const f=await fixture(t,{onMetric:m=>metrics.push(m),fetcher:async()=>{count++;return answer();}});
+  const r=await f.send({model:'commandcode/deepseek-v4.1-flash',input:[
+    {role:'user',content:'keep'},
+    {type:'function_call',call_id:'pending',name:'read',arguments:'{}'},
+    {type:'function_call_output',name:'handoff',output:'informational'},
+  ]});
+  assert.equal(r.status,422);assert.match(await r.text(),/invalid_tool_history/);assert.equal(count,0);
+  assert.equal(metrics.at(-1).provider_failure_phase,'chat_conversion');
+});
+
+test('非stream応答の形式不正は明示し、HTTP応答を受け取った後は再送しない',async t=>{
+  let count=0;const metrics=[];
+  const f=await fixture(t,{onMetric:m=>metrics.push(m),fetcher:async()=>{count++;return answer();}});
+  const r=await f.send({model:'commandcode/deepseek-v4.1-flash',input:'hello',stream:true});
+  assert.equal(r.status,502);assert.match(await r.text(),/upstream_response_format/);assert.equal(count,1);
+  assert.equal(metrics.at(-1).manual_upstream_status,200);
+  assert.equal(metrics.at(-1).provider_failure_kind,'unexpected_response_format');
+});
+
+test('認証拒否・利用制限・任意の例外は通信再試行の対象にしない',async t=>{
+  for(const failure of [401,429,'bad-json']){
+    let count=0;
+    const f=await fixture(t,{fetcher:async()=>{count++;if(failure==='bad-json')throw new SyntaxError('PRIVATE');return Response.json({error:{code:'denied'}},{status:failure});}});
+    const r=await f.send({model:'commandcode/deepseek-v4.1-flash',input:'hello'});await r.text();assert.equal(count,1);
+  }
+});
+
+test('HTTP200でもstreamの最終回答が失敗したら監視用の失敗記録を残す',async t=>{
+  const metrics=[];let count=0;
+  const f=await fixture(t,{onMetric:m=>metrics.push(m),fetcher:async()=>{
+    count++;return new Response('data: '+JSON.stringify({choices:[{index:0,delta:{},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});
+  }});
+  const r=await f.send({model:'commandcode/deepseek-v4.1-flash',input:'hello',stream:true});
+  assert.equal(r.status,200);assert.match(await r.text(),/response.failed/);assert.equal(count,1);
+  assert.equal(metrics.at(-1).outcome,'failed');
+  assert.equal(metrics.at(-1).provider_response_failure_reason,'empty_output');
+});

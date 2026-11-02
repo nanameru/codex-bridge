@@ -5,6 +5,118 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-173-SUMMARY-FALLBACK
+    title: "共通モデルの履歴要約にも同一モデルの提供元切替を適用する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "要約中の提供元429で同一モデルへ切替し、全候補制限は429で停止、成功済みchunkと履歴を保持して制限解除後に再開する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/compaction-handoff.mjs, src/handoff-status.mjs]
+    test_file: test/common-models.test.mjs
+    issues: [173]
+    notes: "認証分離、実要約先の計測、local guard・401・content_filterの切替禁止、HTTP/SSEを含む8テスト追加。全Node418件成功。実提供元の利用制限再現と実画面E2Eは未実施。"
+
+  - id: TC-171-SUMMARY
+    title: "要約履歴を実行データから分離しtypeのみの上流エラーを分類する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "直接要約でも検索と関数呼出を履歴データとして渡し、画像・暗号化履歴を保持し、HTTP200内のエラーは安全な分類と有界再試行を行う"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [171]
+    notes: "新規2テストは修正前で失敗、修正後で成功。全Node 410件成功。元上流の拒否理由と実画面E2Eは未確定・未検証。"
+
+  - id: TC-126
+    title: "Command Codeの応答前通信中断を一度だけ再試行し変換失敗を区別する"
+    feature: "提供元の接続回復"
+    scenario: "同じ認証・履歴・toolsで応答前だけ再試行し、変換不正と応答形式不正を区別し、途中のstreamは再送しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/manual-providers.mjs, src/chat-protocol.mjs, src/model-router.mjs]
+    test_file: test/manual-providers.test.mjs
+    issues: [167]
+
+  - id: TC-125
+    title: "共通DeepSeekの画像入力と自動切替を維持する"
+    feature: "共通モデル画像入力"
+    scenario: "DeepSeekだけを画像対応として公開し、ユーザー画像とツール画像がOpenCodeからCommand Codeへの切替でも欠落しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/common-models.mjs]
+    test_file: test/common-models.test.mjs
+    issues: [165]
+
+  - id: TC-124
+    title: "自動圧縮直後の末尾checkpointを復元する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "末尾compactionでも元ログから復元し、最新依頼とツール結果を保持して安全な古いprefixだけを要約する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/rollout-history.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [163]
+
+  - id: TC-169-FORK
+    title: "分岐チャットの親checkpoint一致を検証して履歴を復元する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "親の元ログが一致する場合だけ復元し、親欠落・不一致・巻き戻し・metadata不一致・循環・深さ超過を拒否する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/rollout-history.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [169]
+
+  - id: TC-123
+    title: "呼び出しIDなしの引き継ぎツール結果を参考データとして保持する"
+    feature: "Chat履歴互換性"
+    scenario: "call_idなしの結果を不正なrole:toolとして送らず、本文を維持し並列ツール結果の間にも挿入しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/tool-search.mjs]
+    test_file: test/chat-protocol.test.mjs
+    issues: [161]
+
+  - id: TC-122
+    title: "共通モデルを統合表示し同一モデルだけで自動切替する"
+    feature: "共通モデル自動ルーティング"
+    scenario: "提供元名と重複を除外し、OpenCodeの制限時に同じCommand Codeモデルへ切替、解除で復帰、別モデルと他社へは切替しない"
+    status: done
+    priority: high
+    type: regression
+    source: [src/common-models.mjs, src/live-catalog.mjs, src/model-router.mjs, src/manual-providers.mjs]
+    test_file: test/common-models.test.mjs
+    issues: [159]
+
+  - id: TC-121
+    title: "会話IDをキャッシュIDより優先して履歴を復元する"
+    feature: "履歴復元"
+    scenario: "UUID以外または別UUIDのprompt_cache_keyでも正しいsession_idの会話ログを復元する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [157]
+
+  - id: TC-120
+    title: "要約キャッシュ再利用時に要約案内を繰り返さない"
+    feature: "履歴要約通知"
+    scenario: "初回の実要約は通知し、portable prefixと文章要約cache hitでは通知せず、認証変更で再要約する場合は通知する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [155]
+
   - id: TC-118
     title: "既存の外部モデル会話でremote compactと巨大履歴を引き継ぐ"
     feature: "既存会話の圧縮互換性"

@@ -54,8 +54,8 @@ async function fixture(t, options = {}) {
     }, ...options });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  const send = (body = request, token = 'owner-native-token', path = '/v1/responses') => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
-    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const send = (body = request, token = 'owner-native-token', path = '/v1/responses', extraHeaders = {}) => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', ...extraHeaders }, body: JSON.stringify(body) });
   return { root, calls, metrics, send };
 }
 
@@ -151,7 +151,9 @@ test('default selected mode reconstructs opaque history and calls only the selec
   assert.equal(f.metrics[0].history_source, 'owner_rollout');
   assert.equal(readFileSync(path, 'utf8'), original);
   const next = { ...request, input: [...request.input, { role: 'assistant', content: 'ANSWER' }, { role: 'user', content: 'NEXT REQUEST' }] };
-  const second = await f.send(next); assert.equal(second.status, 200, await second.text());
+  const second = await f.send(next); const secondText = await second.text();
+  assert.equal(second.status, 200, secondText);
+  assert.doesNotMatch(secondText, /保存された会話ログを|msg_bridge_handoff_provider_/);
   assert.equal(f.calls.length, 3, 'successful portable prefix avoids repeated log reads and summaries');
   assert.equal(f.metrics[1].history_source, 'portable_prefix_cache');
   assert.match(JSON.stringify(f.calls.at(-1).body), /NEXT REQUEST/);
@@ -159,6 +161,96 @@ test('default selected mode reconstructs opaque history and calls only the selec
   assert.equal(f.calls.length, 5, 'owner authentication change cannot reuse another cache scope');
   const other = await f.send({ ...request, prompt_cache_key: '01a1777d-4508-72a1-9dbe-dcd799f721aa' });
   assert.equal(other.status, 422); await other.text(); assert.equal(f.calls.length, 5);
+});
+
+test('native fork restores only an exact checkpoint independently present in its parent', async t => {
+  const root = home(t), parent = '01a1777d-4508-72a1-9dbe-dcd799f721ac';
+  const childPath = rollout(root);
+  const parentPath = childPath.replace(thread, parent);
+  writeFileSync(parentPath, readFileSync(childPath, 'utf8').replaceAll(thread, parent), { mode: 0o600 });
+  const childEvents = [
+    { type: 'session_meta', payload: { id: thread, forked_from_id: parent } },
+    { type: 'session_meta', payload: { id: parent } },
+    { type: 'compacted', payload: { replacement_history: [opaque] } },
+  ];
+  const save = events => writeFileSync(childPath, events.map(JSON.stringify).join('\n') + '\n');
+  save(childEvents);
+  const before = readFileSync(childPath, 'utf8');
+  const restored = await restoreRolloutHistory(request, { root, threadId: thread });
+  assert.equal(restored.body.input.at(-1).content, 'LATEST REQUEST');
+  assert.ok(restored.body.input.some(x => x.type === 'function_call_output'));
+  assert.equal(restored.body.input[0].content, 'KEEP CURRENT INSTRUCTIONS');
+  assert.equal(readFileSync(childPath, 'utf8'), before);
+  const f = await fixture(t, { codexRoot: root });
+  const response = await f.send();
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(f.metrics.at(-1).history_source, 'owner_rollout');
+  assert.match(JSON.stringify(f.calls.at(-1).body), /LATEST REQUEST/);
+  for (const events of [
+    [childEvents[0], { type: 'session_meta', payload: { id: thread } }, childEvents[2]],
+    [...childEvents, childEvents[1]],
+    [...childEvents, { type: 'event_msg', payload: { type: 'thread_rolled_back' } }],
+    [childEvents[0], childEvents[1], { type: 'compacted', payload: { replacement_history: [{ ...opaque, encrypted_content: 'other' }] } }],
+  ]) {
+    save(events);
+    await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  }
+  save(childEvents);
+  const parentOriginal = readFileSync(parentPath, 'utf8');
+  writeFileSync(parentPath, parentOriginal.replaceAll('opaque-history', 'different-parent-checkpoint'));
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  writeFileSync(parentPath, JSON.stringify({ type: 'session_meta', payload: { id: parent, forked_from_id: thread } }) + '\n' +
+    JSON.stringify(childEvents[2]) + '\n');
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  rmSync(parentPath);
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+});
+
+test('fork ancestry has a fixed depth bound even when every checkpoint matches', async t => {
+  const root = home(t), first = rollout(root);
+  const original = readFileSync(first, 'utf8');
+  const ids = [thread, ...Array.from({ length: 8 }, (_, i) => `01a1777d-4508-72a1-9dbe-${String(i).padStart(12, '0')}`)];
+  for (let i = 0; i < ids.length; i++) {
+    const file = first.replace(thread, ids[i]);
+    writeFileSync(file, i === ids.length - 1 ? original.replaceAll(thread, ids[i]) : [
+      { type: 'session_meta', payload: { id: ids[i], forked_from_id: ids[i + 1] } },
+      { type: 'compacted', payload: { replacement_history: [opaque] } },
+    ].map(JSON.stringify).join('\n') + '\n', { mode: 0o600 });
+  }
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  const withinLimit = await restoreRolloutHistory(request, { root, threadId: ids[1] });
+  assert.ok(withinLimit.body.input.some(x => x.type === 'function_call_output'));
+});
+
+test('owner session ID takes precedence over unrelated prompt cache identifiers', async t => {
+  for (const cacheKey of ['prefix-cache-not-a-thread', '01a1777d-4508-72a1-9dbe-dcd799f721aa']) {
+    const f = await fixture(t);
+    rollout(f.root);
+    const body = { ...request, prompt_cache_key: cacheKey };
+    const response = await f.send(body, 'owner-native-token', '/v1/responses', { session_id: thread });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(f.metrics[0].history_source, 'owner_rollout');
+    assert.ok(f.calls.every(call => call.url.includes('9997')));
+    assert.equal(f.calls.at(-1).body.prompt_cache_key, cacheKey);
+  }
+});
+
+test('OpenAI handoff cache hits stay quiet and changed authentication still notifies', async t => {
+  const f = await fixture(t, { historyMode: 'openai' });
+  const first = await f.send();
+  assert.equal(first.status, 200);
+  assert.match(await first.text(), /追加の利用量/);
+  const next = { ...request, input: [...request.input, { role: 'assistant', content: 'ANSWER' },
+    { role: 'user', content: 'NEXT REQUEST' }] };
+  const second = await f.send(next);
+  assert.equal(second.status, 200);
+  assert.doesNotMatch(await second.text(), /msg_bridge_handoff_provider_/);
+  assert.equal(f.metrics.at(-1).summary_cache, 'hit');
+  assert.equal(f.calls.length, 3);
+  const changed = await f.send(next, 'changed-owner-token');
+  assert.equal(changed.status, 200);
+  assert.match(await changed.text(), /追加の利用量/);
+  assert.equal(f.calls.length, 5);
 });
 
 test('DeepSeek and Kimi auxiliary summaries use only their selected Command Code or Ollama credentials', async t => {
@@ -319,4 +411,35 @@ test('native remote compaction SSE remains valid when upstream omits content-typ
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /text\/event-stream/);
   assert.match(await response.text(), /native-summary/);
+});
+
+test('末尾checkpointは単一依頼を捨てずに復元し、要約不能なら全履歴を保持する', async t => {
+  const root=home(t), path=rollout(root), before=readFileSync(path,'utf8');
+  const restored=await restoreRolloutHistory({...request,input:request.input.slice(0,-1)},{root,threadId:thread});
+  assert.equal(restored.prefixEnd,undefined);
+  assert.ok(restored.body.input.some(i=>i.content==='ORIGINAL REQUIREMENT'));
+  assert.ok(restored.body.input.some(i=>i.output==='ORIGINAL TOOL RESULT'));
+  assert.equal(restored.body.input.some(i=>i.type==='compaction'),false);
+  assert.equal(readFileSync(path,'utf8'),before);
+});
+
+test('末尾checkpointでは最新依頼とそのツール結果を要約suffixに保持する',async t=>{
+  const root=home(t);rollout(root,{before:[
+    {type:'response_item',payload:{type:'message',role:'user',content:'LATEST TASK'}},
+    {type:'response_item',payload:{type:'function_call',call_id:'recent',name:'read',arguments:'{}'}},
+    {type:'response_item',payload:{type:'function_call_output',call_id:'recent',output:'LATEST TOOL RESULT'}},
+  ]});
+  const r=await restoreRolloutHistory({...request,input:[opaque]},{root,threadId:thread});
+  assert.ok(r.prefixEnd>0&&r.prefixEnd<r.body.input.length);
+  assert.equal(r.body.input[r.prefixEnd].content,'LATEST TASK');
+  assert.equal(r.body.input.at(-1).output,'LATEST TOOL RESULT');
+});
+
+test('末尾checkpointの通常ルーター経由で422にせず同じモデルが応答する',async t=>{
+  const f=await fixture(t);rollout(f.root);
+  const response=await f.send({...request,input:request.input.slice(0,-1)});
+  assert.equal(response.status,200,await response.text());
+  assert.equal(f.calls.length,1);
+  assert.ok(f.calls[0].body.input.some(i=>i.content==='ORIGINAL REQUIREMENT'));
+  assert.ok(f.calls[0].body.input.some(i=>i.output==='ORIGINAL TOOL RESULT'));
 });

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from switch_config import atomic_write
+from use_common_models import select_common_models
 from local_security import ensure_bridge_key, verify_service, service_environment
 
 ROUTER_SERVICES = {
@@ -107,7 +108,7 @@ def install():
     if not (root / "unified-model-catalog.json").exists():
         raise SystemExit("先にunified_config.py prepareを実行してください")
     ensure_bridge_key(root)
-    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs", "live-catalog.mjs", "make-catalog.mjs", "sync-models.mjs", "catalog-safety.mjs", "manual-providers.mjs", "whatstoken-free.mjs", "provider-fallback.mjs", "cli-control.mjs", "cli-model-sync.mjs", "provider-help.mjs", "chat-protocol.mjs", "tool-search.mjs", "usage.mjs", "upstream-options.mjs", "request-guard.mjs", "history-mode.mjs", "rollout-history.mjs", "models.json"]}
+    modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs", "live-catalog.mjs", "make-catalog.mjs", "sync-models.mjs", "catalog-safety.mjs", "manual-providers.mjs", "common-models.mjs", "whatstoken-free.mjs", "provider-fallback.mjs", "cli-control.mjs", "cli-model-sync.mjs", "provider-help.mjs", "chat-protocol.mjs", "tool-search.mjs", "usage.mjs", "upstream-options.mjs", "request-guard.mjs", "history-mode.mjs", "rollout-history.mjs", "models.json"]}
     revision = hashlib.sha256(b"".join(modules.values())).hexdigest()
     runtime = root / "router-runtime" / revision
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -154,6 +155,8 @@ def install():
     if active and previous is None:
         raise SystemExit("登録済みサービスの元定義がありません。上書き・停止しません")
     replace_registration(path, payload, service, previous, active, lambda: wait_for_health(port, revision))
+    selected = select_common_models(root)
+    print(f"共通カタログと既定モデル {selected} を設定しました。")
     print(f"{label} (port {port}) のrevisionと認証拒否を確認しました。Codex・OpenCodeブリッジは再起動していません。")
 
 
