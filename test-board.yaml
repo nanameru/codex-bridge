@@ -38,6 +38,17 @@ cases:
     test_file: test/history-mode.test.mjs
     issues: [163]
 
+  - id: TC-169-FORK
+    title: "分岐チャットの親checkpoint一致を検証して履歴を復元する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "親の元ログが一致する場合だけ復元し、親欠落・不一致・巻き戻し・metadata不一致・循環・深さ超過を拒否する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/rollout-history.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [169]
+
   - id: TC-123
     title: "呼び出しIDなしの引き継ぎツール結果を参考データとして保持する"
     feature: "Chat履歴互換性"

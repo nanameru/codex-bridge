@@ -163,6 +163,65 @@ test('default selected mode reconstructs opaque history and calls only the selec
   assert.equal(other.status, 422); await other.text(); assert.equal(f.calls.length, 5);
 });
 
+test('native fork restores only an exact checkpoint independently present in its parent', async t => {
+  const root = home(t), parent = '01a1777d-4508-72a1-9dbe-dcd799f721ac';
+  const childPath = rollout(root);
+  const parentPath = childPath.replace(thread, parent);
+  writeFileSync(parentPath, readFileSync(childPath, 'utf8').replaceAll(thread, parent), { mode: 0o600 });
+  const childEvents = [
+    { type: 'session_meta', payload: { id: thread, forked_from_id: parent } },
+    { type: 'session_meta', payload: { id: parent } },
+    { type: 'compacted', payload: { replacement_history: [opaque] } },
+  ];
+  const save = events => writeFileSync(childPath, events.map(JSON.stringify).join('\n') + '\n');
+  save(childEvents);
+  const before = readFileSync(childPath, 'utf8');
+  const restored = await restoreRolloutHistory(request, { root, threadId: thread });
+  assert.equal(restored.body.input.at(-1).content, 'LATEST REQUEST');
+  assert.ok(restored.body.input.some(x => x.type === 'function_call_output'));
+  assert.equal(restored.body.input[0].content, 'KEEP CURRENT INSTRUCTIONS');
+  assert.equal(readFileSync(childPath, 'utf8'), before);
+  const f = await fixture(t, { codexRoot: root });
+  const response = await f.send();
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(f.metrics.at(-1).history_source, 'owner_rollout');
+  assert.match(JSON.stringify(f.calls.at(-1).body), /LATEST REQUEST/);
+  for (const events of [
+    [childEvents[0], { type: 'session_meta', payload: { id: thread } }, childEvents[2]],
+    [...childEvents, childEvents[1]],
+    [...childEvents, { type: 'event_msg', payload: { type: 'thread_rolled_back' } }],
+    [childEvents[0], childEvents[1], { type: 'compacted', payload: { replacement_history: [{ ...opaque, encrypted_content: 'other' }] } }],
+  ]) {
+    save(events);
+    await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  }
+  save(childEvents);
+  const parentOriginal = readFileSync(parentPath, 'utf8');
+  writeFileSync(parentPath, parentOriginal.replaceAll('opaque-history', 'different-parent-checkpoint'));
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  writeFileSync(parentPath, JSON.stringify({ type: 'session_meta', payload: { id: parent, forked_from_id: thread } }) + '\n' +
+    JSON.stringify(childEvents[2]) + '\n');
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  rmSync(parentPath);
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+});
+
+test('fork ancestry has a fixed depth bound even when every checkpoint matches', async t => {
+  const root = home(t), first = rollout(root);
+  const original = readFileSync(first, 'utf8');
+  const ids = [thread, ...Array.from({ length: 8 }, (_, i) => `01a1777d-4508-72a1-9dbe-${String(i).padStart(12, '0')}`)];
+  for (let i = 0; i < ids.length; i++) {
+    const file = first.replace(thread, ids[i]);
+    writeFileSync(file, i === ids.length - 1 ? original.replaceAll(thread, ids[i]) : [
+      { type: 'session_meta', payload: { id: ids[i], forked_from_id: ids[i + 1] } },
+      { type: 'compacted', payload: { replacement_history: [opaque] } },
+    ].map(JSON.stringify).join('\n') + '\n', { mode: 0o600 });
+  }
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
+  const withinLimit = await restoreRolloutHistory(request, { root, threadId: ids[1] });
+  assert.ok(withinLimit.body.input.some(x => x.type === 'function_call_output'));
+});
+
 test('owner session ID takes precedence over unrelated prompt cache identifiers', async t => {
   for (const cacheKey of ['prefix-cache-not-a-thread', '01a1777d-4508-72a1-9dbe-dcd799f721aa']) {
     const f = await fixture(t);
