@@ -780,25 +780,26 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.effective_input_limit_tokens = hardLimitTokens;
       }
       let compactionExpanded = false;
+      const reuseBudgetPrefix = () => {
+        if (route.provider === 'openai' || directResponses || !autoBudgetHandoff) return;
+        const reused = expandHistory.reuseBudget(body, handoffOptions);
+        if (!reused) return;
+        const preview = JSON.stringify(routedBody(reused, route, maxRequestBytes));
+        const threshold = softLimitTokens > 0
+          ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
+        if (threshold > 0 && estimateInputTokens(preview) <= threshold && Buffer.byteLength(preview) <= maxBytes) {
+          body = reused;
+          metric.budget_prefix_cache = 'hit';
+          compactionExpanded = true;
+        }
+      };
       if (selectedSummaryUnsupported && Array.isArray(body.input)
           && body.input.some(item => item.type === 'compaction')) {
         metric.stage = 'handoff_rejected';
         fail(response, 422, 'history_mode_summary_unsupported', WHATSTOKEN_SUMMARY_UNSUPPORTED);
         return;
       }
-      if (route.provider !== "openai" && !directResponses && autoBudgetHandoff) {
-        const reused = expandHistory.reuseBudget(body, handoffOptions);
-        if (reused) {
-          const preview = JSON.stringify(routedBody(reused, route, maxRequestBytes));
-          const threshold = softLimitTokens > 0
-            ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
-          if (threshold > 0 && estimateInputTokens(preview) <= threshold && Buffer.byteLength(preview) <= maxBytes) {
-            body = reused;
-            metric.budget_prefix_cache = "hit";
-            compactionExpanded = true;
-          }
-        }
-      }
+      reuseBudgetPrefix();
       if (!compactionExpanded && route.provider !== "openai" && (!directResponses || mode !== 'openai') && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
         if (mode === 'ask') {
           fail(response, 422, 'history_mode_confirmation_required', HISTORY_MODES.ask.notice + modeHelp); return;
@@ -822,6 +823,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             if (cached) {
               body = { ...body, input: [...cached, ...sourceSuffix] };
               metric.history_source = 'portable_prefix_cache';
+              metric.summary_cache = 'hit';
             } else {
               const restored = await restoreHistory(body, { root: codexRoot, threadId: handoffOptions.threadId, signal: abort.signal });
               if (Buffer.byteLength(JSON.stringify(restored.body)) > 8 * 1024 * 1024) {
@@ -831,9 +833,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
                 if (routes.get(summaryModel)?.provider !== 'openai' || !summaryHeaders.authorization) {
                   throw new HandoffError('大きな既存履歴の引き継ぎにはOpenAI形式のcheckpoint読み取りが必要です。認証と要約モデルを確認してください。元ログは保持しています。');
                 }
-                body = await expandCompaction(body, nativeHandoffOptions);
+                body = await expandCompaction(body, { ...nativeHandoffOptions,
+                  observe: ({ cache }) => {
+                    metric.summary_cache = cache;
+                    handoffStatus.observe(cache, 'handoff');
+                    if (cache !== 'hit') providerNotices.push(HISTORY_MODES.openai.notice);
+                  } });
                 metric.history_source = 'native_checkpoint';
-                providerNotices.push(HISTORY_MODES.openai.notice);
               } else {
                 body = restored.body;
                 restoredPlan = { prefixEnd: restored.prefixEnd };
@@ -857,17 +863,25 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
                 handoffStatus.observe(cache, extend ? "budget" : "handoff");
                 if (cache !== 'hit') providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
               } });
-            if (selected && restoredCacheKey && !abort.signal.aborted) {
-              const prefix = body.input.slice(0, body.input.length - sourceSuffix.length);
-              if (Buffer.byteLength(JSON.stringify(prefix)) <= 65536) {
-                if (restoredSummaries.size >= 32) restoredSummaries.delete(restoredSummaries.keys().next().value);
-                restoredSummaries.set(restoredCacheKey, prefix);
-              }
+            // Selected restoration summarizes only the checkpoint prefix; its
+            // untouched tool suffix may still need the separate budget pass.
+            compactionExpanded = !selected;
+          }
+          // Both owner-rollout summaries and decoded native checkpoints are
+          // portable prefixes. Reuse them before re-reading a multi-day log.
+          if (selected && restoredCacheKey && !abort.signal.aborted) {
+            const prefix = body.input.slice(0, body.input.length - sourceSuffix.length);
+            if (Buffer.byteLength(JSON.stringify(prefix)) <= 65536) {
+              if (restoredSummaries.size >= 32) restoredSummaries.delete(restoredSummaries.keys().next().value);
+              restoredSummaries.set(restoredCacheKey, prefix);
             }
-            compactionExpanded = true;
           }
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
       }
+      // Budget summaries made from a restored checkpoint cannot match the
+      // opaque wire input. Match that same restored representation before
+      // advancing the boundary and paying for another summary on every tool.
+      if (!compactionExpanded && metric.history_source) reuseBudgetPrefix();
       // A successful auxiliary summary may have exhausted the initially
       // selected provider. Continue on its healthy same-model fallback instead
       // of immediately hitting that blocked provider again for the answer.

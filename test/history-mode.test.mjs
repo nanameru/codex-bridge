@@ -392,6 +392,74 @@ test('large restored histories use only the native checkpoint then continue on O
   assert.equal(f.metrics.at(-1).history_source, 'native_checkpoint');
 });
 
+test('large checkpoint continuation reuses the portable prefix without repeating the notice or reading the rollout', async t => {
+  let restores = 0;
+  const f = await fixture(t, { restoreHistory: async body => {
+    restores++;
+    return { body: { ...body, input: [{ role: 'user', content: 'x'.repeat(9 * 1024 * 1024) },
+      ...body.input.slice(-1)] }, prefixEnd: 1 };
+  } });
+  const first = await f.send();
+  assert.equal(first.status, 200);
+  assert.match(await first.text(), /暗号化履歴の読み取り/);
+  const continued = { ...request, input: [...request.input,
+    { role: 'user', content: 'NEW REQUEST MUST SURVIVE' }] };
+  const second = await f.send(continued);
+  assert.equal(second.status, 200);
+  assert.doesNotMatch(await second.text(), /暗号化履歴の読み取り|msg_bridge_handoff_provider_/);
+  assert.equal(restores, 1);
+  assert.equal(f.calls.filter(c => c.body.model === 'gpt-test').length, 1);
+  assert.equal(f.metrics.at(-1).history_source, 'portable_prefix_cache');
+  assert.match(JSON.stringify(f.calls.at(-1).body), /NEW REQUEST MUST SURVIVE/);
+  const changed = await f.send({ ...continued, input: continued.input.map(i => i === opaque
+    ? { ...opaque, encrypted_content: 'changed-checkpoint' } : i) });
+  assert.equal(changed.status, 200); await changed.text();
+  assert.equal(restores, 2);
+  const otherOwner = await f.send(continued, 'different-owner');
+  assert.equal(otherOwner.status, 200); await otherOwner.text();
+  assert.equal(restores, 3);
+});
+
+test('restored checkpoint reuses its budget summary across growing tool continuations', async t => {
+  for (const large of [true, false]) {
+    const f = await fixture(t, { opencodeSoftLimitTokens: 1800, opencodeHardLimitTokens: 4000,
+      restoreHistory: async body => ({ body: { ...body, input: [body.input[0],
+        { role: 'user', content: large ? 'x'.repeat(9 * 1024 * 1024) : 'original history' },
+        ...body.input.slice(2)] }, prefixEnd: 2 }) });
+    const call = id => ({ type: 'function_call', call_id: id, name: 'read', arguments: '{}' });
+    const output = (id, text = 'small result') => ({ type: 'function_call_output', call_id: id, output: text });
+    const input = [...request.input, call('old'), output('old', 'evidence '.repeat(2500)),
+      call('recent'), output('recent'), call('pending')];
+    const send = async (items, token) => {
+      const response = await f.send({ ...request, input: items }, token);
+      const text = await response.text();
+      assert.equal(response.status, 200, text);
+      return text;
+    };
+    assert.match(await send(input), /保存された会話ログを/);
+    const summaryCount = () => f.calls.filter(c => c.body.instructions?.startsWith('Produce only')).length;
+    const initialSummaries = summaryCount();
+    assert.equal(initialSummaries, 2);
+    for (let index = 0; index < 3; index++) {
+      const next = 'pending-' + index;
+      input.push(output(index ? 'pending-' + (index - 1) : 'pending'), call(next));
+      assert.doesNotMatch(await send(input), /保存された会話ログを|暗号化履歴の読み取り/);
+      assert.equal(summaryCount(), initialSummaries, 'short tool suffix must reuse the completed budget summary');
+      assert.equal(f.metrics.at(-1).budget_prefix_cache, 'hit');
+      const forwarded = JSON.stringify(f.calls.at(-1).body);
+      assert.match(forwarded, /LATEST REQUEST/);
+      assert.match(forwarded, /KEEP CURRENT INSTRUCTIONS/);
+      assert.ok(forwarded.includes(next), 'unresolved tool call survives');
+    }
+    input.push(output('pending-2', 'new evidence '.repeat(2500)), call('last'), output('last'), call('next'));
+    assert.match(await send(input), /保存された会話ログを/);
+    assert.ok(summaryCount() > initialSummaries, 'growing suffix still triggers necessary compaction');
+    const beforeRotation = summaryCount();
+    await send(input, 'rotated-owner');
+    assert.ok(summaryCount() > beforeRotation, 'authentication scope stays isolated');
+  }
+});
+
 test('legacy compact endpoint uses the native model without changing selected mode', async t => {
   const f = await fixture(t, { historyMode: 'selected' });
   const response = await f.send({ model: request.model, input: [{ role: 'user', content: 'remember' }] },

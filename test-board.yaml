@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-175-CHECKPOINT-CACHE
+    title: "大きな履歴のcheckpoint復元結果と案内を再利用する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "同一checkpointの次要求でログ再読込・追加要約・重複案内を避け、復元後のbudget要約も再利用し、最新依頼・未完了ツールを保持して容量超過と認証変更時は再処理する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [175]
+    notes: "checkpoint復元後の文章履歴でも既存budget prefixを照合する。大小履歴で短いツール継続の再要約なし・suffix増大の再圧縮・認証分離を検証。実画面での再実行は未検証。"
+
   - id: TC-173-SUMMARY-FALLBACK
     title: "共通モデルの履歴要約にも同一モデルの提供元切替を適用する"
     feature: "履歴圧縮の引き継ぎ"
