@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-171-SUMMARY
+    title: "要約履歴を実行データから分離しtypeのみの上流エラーを分類する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "直接要約でも検索と関数呼出を履歴データとして渡し、画像・暗号化履歴を保持し、HTTP200内のエラーは安全な分類と有界再試行を行う"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [171]
+    notes: "新規2テストは修正前で失敗、修正後で成功。全Node 410件成功。元上流の拒否理由と実画面E2Eは未確定・未検証。"
+
   - id: TC-126
     title: "Command Codeの応答前通信中断を一度だけ再試行し変換失敗を区別する"
     feature: "提供元の接続回復"
