@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-177-THREAD-IDENTITY
+    title: "現行Codexの会話IDで履歴を復元しcache識別子と混同しない"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "thread-idとturn metadataをsession/cache affinityより優先し、最新依頼とツールを保持する。誤った明示IDでは別ログへ切替せず422と固定理由だけを記録する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/cli-model-sync.mjs, src/rollout-history.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [177, 157, 169, 175]
+    notes: "修正前2テスト失敗を確認。Python 3.11環境の全inventoryでNode423件・Python186件成功。欠落・checkpoint不一致・巻き戻し・権限不正の拒否を維持し、本文・暗号化履歴・ID値・認証情報を診断へ出さない。既存6件の個別原因は旧ログでは確定できない。"
+
   - id: TC-175-CHECKPOINT-CACHE
     title: "大きな履歴のcheckpoint復元結果と案内を再利用する"
     feature: "履歴圧縮の引き継ぎ"

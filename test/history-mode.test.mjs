@@ -235,6 +235,40 @@ test('owner session ID takes precedence over unrelated prompt cache identifiers'
   }
 });
 
+test('current Codex thread identity restores history independently of cache routing', async t => {
+  const affinity = '01a1777d-4508-72a1-9dbe-dcd799f721aa';
+  for (const [extraHeaders, metadata, source] of [
+    [{ 'thread-id': thread, 'session-id': affinity, session_id: affinity }, {}, 'thread_header'],
+    [{ 'session-id': affinity }, { 'x-codex-turn-metadata': JSON.stringify({ session_id: thread }) }, 'turn_metadata'],
+    [{ 'session-id': thread }, {}, 'session_header'],
+  ]) {
+    const f = await fixture(t); rollout(f.root);
+    const body = { ...request, prompt_cache_key: affinity, client_metadata: metadata };
+    const response = await f.send(body, 'owner-native-token', '/v1/responses', extraHeaders);
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(f.metrics[0].history_identity_source, source);
+    assert.equal(f.metrics[0].history_source, 'owner_rollout');
+    assert.ok(f.calls.every(call => call.url.includes('9997')));
+    assert.match(JSON.stringify(f.calls[0].body), /ORIGINAL REQUIREMENT/);
+    assert.match(JSON.stringify(f.calls.at(-1).body), /LATEST REQUEST/);
+    assert.equal(f.calls.at(-1).body.prompt_cache_key, affinity);
+  }
+});
+
+test('restore rejection records only a fixed reason and never falls back to another chat', async t => {
+  const f = await fixture(t); rollout(f.root);
+  const other = '01a1777d-4508-72a1-9dbe-dcd799f721aa';
+  const response = await f.send(request, 'owner-native-token', '/v1/responses', { 'thread-id': other });
+  assert.equal(response.status, 422);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.metrics[0].history_identity_source, 'thread_header');
+  assert.equal(f.metrics[0].history_restore_reason, 'log_not_found');
+  const diagnostic = JSON.stringify(f.metrics[0]);
+  assert.doesNotMatch(diagnostic, /ORIGINAL REQUIREMENT|opaque-history|owner-native-token/);
+  assert.ok(!diagnostic.includes(f.root) && !diagnostic.includes(other));
+  assert.doesNotMatch(await response.text(), /ORIGINAL REQUIREMENT|opaque-history/);
+});
+
 test('OpenAI handoff cache hits stay quiet and changed authentication still notifies', async t => {
   const f = await fixture(t, { historyMode: 'openai' });
   const first = await f.send();

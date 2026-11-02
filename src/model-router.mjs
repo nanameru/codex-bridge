@@ -17,12 +17,12 @@ import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFail
 import { authenticateCodex, codexHomeId, codexRoot as defaultCodexRoot, diagnoseCodexAuth, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION, LOCAL_AUTH_HELP } from "./local-security.mjs";
 import { createRequestGuard } from "./request-guard.mjs";
 import { HISTORY_MODES, readHistoryMode, modeHelp } from "./history-mode.mjs";
-import { restoreRolloutHistory } from "./rollout-history.mjs";
+import { restoreRolloutHistory, RolloutHistoryError } from "./rollout-history.mjs";
 import { writeFileAtomic } from "./catalog-safety.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
 import { CHAT_PROVIDERS, KIMI_MODEL, KIMI_SLUG, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
 import { providerHelp, allProviderHelp, directRecoveryHelp, providerNoticeStream } from "./provider-help.mjs";
-import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel } from "./cli-model-sync.mjs";
+import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel, resolveThreadIdentity } from "./cli-model-sync.mjs";
 import { WhatstokenFreeGate } from "./whatstoken-free.mjs";
 import { AUTO_DEEPSEEK_MODEL, AUTO_DEEPSEEK_PROVIDERS, ProviderFallbackState,
   classifyProviderLimit, classifyTransientProviderLimit } from "./provider-fallback.mjs";
@@ -701,15 +701,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       handoffStatus = new HandoffStatus(response, { model: body.model,
         enabled: body.stream === true && route.provider !== "openai" && !directResponses, delayMs: handoffStatusDelayMs });
+      const historyIdentity = resolveThreadIdentity(body, request.headers);
+      metric.history_identity_source = historyIdentity.source;
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
         diagnose: details => Object.assign(metric, details),
-        // Cache keys may identify a prefix rather than the owning conversation.
-        // Resolve an explicit conversation ID before considering the cache key.
-        threadId: [body.client_metadata?.thread_id, request.headers.session_id,
-          body.client_metadata?.session_id, body.prompt_cache_key].find(value =>
-          typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value))
-          ?? body.client_metadata?.thread_id ?? body.prompt_cache_key
-          ?? body.client_metadata?.session_id ?? request.headers.session_id };
+        // Existing summary caches also accept non-UUID affinity strings. Keep
+        // those scopes; restoreRolloutHistory still requires a physical UUID.
+        threadId: historyIdentity.id ?? body.client_metadata?.thread_id ?? body.prompt_cache_key
+          ?? body.client_metadata?.session_id ?? request.headers.session_id ?? request.headers['session-id'] };
       const nativeHandoffOptions = { ...handoffOptions };
       const selected = mode === 'selected' && route.provider !== 'openai';
       const selectedSummaryUnsupported = selected && route.provider === 'whatstoken';
@@ -1253,6 +1252,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.failure_error_class = kinds.has(error?.constructor?.name) ? error.constructor.name : 'OtherError';
       }
       const timeout = terminationReason === "deadline_exceeded";
+      if (error instanceof RolloutHistoryError) metric.history_restore_reason = error.reason;
       if (error instanceof HandoffError && error.status === 429 && !response.headersSent && error.retryAfterSeconds) {
         response.setHeader('retry-after', String(error.retryAfterSeconds));
       }
