@@ -1110,8 +1110,8 @@ cases:
     type: regression
     source: [src/model-router.mjs]
     test_file: test/upstream-retry.test.mjs
-    issues: [9, 63]
-    notes: "旧PR12の限定再試行を最新認証/要約/length復帰の実装へ統合。HTTPと取消・本文読取上限を検証。"
+    issues: [9, 63, 183]
+    notes: "旧PR12の限定再試行に加え、OpenAIの接続確立前タイムアウトのみ有限再試行。曖昧な通信エラー・HTTP応答・取消は再送しない。"
 
   - id: TC-052
     title: "thinking履歴の互換マーカーと推論項目の往復を最新中継で保持する"

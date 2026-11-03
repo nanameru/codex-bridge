@@ -986,6 +986,23 @@ test('summary permanent error code reaches streamed UI without leaking upstream 
  const text=await response.text();assert.match(text,/invalid_encrypted_content/);assert.doesNotMatch(text,/PRIVATE_SENTINEL/);assert.equal(calls,1);
 });
 
+test("native route recovers a pre-connection timeout while preserving the request", async context => {
+  const calls = [], metrics = [];
+  const { send } = await fixture(context, { onMetric: m => metrics.push(m), fetcher: async (url, options) => {
+    calls.push({ url, options });
+    if (calls.length === 1) throw new TypeError("fetch failed", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+    return Response.json({ status: "completed", output: [] });
+  } });
+  const response = await send({ model: "gpt-test", input: "continue" });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, calls[1].url);
+  assert.equal(calls[0].options, calls[1].options);
+  await new Promise(done => setImmediate(done));
+  assert.equal(metrics[0].upstream_connect_retries, 1);
+});
+
 test("only retries known OpenCode availability failures, preserving isolation and metrics", async (context) => {
   const forwarded = [];
   const metrics = [];
