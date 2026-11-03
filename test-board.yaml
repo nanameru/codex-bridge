@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-179-PAGINATED-FORK
+    title: "分岐元の境界内から圧縮履歴を復元する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "子のhistory_baseで親checkpointを復元し、分岐後の親履歴を除外する。不正境界や子の入力欠落時は拒否する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/rollout-history.mjs]
+    test_file: test/history-mode.test.mjs
+    issues: [179]
+    notes: "親ID、byte offset、ordinal、改行境界、子の入力一致を検証。複数段のpaginated境界は安全側に拒否する。"
+
   - id: TC-177-THREAD-IDENTITY
     title: "現行Codexの会話IDで履歴を復元しcache識別子と混同しない"
     feature: "履歴圧縮の引き継ぎ"
