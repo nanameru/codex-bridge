@@ -206,6 +206,41 @@ test('native fork restores only an exact checkpoint independently present in its
   await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }));
 });
 
+test('paginated fork restores only the parent prefix and retains child input', async t => {
+  const root = home(t), parent = '01a1777d-4508-72a1-9dbe-dcd799f721ac';
+  const childPath = rollout(root), parentPath = childPath.replace(thread, parent);
+  const parentPrefix = readFileSync(childPath, 'utf8').replaceAll(thread, parent);
+  const offset = Buffer.byteLength(parentPrefix), ordinal = parentPrefix.split('\n').length - 1;
+  const suffix = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: 'AFTER FORK SECRET' } }) + '\n';
+  writeFileSync(parentPath, parentPrefix + suffix, { mode: 0o600 });
+  const childMessage = { type: 'message', role: 'user', content: 'CHILD REQUIREMENT' };
+  const base = { thread_id: parent, end_byte_offset: offset, end_ordinal_exclusive: ordinal };
+  const save = history_base => writeFileSync(childPath, [
+    { type: 'session_meta', payload: { id: thread, forked_from_id: parent, history_mode: 'paginated',
+      forked_from_ordinal_exclusive: ordinal, history_base } },
+    { type: 'response_item', payload: childMessage },
+  ].map(JSON.stringify).join('\n') + '\n');
+  const body = { ...request, input: [request.input[0], opaque, childMessage, request.input.at(-1)] };
+  save(base);
+  const restored = await restoreRolloutHistory(body, { root, threadId: thread });
+  assert.match(JSON.stringify(restored.body.input), /ORIGINAL REQUIREMENT/);
+  assert.match(JSON.stringify(restored.body.input), /CHILD REQUIREMENT/);
+  assert.doesNotMatch(JSON.stringify(restored.body.input), /AFTER FORK SECRET/);
+  for (const invalid of [
+    { ...base, thread_id: thread }, { ...base, end_byte_offset: offset - 1 },
+    { ...base, end_byte_offset: offset + Buffer.byteLength(suffix) + 1 },
+    { ...base, end_ordinal_exclusive: ordinal + 1 },
+  ]) {
+    save(invalid);
+    await assert.rejects(restoreRolloutHistory(body, { root, threadId: thread }));
+  }
+  save(base);
+  await assert.rejects(restoreRolloutHistory(request, { root, threadId: thread }), e => e.reason === 'invalid_checkpoint');
+  const later = { ...opaque, encrypted_content: 'after-fork-checkpoint' };
+  appendFileSync(parentPath, JSON.stringify({ type: 'compacted', payload: { replacement_history: [later] } }) + '\n');
+  await assert.rejects(restoreRolloutHistory({ ...body, input: [body.input[0], later, childMessage] }, { root, threadId: thread }));
+});
+
 test('fork ancestry has a fixed depth bound even when every checkpoint matches', async t => {
   const root = home(t), first = rollout(root);
   const original = readFileSync(first, 'utf8');

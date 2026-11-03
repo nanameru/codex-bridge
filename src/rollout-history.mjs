@@ -49,7 +49,7 @@ export async function restoreRolloutHistory(body, { root, threadId, signal }) {
   return restoreHistory(body, { root, threadId, signal }, new Set());
 }
 
-async function restoreHistory(body, { root, threadId, signal }, ancestors) {
+async function restoreHistory(body, { root, threadId, signal, historyLimit }, ancestors) {
   try {
     if (ancestors.has(threadId) || ancestors.size >= 8) throw failure();
     ancestors = new Set([...ancestors, threadId]);
@@ -81,10 +81,18 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
       const info = await fd.stat();
       if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o022) || info.nlink !== 1 || info.size > LIMIT) throw failure('unsafe_log');
       const restored = [];
-      let meta = false, parentId, inheritedMeta = false, found = false, firstCompaction = true, hasUser = false, contentBytes = 0;
+      let meta = false, parentId, historyBase, inheritedMeta = false, found = false, firstCompaction = true, hasUser = false, contentBytes = 0;
+      let snapshotSize = info.size;
+      if (historyLimit) {
+        if (!Number.isSafeInteger(historyLimit.offset) || historyLimit.offset <= 0 || historyLimit.offset > info.size ||
+            !Number.isSafeInteger(historyLimit.ordinal) || historyLimit.ordinal <= 0) throw failure('invalid_checkpoint');
+        const last = Buffer.alloc(1);
+        if ((await fd.read(last, 0, 1, historyLimit.offset - 1)).bytesRead !== 1 || last[0] !== 10) throw failure('invalid_checkpoint');
+        snapshotSize = historyLimit.offset;
+      }
       let lineNumber = 0;
       // Snapshot size is fixed at open; later appends never enter this request.
-      for await (const line of snapshotLines(fd, info.size, signal)) {
+      for await (const line of snapshotLines(fd, snapshotSize, signal)) {
         if (++lineNumber % 512 === 0) await new Promise(resolve => setImmediate(resolve));
         signal?.throwIfAborted();
         if (!line.trim()) continue;
@@ -94,6 +102,9 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
             if (item?.id !== threadId) throw failure('metadata_mismatch');
             parentId = item.forked_from_id;
             if (parentId != null && (!UUID.test(parentId) || parentId === threadId)) throw failure();
+            historyBase = item.history_base;
+            if (historyBase && (item.history_mode !== 'paginated' ||
+                item.forked_from_ordinal_exclusive !== historyBase.end_ordinal_exclusive)) throw failure('invalid_checkpoint');
             meta = true;
           } else {
             // Native forks can prepend child metadata to the inherited parent log.
@@ -125,6 +136,23 @@ async function restoreHistory(body, { root, threadId, signal }, ancestors) {
         contentBytes += Buffer.byteLength(line);
         if (contentBytes > CONTENT_LIMIT) throw failure();
         restored.push(item);
+      }
+      if (historyLimit && lineNumber !== historyLimit.ordinal) throw failure('invalid_checkpoint');
+      // Chained paginated boundaries require independent ordinal mapping.
+      if (historyLimit && parentId) throw failure('invalid_checkpoint');
+      if (!found && parentId && historyBase) {
+        if (historyBase.thread_id !== parentId || !Number.isSafeInteger(historyBase.end_byte_offset) ||
+            !Number.isSafeInteger(historyBase.end_ordinal_exclusive)) throw failure('invalid_checkpoint');
+        // Do not silently lose child-side messages or tool results. Only replay
+        // the parent prefix when the caller already carries every child item.
+        const tail = body.input.slice(end + 1).map(value => JSON.stringify(value));
+        for (const item of restored.filter(value => !['system', 'developer'].includes(value.role))) {
+          const index = tail.indexOf(JSON.stringify(item));
+          if (index < 0) throw failure('invalid_checkpoint');
+          tail.splice(index, 1);
+        }
+        return await restoreHistory(body, { root, threadId: parentId, signal,
+          historyLimit: { offset: historyBase.end_byte_offset, ordinal: historyBase.end_ordinal_exclusive } }, ancestors);
       }
       if (!found) throw failure('checkpoint_not_found');
       if (parentId) {
