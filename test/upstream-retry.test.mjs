@@ -1,6 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchWithAvailabilityRetry } from "../src/model-router.mjs";
+import { fetchWithAvailabilityRetry, fetchWithConnectTimeoutRetry } from "../src/model-router.mjs";
+
+test("OpenAI connect timeout retries once with the identical request", async () => {
+  const options = { body: "private-history", signal: new AbortController().signal };
+  let calls = 0, retries = 0;
+  const response = await fetchWithConnectTimeoutRetry(async (_url, received) => {
+    assert.equal(received, options);
+    if (++calls === 1) throw new TypeError("fetch failed", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+    return new Response("ok");
+  }, "test", options, () => retries++);
+  assert.equal(await response.text(), "ok");
+  assert.equal(calls, 2);
+  assert.equal(retries, 1);
+});
+
+test("ambiguous timeouts, HTTP responses and repeated connection failure do not cause extra retries", async () => {
+  for (const code of ["ETIMEDOUT", "UND_ERR_HEADERS_TIMEOUT", "ECONNRESET"]) {
+    let calls = 0;
+    await assert.rejects(fetchWithConnectTimeoutRetry(async () => { calls++; throw new TypeError("failed", { cause: { code } }); }, "test", {}));
+    assert.equal(calls, 1);
+  }
+  let calls = 0;
+  await assert.rejects(fetchWithConnectTimeoutRetry(async () => { calls++; throw new TypeError("failed", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }); }, "test", {}));
+  assert.equal(calls, 2);
+  calls = 0;
+  assert.equal((await fetchWithConnectTimeoutRetry(async () => { calls++; return new Response("error", { status: 502 }); }, "test", {})).status, 502);
+  assert.equal(calls, 1);
+});
+
+test("cancelling connection retry prevents resending", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  await assert.rejects(fetchWithConnectTimeoutRetry(async () => {
+    calls++; throw new TypeError("failed", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+  }, "test", { signal: controller.signal }, () => controller.abort()), { name: "AbortError" });
+  assert.equal(calls, 1);
+});
 
 const unavailable = { error: { type: "server_error", message: "Upstream request failed: Endpoint is unavailable." } };
 const failure = (headers = {}, status = 429) => Response.json(unavailable, { status, headers });

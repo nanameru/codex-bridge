@@ -202,6 +202,20 @@ function envLimit(name, fallback) {
 
 export const readOpenCodeKey = readOpenCodeApiKey;
 
+// Only a failed socket connection proves that this POST never reached the server.
+// Generic ETIMEDOUT and header/stream failures may occur after acceptance.
+export async function fetchWithConnectTimeoutRetry(fetcher, url, options, onRetry = () => {}) {
+  try {
+    return await fetcher(url, options);
+  } catch (error) {
+    if (options.signal?.aborted || error?.cause?.code !== "UND_ERR_CONNECT_TIMEOUT") throw error;
+    onRetry();
+    await delay(250, undefined, { signal: options.signal });
+    options.signal?.throwIfAborted();
+    return fetcher(url, options);
+  }
+}
+
 export async function fetchWithAvailabilityRetry(fetcher, url, options, onRetry = () => {}, { retry429 = true } = {}) {
   const upstream = await fetcher(url, options);
   if (upstream.status === 429 && !retry429) return upstream;
@@ -1008,7 +1022,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       let routeFetch = makeRouteFetch(route);
       let send = route.provider === "opencode"
         ? (url, options) => fetchWithAvailabilityRetry(fetcher, url, options, () => { metric.upstream_retries = 1; },
-          { retry429: !metric.auto_fallback }) : routeFetch;
+          { retry429: !metric.auto_fallback }) : route.provider === "openai"
+        ? (url, options) => fetchWithConnectTimeoutRetry(routeFetch, url, options, () => { metric.upstream_connect_retries = 1; })
+        : routeFetch;
       const syncSelection = async () => {
         if (cliContext) {
           metric.cli_model_sync = await getModelSync().sync(cliContext,
