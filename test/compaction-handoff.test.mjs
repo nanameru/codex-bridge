@@ -132,6 +132,40 @@ test("single-request handoff treats tool history as data and preserves opaque ch
   assert.deepEqual(result.input.at(-1), history.at(-1));
 });
 
+test("encrypted historical tool calls remain inert transcript data", async () => {
+  const call = { type: "custom_tool_call", call_id: "encrypted-call", name: "edit", input: "important operation", encrypted_content: "opaque-call" };
+  const output = { type: "custom_tool_call_output", call_id: "encrypted-call", output: "important result", encrypted_content: "opaque-output" };
+  const checkpoint = { type: "compaction", encrypted_content: "opaque-checkpoint" };
+  const input = [{ role: "user", content: "original" }, call, output, checkpoint, { role: "user", content: "latest" }];
+  const original = structuredClone(input);
+  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 100000, fetcher: async (_url, init) => {
+    const sent = JSON.parse(init.body);
+    assert.deepEqual(sent.tools, []);
+    assert.equal(sent.input.some(item => item.type === "custom_tool_call" || item.type === "custom_tool_call_output"), false);
+    assert.deepEqual(JSON.parse(sent.input[1].content.split("\n").slice(1).join("\n")), call);
+    assert.deepEqual(JSON.parse(sent.input[2].content.split("\n").slice(1).join("\n")), output);
+    assert.deepEqual(sent.input[3], checkpoint);
+    return completed();
+  } });
+  const result = await expand({ input }, options());
+  assert.deepEqual(input, original);
+  assert.deepEqual(result.input.at(-1), input.at(-1));
+});
+
+test("streamed summary errors expose only fixed classifications", async () => {
+  const diagnostics = [];
+  const expand = compactionHandoff({ model: "gpt-test", maxBytes: 100000, fetcher: async () => new Response(
+    'data: ' + JSON.stringify({ type: 'response.failed', response: { error: {
+      code: 'invalid_request_error', message: 'Invalid tool call PRIVATE_SENTINEL' } } }) + '\n\n',
+    { headers: { 'content-type': 'text/event-stream' } }) });
+  await assert.rejects(expand(body, { ...options(), diagnose: data => diagnostics.push(data) }), error => {
+    assert.equal(error.upstreamCode, 'invalid_tool_history');
+    assert.doesNotMatch(error.message, /PRIVATE_SENTINEL/);
+    return true;
+  });
+  assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_SENTINEL/);
+});
+
 test("type-only summary failures are classified privately and retry only transient errors", async () => {
   for (const transport of ["error", "response.failed", "json", "http"]) {
     for (const type of ["server_error", "invalid_request_error", "PRIVATE_SENTINEL"]) {

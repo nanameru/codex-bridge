@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-181-ENCRYPTED-TOOL-SUMMARY
+    title: "暗号化情報付きツール履歴を実行せずに要約する"
+    feature: "履歴圧縮の引き継ぎ"
+    scenario: "暗号化付きツール呼び出し・結果は履歴データに変換し、画像とcheckpointを維持。SSE失敗は固定理由のみ記録する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/compaction-handoff.mjs]
+    test_file: test/compaction-handoff.test.mjs
+    issues: [181]
+    notes: "合成再現は修正前失敗・修正後成功。実履歴の形状を模擬上流で確認。今回の上流拒否理由は未確定。"
+
   - id: TC-179-PAGINATED-FORK
     title: "分岐元の境界内から圧縮履歴を復元する"
     feature: "履歴圧縮の引き継ぎ"
