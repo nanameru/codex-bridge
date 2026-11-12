@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-121
+    title: "メニューバーアプリで状態を見て、要約の担当・ブリッジ・鍵を変える"
+    feature: "メニューバーアプリ"
+    scenario: "ルーター/ブリッジの稼働と版、要約の担当の切替、OpenAI上限と提供元の内訳、Command Code/Ollamaの鍵登録（標準入力のみ）、会話が空くまで待つon/off、待ち受けポートなし"
+    status: done
+    priority: high
+    type: integration
+    source: [scripts/menubar_status.py, scripts/manual_providers.py, scripts/unified_config.py, src/selected-compaction.mjs, src/model-router.mjs, macos/CodexBridgeMenu]
+    test_file: test/test_menubar_status.py
+    issues: [188]
+    notes: "模擬のHOME・CODEX_HOME・ポートだけで確認。画面以外の処理は macos/CodexBridgeMenu/build.sh --test。/healthのsummary_limit_untilは test/selected-compaction.test.mjs。"
+
   - id: TC-120
     title: "OpenAIの上限中はremote compactionを選択中のモデルで代行する"
     feature: "上限中の会話要約の代行"

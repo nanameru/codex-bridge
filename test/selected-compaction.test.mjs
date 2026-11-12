@@ -47,7 +47,8 @@ async function fixture(t, { openai = () => usageLimit(), ...options } = {}) {
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const send = (body, path = '/v1/responses', token = 'owner-native-token') => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
     method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
-  return { calls, metrics, send };
+  const health = () => fetch(`http://127.0.0.1:${server.address().port}/health`).then(response => response.json());
+  return { calls, metrics, send, health };
 }
 function home(t) {
   const root = mkdtempSync(join(tmpdir(), 'selected-compaction-'));
@@ -163,6 +164,20 @@ test('AC-04: OpenAI is skipped until its reset time, then asked again', async t 
   const before = f.calls.length;
   await (await f.send(compactionRequest({ input: [{ role: 'user', content: 'after reset' }, trigger] }))).text();
   assert.equal(f.calls[before].provider, 'openai', 'Luna is used again after the reset time');
+});
+
+test('#188: /health shows only the latest OpenAI summary reset time for the menu bar app', async t => {
+  let clock = Date.now();
+  const f = await fixture(t, { summaryLimitWindow: new SummaryLimitWindow(() => clock) });
+  assert.equal((await f.health()).summary_limit_until, null);
+  await (await f.send(compactionRequest())).text();
+  const until = (await f.health()).summary_limit_until;
+  assert.ok(Number.isSafeInteger(until) && until > clock, 'the reset time is shown while limited');
+  clock = until + 1;
+  assert.equal((await f.health()).summary_limit_until, null, 'cleared after the reset time');
+  const window = new SummaryLimitWindow(() => 1000);
+  window.record('a', 5000); window.record('b', 9000);
+  assert.equal(window.latestUntil(), 9000);
 });
 
 test('AC-04: an unknown reset time uses the short default window', async t => {

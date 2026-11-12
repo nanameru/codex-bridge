@@ -75,11 +75,17 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     key = sub.add_parser("set-key", help="非表示入力で公式APIキーを保存する")
     key.add_argument("provider", choices=PROVIDERS)
+    key.add_argument("--stdin", action="store_true", help="キーを標準入力の1行から読む（メニューバーアプリ用。引数には渡さない）")
     models = sub.add_parser("install-models", help="DeepSeekの手動/自動選択とKimiをカタログへ追加する")
     models.add_argument("--with-whatstoken-free", action="store_true")
     args = parser.parse_args()
     if args.command == "set-key":
-        save_key(args.codex_home, args.provider, getpass.getpass(f"{args.provider} API key (非表示): "))
+        if args.stdin:
+            import sys
+            key = sys.stdin.readline(8194).rstrip("\r\n")
+        else:
+            key = getpass.getpass(f"{args.provider} API key (非表示): ")
+        save_key(args.codex_home, args.provider, key)
         print(f"{args.provider}のAPIキーを本人専用ファイルへ保存しました。キーは表示しません。")
     else:
         for slug in install_models(args.codex_home, args.with_whatstoken_free):
