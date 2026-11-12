@@ -52,13 +52,24 @@ python3 scripts/portable_history.py --apply
 
 すでにOpenAI固有のremote compactionを使う会話では、`selected`でもその圧縮要求だけをOpenAIの要約モデルへ送ります。`compaction_trigger`と従来の`/responses/compact`の両方が対象です。会話のモデル選択と次の通常応答は変えません。OpenAIへの送信・利用量が発生し、認証・枠・上流の可用性が必要です。`ask`は引き続き送信前に停止します。新規会話の文章圧縮は選択モデルのままです。
 
+### OpenAIが利用上限のとき（Issue #186）
+
+OpenAI以外のモデルを選んでいて、remote compaction（`compaction_trigger`付きの要求と`/responses/compact`）でOpenAIの要約モデルが429（利用上限）を返した場合は、選択中のモデルが代わりに要約します。自動のDeepSeek V4.1 Flashでは、同じモデルの設定済み提供元（OpenCode Go → Command Code → Ollama）を順に試します。`selected`と`openai`の両方が対象で、`ask`は従来どおり送信前に停止します。GPTを選んでいる会話の動きは変わりません。
+
+- 要約結果は、Bridgeだけが読める印（`cxbsel1:`）を付けた圧縮項目1件としてCodexへ返します。中身は暗号化ではなく要約の文章で、本人のCodexの会話ログに保存されます。
+- 次の要求でBridgeがこの項目を要約の文章に戻してから送信します。後でGPTに切り替えた会話でも、印の付いた項目をOpenAIへは送りません。壊れた項目は送信前に422で停止します。
+- 429の応答に書かれた解除時刻まで（分からない場合は短い既定時間、既定5分・`CODEX_PROVIDER_FALLBACK_COOLDOWN_MS`）、OpenAIには聞かずに最初から選択中のモデルで要約します。この記録はrouterのメモリ内だけで、再起動すると消えます。
+- 以前にOpenAIの暗号化圧縮を使った会話は、元ログから文章を復元してから要約します（条件は上の「元ログから引き継げる条件」）。復元できない場合は送信前に停止します。
+- 代行したときは利用者向けに「OpenAI（要約用モデル）が利用上限のため、選択中のモデルで会話を要約しました」と表示し、routerのログに`remote_compaction_fallback:"selected"`、`remote_compaction_openai_status`、`remote_compaction_openai_skipped`、`remote_compaction_provider`を残します。会話の本文や認証情報はログに書きません。
+- 選択中のモデルの要約分の利用量が発生します。要約の質は選択中のモデルに依存し、過去の細部が引き継がれない場合があります。
+
 既存の暗号化checkpointからの復元内容が8MiBを超える場合、何十回もの分割要約や全tool出力の再送を避け、元の要求内のcheckpointだけをOpenAIへ渡して文章化します。巨大な元ログ自体は送信しません。通常の履歴はread-only復元後に選択モデルで要約します。
 
 この設定が制御するのは外部モデル会話の補助要約です。GPTを明示選択した会話や、OpenAI固有の画像・検索機能の利用量を無くす設定ではありません。WhatsToken無料経路の補助要約は、無料時間判定を迂回しないため未対応として停止します。必要な場合はOpenCode・Command Code・Ollamaを明示選択してください。
 
 ## 検証
 
-`node --test test/history-mode.test.mjs` で、元ログのread-only復元、通常の文章要約のOpenAI要求0件、既存remote compactと巨大履歴の互換処理、DeepSeek/Kimiの提供元別認証、確認モード、元ログ欠落、rollback、symlink、成功要約のキャッシュと認証分離を模擬上流で検証します。実際の長い既存会話の要約精度や情報保持率を保証するテストではありません。
+`node --test test/selected-compaction.test.mjs` で上限時の代行（AC-01〜AC-06）を、`python3 test/selected-compaction-app-e2e.py selected`（`openai`も可、`CODEX_BIN`で実行ファイルを指定）で実際のCodex app-serverと模擬上流での圧縮・次の応答・resumeを検証します。`node --test test/history-mode.test.mjs` で、元ログのread-only復元、通常の文章要約のOpenAI要求0件、既存remote compactと巨大履歴の互換処理、DeepSeek/Kimiの提供元別認証、確認モード、元ログ欠落、rollback、symlink、成功要約のキャッシュと認証分離を模擬上流で検証します。実際の長い既存会話の要約精度や情報保持率を保証するテストではありません。
 
 ## OpenAI枠切れ・元ログ不足時の引き継ぎ
 

@@ -17,6 +17,8 @@ import { authenticateCodex, codexHomeId, codexRoot as defaultCodexRoot, diagnose
 import { createRequestGuard } from "./request-guard.mjs";
 import { HISTORY_MODES, readHistoryMode, modeHelp } from "./history-mode.mjs";
 import { restoreRolloutHistory } from "./rollout-history.mjs";
+import { SELECTED_COMPACTION_NOTICE, SummaryLimitWindow, encodeSelectedCompaction, isSelectedCompaction,
+  restoreSelectedCompactions, selectedCompactionResponse } from "./selected-compaction.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
 import { CHAT_PROVIDERS, KIMI_MODEL, KIMI_SLUG, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
 import { providerHelp, allProviderHelp, directRecoveryHelp, providerNoticeStream } from "./provider-help.mjs";
@@ -52,6 +54,7 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./request-guard.mjs", import.meta.url)))
   .update(readFileSync(new URL("./history-mode.mjs", import.meta.url)))
   .update(readFileSync(new URL("./rollout-history.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./selected-compaction.mjs", import.meta.url)))
   .update(readFileSync(new URL("./models.json", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
@@ -253,6 +256,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   autoProviderFallback = manualProvidersEnabled && process.env.CODEX_AUTO_PROVIDER_FALLBACK !== "0",
   summaryModel = process.env.CODEX_SUMMARY_MODEL ?? "gpt-6.1-sol", summaryInputLimitTokens = 200000, onMetric = () => {}, handoffStatusDelayMs = 1000, toolRecoveryOptions, catalogProvider,
   historyMode, restoreHistory = restoreRolloutHistory,
+  summaryLimitWindow = new SummaryLimitWindow(),
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
@@ -437,6 +441,16 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 400, "invalid_request", "toolsまたはinputの形式が不正です");
         return;
       }
+      // A compaction item written by the router (#186) is plain summary text in
+      // a wrapper only this router understands. Unwrap it before any upstream,
+      // OpenAI included, so the wrapper never leaves this process.
+      if (!nativeTool && Array.isArray(body.input) && body.input.some(isSelectedCompaction)) {
+        let restored;
+        try { restored = restoreSelectedCompactions(body.input); }
+        catch (error) { fail(response, 422, "selected_compaction_invalid", error.message); return; }
+        body = { ...body, input: restored.input };
+        metric.selected_compaction_restored = restored.count;
+      }
       let route = nativeTool ? { provider: "openai" } : routes.get(body.model);
       // A session may retain its automatic ID after the feature is disabled.
       if (!route && !whatstokenFreeEnabled && body.model === autoManualSlug('whatstoken'))
@@ -522,6 +536,78 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 503, 'history_mode_invalid', '履歴モード設定の形式・所有者・権限を確認してください。外部送信は行っていません'); return;
       }
       metric.history_mode = mode;
+      // #186: the OpenAI summary model is at its usage limit. Summarize with the
+      // selected model (the automatic DeepSeek route also tries its configured
+      // same-model providers) and return exactly one router-owned compaction item.
+      const respondSelectedCompaction = async ({ route: source, body: original, compactEndpoint }) => {
+        metric.remote_compaction_fallback = "selected";
+        metric.stage = "remote_compaction_selected";
+        if (source.provider === "whatstoken") {
+          fail(response, 422, "history_mode_summary_unsupported", WHATSTOKEN_SUMMARY_UNSUPPORTED); return;
+        }
+        const threadId = original.client_metadata?.thread_id ?? original.prompt_cache_key
+          ?? original.client_metadata?.session_id ?? request.headers.session_id;
+        // Opaque OpenAI reasoning cannot be read by another model and carries no
+        // visible conversation content; the trigger is re-appended as the boundary.
+        const portable = input => input.filter(item => item.type !== "compaction_trigger"
+          && !(item.type === "reasoning" && item.encrypted_content));
+        let work = { ...original, input: [...portable(original.input ?? []), { type: "compaction_trigger" }] };
+        if (work.input.some(item => item.type === "compaction")) {
+          // An earlier OpenAI compaction: rebuild plain history from the owner's log.
+          const restored = await restoreHistory(work, { root: codexRoot, threadId, signal: abort.signal });
+          work = { ...restored.body, input: [...portable(restored.body.input), { type: "compaction_trigger" }] };
+          metric.history_source = "owner_rollout";
+        }
+        let candidates = [source.provider === "opencode" ? { ...source, transport: "chat" } : source];
+        if (autoProviderFallback && source.autoFallback) {
+          const goRoute = routes.get(CLI_AUTO_MODEL) ?? (source.provider === "opencode" ? source : null);
+          const byProvider = new Map(goRoute ? [["opencode", { ...goRoute, transport: "chat" }]] : []);
+          for (const provider of AUTO_DEEPSEEK_PROVIDERS.slice(1)) {
+            const candidate = routes.get(autoManualSlug(provider)) ?? routes.get(manualSlug(provider));
+            if (candidate && CHAT_PROVIDERS[candidate.provider]) byProvider.set(provider, candidate);
+          }
+          candidates = getFallbackState().candidates(AUTO_DEEPSEEK_PROVIDERS).map(provider => byProvider.get(provider)).filter(Boolean);
+        }
+        const cacheIdentity = createHash("sha256").update(codexRoot).update("\0").update(request.headers.authorization ?? "").digest("hex");
+        const limited = [];
+        let summary, lastError;
+        for (const candidate of candidates) {
+          const isGo = candidate.provider === "opencode";
+          const manualProvider = CHAT_PROVIDERS[candidate.provider];
+          const key = isGo ? bridgeKey() : manualProvider && candidate.provider !== "whatstoken" ? manualKey(candidate.provider) : null;
+          if (!key) continue;
+          const target = { destination: isGo ? bridge.href.replace(/\/$/, "") : manualProvider.base,
+            headers: { "content-type": "application/json", accept: "text/event-stream, application/json",
+              ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: "Bearer " + key }) } };
+          const budget = Math.min(summaryInputLimitTokens, candidate.contextWindow ? Math.floor(candidate.contextWindow * 0.8) : summaryInputLimitTokens);
+          try {
+            summary = await selectedSummary(candidate)(work, { ...target, signal: abort.signal, threadId, cacheIdentity,
+              prefixEnd: work.input.length - 1, inputBudgetTokens: budget, returnSummary: true,
+              diagnose: details => Object.assign(metric, details) });
+            metric.remote_compaction_provider = candidate.provider;
+            break;
+          } catch (error) {
+            if (abort.signal.aborted || !(error instanceof HandoffError) || ![402, 429].includes(error.upstreamStatus)) throw error;
+            limited.push(candidate.provider);
+            lastError = error;
+          }
+        }
+        if (limited.length) metric.remote_compaction_limited_providers = limited;
+        if (summary === undefined) {
+          if (lastError) throw lastError;
+          fail(response, 503, "provider_key_required", "OpenAIが利用上限のため選択中のモデルで要約しようとしましたが、使える提供元の認証情報がありません。履歴は保持しています"
+            + providerHelp(source.provider));
+          return;
+        }
+        const reply = selectedCompactionResponse(encodeSelectedCompaction(summary),
+          { model: original.model, stream: original.stream === true, compactEndpoint });
+        response.writeHead(200, { "content-type": reply.contentType, "cache-control": "no-store" });
+        const streams = [Readable.from([Buffer.from(reply.body)])];
+        if (reply.contentType === "text/event-stream") streams.push(providerNoticeStream(reply.contentType, maxBytes, [SELECTED_COMPACTION_NOTICE]));
+        metric.stage = "upstream_stream";
+        await pipeline(...streams, response, { signal: abort.signal });
+        metric.stage = "complete";
+      };
       if (directResponses) metric.transport = "responses";
       metric.model = nativeTool ? undefined : body.model;
       metric.input_items = Array.isArray(body.input) ? body.input.length : undefined;
@@ -533,6 +619,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       // compaction_trigger and requires one compaction output item. The Chat
       // conversion cannot produce that wire item. Legacy threads use the native summary
       // model for this request while the surrounding turn keeps its selection.
+      let compactionFallback = null;
       const remoteCompaction = !directResponses && path === "/v1/responses"
         && Array.isArray(body.input) && body.input.some(item => item.type === "compaction_trigger");
       const nativeCompactEndpoint = !directResponses && path === "/v1/responses/compact";
@@ -549,6 +636,17 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           return;
         }
         metric.requested_provider = route.provider;
+        // GPT selections keep the existing native-only behavior. Other models
+        // may summarize themselves when OpenAI is at its usage limit (#186).
+        if (route.provider !== "openai" && ["selected", "openai"].includes(mode)) {
+          compactionFallback = { route, body, compactEndpoint: nativeCompactEndpoint };
+          if (summaryLimitWindow.blocked()) {
+            // AC-04: do not ask OpenAI again until its limit window ends.
+            metric.remote_compaction_openai_skipped = true;
+            await respondSelectedCompaction(compactionFallback);
+            return;
+          }
+        }
         metric.remote_compaction_fallback = "openai";
         providerNotices.push(HISTORY_MODES.openai.notice);
         route = summaryRoute;
@@ -676,8 +774,16 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             return;
           }
           metric.stage = "remote_compaction_handoff";
-          body = await expandCompaction(body, { ...handoffOptions, ...plan });
-          metric.remote_compaction_prepared = true;
+          try {
+            body = await expandCompaction(body, { ...handoffOptions, ...plan });
+            metric.remote_compaction_prepared = true;
+          } catch (error) {
+            if (!(compactionFallback && error instanceof HandoffError && error.upstreamStatus === 429)) throw error;
+            summaryLimitWindow.record(Date.now() + providerFallbackCooldownMs);
+            metric.remote_compaction_openai_status = 429;
+            await respondSelectedCompaction(compactionFallback);
+            return;
+          }
         }
         if (estimateInputTokens(body) + reserved >= summaryBudget || Buffer.byteLength(JSON.stringify(body)) > maxBytes) {
           fail(response, 413, "summary_input_budget_exceeded", "要約後も圧縮要求が入力上限を超えています。履歴と選択モデルは保持しています");
@@ -904,6 +1010,17 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         method: "POST", headers, body: routed,
         signal: abort.signal, redirect: "manual",
       });
+      if (compactionFallback && upstream.status === 429) {
+        const now = Date.now();
+        const limit = await classifyProviderLimit(upstream.clone(), { now, unknownCooldownMs: providerFallbackCooldownMs })
+          ?? await classifyTransientProviderLimit(upstream.clone(), { now });
+        summaryLimitWindow.record(limit?.resetAt ?? now + providerFallbackCooldownMs);
+        metric.remote_compaction_openai_status = 429;
+        metric.remote_compaction_openai_reset_known = Boolean(limit?.resetKnown);
+        await upstream.body?.cancel().catch(() => {});
+        await respondSelectedCompaction(compactionFallback);
+        return;
+      }
       if (metric.auto_fallback) {
         const state = getFallbackState();
         const conversationId = body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id;
