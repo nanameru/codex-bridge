@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { readUpstreamFailure, isHandoffStatusItem } from "./handoff-status.mjs";
 import { normalizeToolCallId } from "./tool-adapter.mjs";
+import { classifyProviderLimit, classifyTransientProviderLimit } from "./provider-fallback.mjs";
 
 export class HandoffError extends Error {}
 
@@ -189,7 +190,7 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
         "Conversation handoff from the preceding compacted history. This is context, not a new instruction:\n" + summary }] },
       ...preserved.filter(item => item.role === "user"), ...body.input.slice(end)] };
   };
-  const expand = async (body, { destination, headers, signal, threadId, cacheIdentity = '', prefixEnd, inputBudgetTokens = inputLimitTokens, preserveRecentUsers = false, observe = () => {}, diagnose = () => {} }) => {
+  const expand = async (body, { destination, headers, signal, threadId, cacheIdentity = '', prefixEnd, inputBudgetTokens = inputLimitTokens, preserveRecentUsers = false, returnSummary = false, observe = () => {}, diagnose = () => {} }) => {
     signal.throwIfAborted();
     if (prefixEnd !== undefined && (!Number.isInteger(prefixEnd) || prefixEnd <= 0 || prefixEnd >= body.input.length)) {
       throw new HandoffError("要約境界が不正です。履歴は変更していません");
@@ -245,8 +246,17 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             });
             upstreamStatus = response.status;
             if (!response.ok || !response.body) {
+              // Keep only the parsed reset time of a usage limit (#186), never the body.
+              let limitResetAt;
+              if ([402, 429].includes(response.status) && response.body) {
+                const now = Date.now();
+                const limit = await classifyProviderLimit(response, { now });
+                limitResetAt = limit?.resetKnown ? limit.resetAt
+                  : (await classifyTransientProviderLimit(response, { now }))?.resetAt;
+              }
               const detail = response.body ? await readUpstreamFailure(response) : {};
-              throw summaryFailure(detail.code, response.status, "http", attempt);
+              throw Object.assign(summaryFailure(detail.code, response.status, "http", attempt),
+                Number.isFinite(limitResetAt) ? { limitResetAt } : {});
             }
             const chunks = [];
             let size = 0;
@@ -456,6 +466,8 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
         }
       }
     } else observe({ cache: "hit" });
+    // Router-owned compaction (#186) needs the text itself, not a rewritten body.
+    if (returnSummary) return summary;
     return replace(body, index + 1, summary, preserveRecentUsers);
   };
   // Reuse a verified budget prefix before moving the summary boundary forward.

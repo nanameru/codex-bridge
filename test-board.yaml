@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-120
+    title: "OpenAIの上限中はremote compactionを選択中のモデルで代行する"
+    feature: "上限中の会話要約の代行"
+    scenario: "Lunaが429なら選択モデル（自動DeepSeekは同一モデルの別提供元も）で要約し、ルーター専用の圧縮項目1件を返す。次の要求で文章に戻し、OpenAIへ印を送らない。解除時刻まではLunaを省く。selected/openaiで代行、askは送信前停止、GPT選択は不変"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/selected-compaction.mjs, src/compaction-handoff.mjs]
+    test_file: test/selected-compaction.test.mjs
+    issues: [186]
+    notes: "実Codex 0.167.0-alpha.3.2 app-server＋模擬上流（test/selected-compaction-app-e2e.py selected/openai）で、圧縮2回・次の応答・resumeを確認。PR #187のレビュー対応（native tool経路の印・事前要約の解除時刻・アカウント別の上限・全提供元上限の429）も回帰テスト済み。実OpenAI/DeepSeekへの送信は未実施。"
+
   - id: TC-118
     title: "既存の外部モデル会話でremote compactと巨大履歴を引き継ぐ"
     feature: "既存会話の圧縮互換性"
