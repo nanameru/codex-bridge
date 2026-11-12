@@ -55,6 +55,31 @@ Task { timedOut = await CommandRunner.run(sleeper, config: AppConfig(repository:
     python: URL(fileURLWithPath: "/py"), node: URL(fileURLWithPath: "/node"), routerPort: 1, bridgePort: 2)); semaphore.signal() }
 semaphore.wait()
 check(timedOut?.exitCode != 0 && Date().timeIntervalSince(started) < 10, "a hung command is stopped at its time limit")
+
+// 検証役と同じ形: SIGTERM を無視する子（孫の sleep も出力の管を持ち続ける）。期限1秒。
+let anyConfig = AppConfig(repository: URL(fileURLWithPath: "/"), python: URL(fileURLWithPath: "/py"),
+                          node: URL(fileURLWithPath: "/node"), routerPort: 1, bridgePort: 2)
+func ignoringTerm(forceKill: Bool) -> (CommandResult, TimeInterval, Bool) {
+    let marker = FileManager.default.temporaryDirectory.appendingPathComponent("cbm-\(UUID().uuidString)")
+    let spec = CommandSpec(executable: URL(fileURLWithPath: "/bin/sh"),
+                           arguments: ["-c", "trap '' TERM; echo $$ > '\(marker.path)'; sleep 30; echo late"],
+                           input: nil, timeout: 1, forceKill: forceKill)
+    let begin = Date()
+    let result = CommandRunner.runBlocking(spec, config: anyConfig)
+    let elapsed = Date().timeIntervalSince(begin)
+    let pid = (try? String(contentsOf: marker, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    let alive = pid.map { kill($0, 0) == 0 } ?? false
+    if let pid { kill(pid, SIGKILL) }
+    try? FileManager.default.removeItem(at: marker)
+    return (result, elapsed, alive)
+}
+let (killed, killedElapsed, killedAlive) = ignoringTerm(forceKill: true)
+check(killed.exitCode == -2 && killedElapsed < 3 && !killedAlive,
+      "a child ignoring SIGTERM is SIGKILLed and the call returns within the limit (\(String(format: "%.1f", killedElapsed))s)")
+let (spared, sparedElapsed, sparedAlive) = ignoringTerm(forceKill: false)
+check(spared.exitCode == -2 && sparedElapsed < 3 && sparedAlive,
+      "a no-force-kill child keeps running (finishes its write) but the call still returns (\(String(format: "%.1f", sparedElapsed))s)")
+check(!Commands.unified(config, enabled: true).forceKill && Commands.status(config).forceKill, "only the switch is never SIGKILLed")
 check(Commands.status(config).arguments.contains("18790") && !Commands.status(config).arguments.contains("8791"), "status uses configured router port")
 let resolved = AppConfig.resolve(environment: ["CODEX_BRIDGE_HOME": "/r", "CODEX_BRIDGE_ROUTER_PORT": "8791x"],
                                  info: ["CodexBridgePython": "/p"])

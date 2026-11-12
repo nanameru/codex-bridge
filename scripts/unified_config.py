@@ -391,6 +391,10 @@ def main():
     if arguments.wait_idle:
         from install_router_service import wait_for_idle
         wait_for_idle(arguments.wait_idle, ports=(arguments.port, arguments.bridge_port))
+    # ここから先は書き込み。期限のSIGTERM（メニューバーアプリ）で止まると、config.tomlと
+    # 統合状態が食い違うので、無視して最後まで書き終える。待つ段階はSIGTERMで止まってよい。
+    import signal
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     import fcntl
     with (root / "codex-bridge-switch.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

@@ -216,6 +216,63 @@ class MenubarStatusTests(unittest.TestCase):
                          "http://127.0.0.1:8788/v1")
         self.assertFalse(self.status(free_port(), free_port())["unified"]["enabled"])
 
+    def unified_fixture(self):
+        source = '[model_providers.codex-bridge]\nbase_url = "http://127.0.0.1:8790/v1"\n'
+        self.write_private(self.codex / "config.toml", source)
+        self.write_private(self.codex / "unified-router-state.json", json.dumps({
+            "root": {"openai_base_url": None, "model_catalog_json": None},
+            "bridge": {"base_url": "http://127.0.0.1:8788/v1", "requires_openai_auth": None, "wire_api": "responses"},
+            "bridge_existed": True}))
+        return source
+
+    def test_ac05_sigterm_in_the_middle_of_the_switch_does_not_leave_it_half_done(self):
+        # 検証役と同じ形: config.tomlを書いた直後（統合状態を消す前）にアプリの期限のSIGTERMが届く。
+        self.unified_fixture()
+        harness = (
+            "import os, signal, sys, time\n"
+            f"sys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
+            "import unified_config\n"
+            "original = unified_config.atomic_write\n"
+            "def write_then_term(*args, **kwargs):\n"
+            "    original(*args, **kwargs)\n"
+            "    os.kill(os.getpid(), signal.SIGTERM)\n"
+            "    time.sleep(0.3)\n"
+            "unified_config.atomic_write = write_then_term\n"
+            "sys.argv = ['unified_config.py', 'off', '--port', sys.argv[1], '--bridge-port', sys.argv[2], '--wait-idle', '5']\n"
+            "unified_config.main()\n")
+        result = subprocess.run([sys.executable, "-c", harness, str(free_port()), str(free_port())], env=self.env,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("統合ルーティング: off", result.stdout)
+        # 前か後のどちらか（ここでは「後」）にそろい、食い違わない。
+        self.assertFalse((self.codex / "unified-router-state.json").exists())
+        self.assertEqual(tomllib.loads((self.codex / "config.toml").read_text())["model_providers"]["codex-bridge"]["base_url"],
+                         "http://127.0.0.1:8788/v1")
+
+    def test_ac05_sigterm_while_waiting_changes_nothing(self):
+        source = self.unified_fixture()
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        conversation, _ = listener.accept()
+        toggle = subprocess.Popen([sys.executable, str(ROOT / "scripts/unified_config.py"), "off", "--port", str(port),
+                                   "--bridge-port", str(free_port()), "--wait-idle", "60"], env=self.env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(2)
+            toggle.terminate()
+            toggle.communicate(timeout=10)
+        finally:
+            if toggle.poll() is None:
+                toggle.kill()
+            for sock in (client, conversation, listener):
+                sock.close()
+        self.assertNotEqual(toggle.returncode, 0)
+        self.assertEqual((self.codex / "config.toml").read_text(), source)
+        self.assertTrue((self.codex / "unified-router-state.json").exists())
+
     def test_ac05_wait_idle_is_bounded(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/unified_config.py"), "off", "--wait-idle", "1801"],
                                 env=self.env, capture_output=True, text=True, timeout=30)
