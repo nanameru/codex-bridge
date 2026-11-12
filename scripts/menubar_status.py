@@ -70,6 +70,17 @@ def private_file(path):
     return stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
 
 
+def key_ready(path):
+    """ルーター（readManualKey）が使える鍵かだけを返す。中身は返さない。"""
+    if not private_file(path):
+        return False
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return 0 < len(value) <= 8192 and not re.search(r"[\s\x00-\x1f\x7f]", value)
+
+
 def history_mode(root):
     path = root / "bridge-history-mode.json"
     if not path.exists() and not path.is_symlink():
@@ -176,7 +187,7 @@ def collect(root, router_port, bridge_port, timeout=1.5):
         "summary_limit": limit,
         "providers": {"recent_requests": logs["requests"], "counts": logs["counts"],
                       "limited_until": provider_limits(root, now_ms)},
-        "keys": {name: (root / file).is_file() for name, file in KEY_FILES.items()},
+        "keys": {name: key_ready(root / file) for name, file in KEY_FILES.items()},
     }
 
 

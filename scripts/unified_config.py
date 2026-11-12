@@ -366,6 +366,8 @@ def main():
     parser = argparse.ArgumentParser(description="同じチャットで双方向にモデルを切り替える設定")
     parser.add_argument("mode", choices=["prepare", "on", "off", "transports", "normal-on", "flash-code-mode"])
     parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--bridge-port", type=int, default=8788,
+                        help="--wait-idleで、routerと一緒に会話の接続が空くのを待つブリッジのポート")
     parser.add_argument("--wait-idle", type=int, default=0,
                         help="on/offの前に、routerの会話の接続が空くまで最大この秒数だけ待つ（接続は止めない）")
     arguments = parser.parse_args()
@@ -382,11 +384,13 @@ def main():
     elif arguments.mode == "prepare":
         print(prepare(root, Path(__file__).resolve().parents[1]))
         return
+    if not 1 <= arguments.bridge_port <= 65535:
+        raise ValueError("ブリッジのポートは1〜65535で指定してください")
     if not 0 <= arguments.wait_idle <= 1800:
         raise ValueError("接続待機は0〜1800秒で指定してください")
     if arguments.wait_idle:
         from install_router_service import wait_for_idle
-        wait_for_idle(arguments.wait_idle, ports=(arguments.port,))
+        wait_for_idle(arguments.wait_idle, ports=(arguments.port, arguments.bridge_port))
     import fcntl
     with (root / "codex-bridge-switch.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

@@ -35,6 +35,8 @@ struct CommandSpec: Equatable {
     var arguments: [String]
     /// 鍵はここ（標準入力）だけで渡す。引数・環境変数には入れない。
     var input: Data?
+    /// これを過ぎたら子プロセスを止めて失敗として返す（画面が待ち続けないように）。
+    var timeout: TimeInterval = 30
 }
 
 enum Commands {
@@ -56,12 +58,14 @@ enum Commands {
                     input: nil)
     }
 
-    /// 既存の `unified_config.py on|off`。会話の接続が空くまで待ってから切り替える（接続は止めない）。
-    static func unified(_ config: AppConfig, enabled: Bool, waitIdleSeconds: Int = 1800) -> CommandSpec {
+    /// 既存の `unified_config.py on|off`。ルーターとブリッジの会話の接続が空くまで待ってから切り替える
+    /// （接続は止めない）。空かなければ切り替えずに失敗する。
+    static func unified(_ config: AppConfig, enabled: Bool, waitIdleSeconds: Int = 120) -> CommandSpec {
         CommandSpec(executable: config.python,
                     arguments: [script(config, "unified_config.py"), enabled ? "on" : "off",
-                                "--port", String(config.routerPort), "--wait-idle", String(waitIdleSeconds)],
-                    input: nil)
+                                "--port", String(config.routerPort), "--bridge-port", String(config.bridgePort),
+                                "--wait-idle", String(waitIdleSeconds)],
+                    input: nil, timeout: TimeInterval(waitIdleSeconds + 30))
     }
 
     static func setKey(_ config: AppConfig, provider: KeyProvider, key: String) -> CommandSpec {
@@ -109,6 +113,9 @@ enum CommandRunner {
                                                                  errorOutput: Data("コマンドを起動できません".utf8)))
                     return
                 }
+                // 時間切れなら止める。止めた後は出力の管が閉じ、下の待ちが終わる。
+                let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
+                DispatchQueue.global().asyncAfter(deadline: .now() + spec.timeout, execute: deadline)
                 if let data = spec.input { input.fileHandleForWriting.write(data) }
                 try? input.fileHandleForWriting.close()
                 var outData = Data(), errData = Data()
@@ -119,6 +126,7 @@ enum CommandRunner {
                 DispatchQueue.global().async { errData = errors.fileHandleForReading.readDataToEndOfFile(); group.leave() }
                 group.wait()
                 process.waitUntilExit()
+                deadline.cancel()
                 continuation.resume(returning: CommandResult(exitCode: process.terminationStatus, output: outData, errorOutput: errData))
             }
         }

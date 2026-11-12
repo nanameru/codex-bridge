@@ -44,7 +44,17 @@ check(keySpec.arguments == ["/repo/scripts/manual_providers.py", "set-key", "com
 check(!CommandRunner.environment(config).values.contains { $0.contains(secret) }, "key never in environment")
 check(Commands.historyMode(config, .ask).arguments == ["/repo/src/history-mode.mjs", "--mode", "ask"], "history mode command")
 check(Commands.unified(config, enabled: false).arguments ==
-      ["/repo/scripts/unified_config.py", "off", "--port", "18790", "--wait-idle", "1800"], "unified waits for idle")
+      ["/repo/scripts/unified_config.py", "off", "--port", "18790", "--bridge-port", "18788", "--wait-idle", "120"],
+      "unified waits for router and bridge to be idle")
+check(Commands.unified(config, enabled: true).timeout == 150 && Commands.status(config).timeout == 30, "every command has a time limit")
+let sleeper = CommandSpec(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], input: nil, timeout: 1)
+let started = Date()
+let semaphore = DispatchSemaphore(value: 0)
+var timedOut: CommandResult?
+Task { timedOut = await CommandRunner.run(sleeper, config: AppConfig(repository: URL(fileURLWithPath: "/"),
+    python: URL(fileURLWithPath: "/py"), node: URL(fileURLWithPath: "/node"), routerPort: 1, bridgePort: 2)); semaphore.signal() }
+semaphore.wait()
+check(timedOut?.exitCode != 0 && Date().timeIntervalSince(started) < 10, "a hung command is stopped at its time limit")
 check(Commands.status(config).arguments.contains("18790") && !Commands.status(config).arguments.contains("8791"), "status uses configured router port")
 let resolved = AppConfig.resolve(environment: ["CODEX_BRIDGE_HOME": "/r", "CODEX_BRIDGE_ROUTER_PORT": "8791x"],
                                  info: ["CodexBridgePython": "/p"])

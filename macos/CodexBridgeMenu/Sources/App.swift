@@ -31,6 +31,7 @@ final class BridgeModel: ObservableObject {
             status = value
             statusError = nil
         } else {
+            status = nil  // 古い状態を稼働中として見せ続けない
             statusError = "状態を読めません（リポジトリと Python 3.11 以上を確認）"
         }
     }
@@ -57,7 +58,7 @@ final class BridgeModel: ObservableObject {
     func setUnified(_ enabled: Bool) {
         guard status?.unified.enabled != enabled, busyMessage == nil else { return }
         Task { await perform(Commands.unified(config, enabled: enabled),
-                             busy: "会話が空くのを待ってから切り替えます…",
+                             busy: "会話が空くのを待ってから切り替えます（最大2分）…",
                              success: enabled ? "ブリッジを使います。開いているチャットは完了後に開き直してください"
                                               : "ブリッジを使いません。開いているチャットは完了後に開き直してください") }
     }
@@ -201,7 +202,7 @@ private struct ServiceSection: View {
             Toggle(isOn: Binding(get: { status.unified.enabled }, set: { model.setUnified($0) })) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("ブリッジを使う")
-                    Text("会話中なら、空くまで待ってから切り替えます").font(.caption2).foregroundStyle(.secondary)
+                    Text("会話中なら、空くまで最大2分待ちます。空かなければ切り替えません").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             .toggleStyle(.switch)

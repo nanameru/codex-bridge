@@ -164,22 +164,37 @@ class MenubarStatusTests(unittest.TestCase):
         self.assertEqual(path.read_text(), SECRET + "\n")
         self.assertNotIn(SECRET, failed.stdout + failed.stderr)
         self.assertTrue(self.status(free_port(), free_port())["keys"]["ollama"])
+        # ルーターが読まない鍵（他人も読める・空・空白入り）は「登録済み」にしない。
+        os.chmod(path, 0o644)
+        self.assertFalse(self.status(free_port(), free_port())["keys"]["ollama"])
+        for bad in ["\n", "two words\n"]:
+            self.write_private(path, bad)
+            self.assertFalse(self.status(free_port(), free_port())["keys"]["ollama"])
 
     def test_ac05_toggle_waits_for_an_active_conversation_without_cutting_it(self):
+        self.check_toggle_waits(on_bridge=False)
+
+    def test_ac05_toggle_also_waits_for_a_conversation_on_the_bridge(self):
+        # ルーターが空いていても、ブリッジ（8788相当）で会話中なら待つ。
+        self.check_toggle_waits(on_bridge=True)
+
+    def check_toggle_waits(self, on_bridge):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         port = listener.getsockname()[1]
         client = socket.create_connection(("127.0.0.1", port))
         conversation, _ = listener.accept()
-        source = '[model_providers.codex-bridge]\nbase_url = "http://127.0.0.1:%d/v1"\n' % port
+        router_port = free_port() if on_bridge else port
+        bridge_port = port if on_bridge else free_port()
+        source = '[model_providers.codex-bridge]\nbase_url = "http://127.0.0.1:%d/v1"\n' % router_port
         self.write_private(self.codex / "config.toml", source)
         self.write_private(self.codex / "unified-router-state.json", json.dumps({
             "root": {"openai_base_url": None, "model_catalog_json": None},
             "bridge": {"base_url": "http://127.0.0.1:8788/v1", "requires_openai_auth": None, "wire_api": "responses"},
             "bridge_existed": True}))
-        toggle = subprocess.Popen([sys.executable, str(ROOT / "scripts/unified_config.py"), "off", "--port", str(port),
-                                   "--wait-idle", "60"], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        toggle = subprocess.Popen([sys.executable, str(ROOT / "scripts/unified_config.py"), "off", "--port", str(router_port),
+                                   "--bridge-port", str(bridge_port), "--wait-idle", "60"], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True)
         try:
             time.sleep(2)
