@@ -73,9 +73,31 @@ export function selectedCompactionResponse(item, { model, stream, compactEndpoin
     + frame({ type: "response.completed", response }) };
 }
 
-/** In-memory only: forgotten on restart by design (AC-04). */
+/** True when a router-owned item is anywhere in the value (e.g. outside a top-level `input`). */
+export function containsSelectedCompaction(value, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 64) return false;
+  if (isSelectedCompaction(value)) return true;
+  return (Array.isArray(value) ? value : Object.values(value)).some(child => containsSelectedCompaction(child, depth + 1));
+}
+
+/**
+ * In-memory only: forgotten on restart by design (AC-04). Windows are kept per
+ * account key (a hash of the caller's credentials and OpenAI destination), so
+ * one account's limit never suppresses OpenAI for another account.
+ */
 export class SummaryLimitWindow {
-  constructor(now = () => Date.now()) { this.now = now; this.until = 0; }
-  blocked() { return this.until > this.now(); }
-  record(until) { if (Number.isFinite(until) && until > this.until) this.until = until; }
+  constructor(now = () => Date.now(), maxEntries = 64) { this.now = now; this.maxEntries = maxEntries; this.windows = new Map(); }
+  prune() {
+    const now = this.now();
+    for (const [key, until] of this.windows) if (until <= now) this.windows.delete(key);
+  }
+  blocked(key = "") { this.prune(); return (this.windows.get(key) ?? 0) > this.now(); }
+  record(key = "", until) {
+    if (!Number.isFinite(until) || until <= this.now()) return;
+    this.prune();
+    if (until <= (this.windows.get(key) ?? 0)) return;
+    this.windows.delete(key);
+    if (this.windows.size >= this.maxEntries) this.windows.delete(this.windows.keys().next().value);
+    this.windows.set(key, until);
+  }
 }

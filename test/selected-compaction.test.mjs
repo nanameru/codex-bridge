@@ -8,7 +8,7 @@ import test from 'node:test';
 import { createRouter } from '../src/model-router.mjs';
 import { MANUAL_PROVIDERS } from '../src/manual-providers.mjs';
 import { ProviderFallbackState } from '../src/provider-fallback.mjs';
-import { SELECTED_COMPACTION_NOTICE, SELECTED_COMPACTION_PREFIX, SummaryLimitWindow,
+import { SELECTED_COMPACTION_NOTICE, SELECTED_COMPACTION_PREFIX, SummaryLimitWindow, containsSelectedCompaction,
   encodeSelectedCompaction, restoreSelectedCompactions, selectedCompactionResponse } from '../src/selected-compaction.mjs';
 
 const thread = '01a1777d-4508-72a1-9dbe-dcd799f721ab';
@@ -45,8 +45,8 @@ async function fixture(t, { openai = () => usageLimit(), ...options } = {}) {
     }, ...options });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  const send = (body, path = '/v1/responses') => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
-    method: 'POST', headers: { authorization: 'Bearer owner-native-token', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const send = (body, path = '/v1/responses', token = 'owner-native-token') => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   return { calls, metrics, send };
 }
 function home(t) {
@@ -304,4 +304,98 @@ test('a 429 during the OpenAI pre-summary of a large compaction also falls back 
   assert.ok(f.calls.some(call => call.provider === 'opencode' && isSummary(call.body)));
   assert.equal(f.metrics.at(-1).remote_compaction_fallback, 'selected');
   assert.equal(f.metrics.at(-1).remote_compaction_openai_status, 429);
+});
+
+// ---- Review fixes for PR #187 ----
+
+test('review 1 (AC-02): native tool endpoints unwrap the router item; nested items stop before sending', async t => {
+  const f = await fixture(t, { openai: () => Response.json({ ok: true }) });
+  const item = encodeSelectedCompaction('SEARCH CONTEXT SUMMARY');
+  for (const path of ['/v1/alpha/search', '/v1/images/generations']) {
+    const before = f.calls.length;
+    const response = await f.send({ model: 'gpt-test', input: [item, { role: 'user', content: 'find it' }] }, path);
+    assert.equal(response.status, 200, await response.text());
+    const sent = f.calls.slice(before);
+    assert.equal(sent.length, 1);
+    const wire = JSON.stringify(sent[0].body);
+    assert.ok(!wire.includes(SELECTED_COMPACTION_PREFIX), path + ' must not forward the wrapper');
+    assert.match(wire, /SEARCH CONTEXT SUMMARY/);
+  }
+  for (const [path, body] of [
+    ['/v1/alpha/search', { model: 'gpt-test', query: { history: [item] } }],
+    ['/v1/responses', { model: 'opencode/deepseek-test', input: [{ role: 'user', content: [item] }] }],
+    ['/v1/responses', { model: 'gpt-test', input: [{ role: 'user', content: 'hi' }], metadata: { carried: item } }],
+  ]) {
+    const before = f.calls.length;
+    const response = await f.send(body, path);
+    assert.equal(response.status, 422);
+    assert.match(await response.text(), /selected_compaction_unsupported_location/);
+    assert.equal(f.calls.length, before, 'no upstream request');
+  }
+  assert.equal(containsSelectedCompaction({ a: [{ b: item }] }), true);
+  assert.equal(containsSelectedCompaction({ type: 'compaction', encrypted_content: 'native' }), false);
+});
+
+test('review 2 (AC-04): a pre-summary 429 keeps the reset time from the response, not only the default', async t => {
+  let clock = Date.now();
+  const f = await fixture(t, { summaryInputLimitTokens: 40000, providerFallbackCooldownMs: 60000,
+    summaryLimitWindow: new SummaryLimitWindow(() => clock), openai: () => usageLimit(2 * 3600) });
+  const big = Array.from({ length: 12 }, (_, index) => ({ type: 'message', role: index % 2 ? 'assistant' : 'user',
+    content: `part ${index} ` + 'context '.repeat(4000) }));
+  const response = await f.send(compactionRequest({ input: [...big, { type: 'message', role: 'user', content: 'latest' }, trigger] }));
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(f.metrics.at(-1).remote_compaction_openai_reset_known, true);
+  clock += 10 * 60 * 1000; // past the 1-minute default, before the 2-hour reset
+  let before = f.calls.length;
+  await (await f.send(compactionRequest({ input: [{ role: 'user', content: 'small' }, trigger] }))).text();
+  assert.deepEqual(f.calls.slice(before).map(call => call.provider), ['opencode'], 'OpenAI stays skipped until resets_at');
+  clock += 2 * 3600 * 1000;
+  before = f.calls.length;
+  await (await f.send(compactionRequest({ input: [{ role: 'user', content: 'after' }, trigger] }))).text();
+  assert.equal(f.calls[before].provider, 'openai');
+});
+
+test('review 3 (AC-04): the limit window is kept per OpenAI account', async t => {
+  const f = await fixture(t, { openai: (body, url) => usageLimit() });
+  await (await f.send(compactionRequest(), '/v1/responses', 'account-a')).text();
+  let before = f.calls.length;
+  await (await f.send(compactionRequest({ input: [{ role: 'user', content: 'a again' }, trigger] }), '/v1/responses', 'account-a')).text();
+  assert.deepEqual(f.calls.slice(before).map(call => call.provider), ['opencode'], 'account A is skipped');
+  before = f.calls.length;
+  await (await f.send(compactionRequest({ input: [{ role: 'user', content: 'b first' }, trigger] }), '/v1/responses', 'account-b')).text();
+  assert.equal(f.calls[before].provider, 'openai', 'account B still tries OpenAI');
+  assert.equal(f.calls[before].headers.authorization, 'Bearer account-b');
+  const window = new SummaryLimitWindow(() => 1000, 2);
+  window.record('a', 5000); window.record('b', 5000); window.record('c', 5000);
+  assert.equal(window.blocked('a'), false, 'oldest entry is evicted at the cap');
+  assert.equal(window.blocked('c'), true);
+});
+
+test('review 4: every provider at its limit answers 429 with retry-after, not 502', async t => {
+  const f = await fixture(t, { fetcher: async (url, init) => {
+    JSON.parse(init.body);
+    return usageLimit(1800);
+  } });
+  const response = await f.send(compactionRequest());
+  assert.equal(response.status, 429);
+  const retry = Number(response.headers.get('retry-after'));
+  assert.ok(retry > 1700 && retry <= 1800, String(retry));
+  const body = await response.json();
+  assert.equal(body.error.type, 'summary_provider_limits_exhausted');
+  assert.match(body.error.message, /どちらも利用上限/);
+  assert.deepEqual(f.metrics.at(-1).remote_compaction_limited_providers, ['opencode']);
+});
+
+test('review 5: a router item inside a compaction request reaches the selected model as text, without log restore', async t => {
+  const f = await fixture(t);
+  const item = encodeSelectedCompaction('PREVIOUS SELECTED SUMMARY');
+  const response = await f.send(compactionRequest({ input: [item, { role: 'user', content: 'more work' }, trigger] }));
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(compactionItems(await response.text()).length, 1);
+  const summary = f.calls.find(call => call.provider === 'opencode');
+  const wire = JSON.stringify(summary.body);
+  assert.match(wire, /PREVIOUS SELECTED SUMMARY/);
+  assert.ok(!wire.includes(SELECTED_COMPACTION_PREFIX));
+  assert.equal(f.metrics.at(-1).history_source, undefined, 'the owner log is not needed');
+  assert.equal(f.metrics.at(-1).selected_compaction_restored, 1);
 });

@@ -17,7 +17,7 @@ import { authenticateCodex, codexHomeId, codexRoot as defaultCodexRoot, diagnose
 import { createRequestGuard } from "./request-guard.mjs";
 import { HISTORY_MODES, readHistoryMode, modeHelp } from "./history-mode.mjs";
 import { restoreRolloutHistory } from "./rollout-history.mjs";
-import { SELECTED_COMPACTION_NOTICE, SummaryLimitWindow, encodeSelectedCompaction, isSelectedCompaction,
+import { SELECTED_COMPACTION_NOTICE, SummaryLimitWindow, containsSelectedCompaction, encodeSelectedCompaction, isSelectedCompaction,
   restoreSelectedCompactions, selectedCompactionResponse } from "./selected-compaction.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
 import { CHAT_PROVIDERS, KIMI_MODEL, KIMI_SLUG, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
@@ -444,12 +444,20 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       // A compaction item written by the router (#186) is plain summary text in
       // a wrapper only this router understands. Unwrap it before any upstream,
       // OpenAI included, so the wrapper never leaves this process.
-      if (!nativeTool && Array.isArray(body.input) && body.input.some(isSelectedCompaction)) {
+      // This runs for every path, native tool endpoints included.
+      if (Array.isArray(body.input) && body.input.some(isSelectedCompaction)) {
         let restored;
         try { restored = restoreSelectedCompactions(body.input); }
         catch (error) { fail(response, 422, "selected_compaction_invalid", error.message); return; }
         body = { ...body, input: restored.input };
         metric.selected_compaction_restored = restored.count;
+      }
+      // Anywhere else (nested or outside `input`) it cannot be unwrapped safely:
+      // stop before any upstream request instead of forwarding the wrapper.
+      if (containsSelectedCompaction(body)) {
+        fail(response, 422, "selected_compaction_unsupported_location",
+          "Bridgeが作った圧縮項目を、この位置では要約の文章に戻せません。外部へは送信していません。履歴は保持しています");
+        return;
       }
       let route = nativeTool ? { provider: "openai" } : routes.get(body.model);
       // A session may retain its automatic ID after the feature is disabled.
@@ -540,6 +548,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       // selected model (the automatic DeepSeek route also tries its configured
       // same-model providers) and return exactly one router-owned compaction item.
       const respondSelectedCompaction = async ({ route: source, body: original, compactEndpoint }) => {
+        if (response.headersSent) throw new Error("selected compaction after response start");
         metric.remote_compaction_fallback = "selected";
         metric.stage = "remote_compaction_selected";
         if (source.provider === "whatstoken") {
@@ -551,7 +560,10 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         // visible conversation content; the trigger is re-appended as the boundary.
         const portable = input => input.filter(item => item.type !== "compaction_trigger"
           && !(item.type === "reasoning" && item.encrypted_content));
-        let work = { ...original, input: [...portable(original.input ?? []), { type: "compaction_trigger" }] };
+        // The entry point already unwrapped router-owned items; repeat it so this
+        // function never depends on that ordering (restoreHistory is for OpenAI items only).
+        const plain = restoreSelectedCompactions(original.input)?.input ?? original.input ?? [];
+        let work = { ...original, input: [...portable(plain), { type: "compaction_trigger" }] };
         if (work.input.some(item => item.type === "compaction")) {
           // An earlier OpenAI compaction: rebuild plain history from the owner's log.
           const restored = await restoreHistory(work, { root: codexRoot, threadId, signal: abort.signal });
@@ -570,6 +582,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         }
         const cacheIdentity = createHash("sha256").update(codexRoot).update("\0").update(request.headers.authorization ?? "").digest("hex");
         const limited = [];
+        const resetAts = [];
         let summary, lastError;
         for (const candidate of candidates) {
           const isGo = candidate.provider === "opencode";
@@ -590,11 +603,22 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             if (abort.signal.aborted || !(error instanceof HandoffError) || ![402, 429].includes(error.upstreamStatus)) throw error;
             limited.push(candidate.provider);
             lastError = error;
+            if (Number.isFinite(error.limitResetAt)) resetAts.push(error.limitResetAt);
           }
         }
         if (limited.length) metric.remote_compaction_limited_providers = limited;
         if (summary === undefined) {
-          if (lastError) throw lastError;
+          if (lastError) {
+            // Every provider is at its limit: answer with a limit status, not a 502.
+            const status = limited.length && lastError.upstreamStatus === 402 ? 402 : 429;
+            const retry = resetAts.length ? Math.max(1, Math.ceil((Math.min(...resetAts) - Date.now()) / 1000)) : null;
+            if (retry) response.setHeader("retry-after", String(retry));
+            fail(response, status, "summary_provider_limits_exhausted",
+              "OpenAI（要約用モデル）と選択中のモデルの提供元が、どちらも利用上限のため会話を要約できませんでした。"
+              + "履歴と選択モデルは保持しています。上限の解除を待つか、利用枠・支払い設定を確認して再試行してください。"
+              + providerHelp(source.provider));
+            return;
+          }
           fail(response, 503, "provider_key_required", "OpenAIが利用上限のため選択中のモデルで要約しようとしましたが、使える提供元の認証情報がありません。履歴は保持しています"
             + providerHelp(source.provider));
           return;
@@ -639,8 +663,12 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         // GPT selections keep the existing native-only behavior. Other models
         // may summarize themselves when OpenAI is at its usage limit (#186).
         if (route.provider !== "openai" && ["selected", "openai"].includes(mode)) {
-          compactionFallback = { route, body, compactEndpoint: nativeCompactEndpoint };
-          if (summaryLimitWindow.blocked()) {
+          compactionFallback = { route, body, compactEndpoint: nativeCompactEndpoint,
+            // One window per OpenAI account and destination, never shared across accounts.
+            limitKey: createHash("sha256").update(JSON.stringify([
+              nativeBase ?? (/^Bearer sk-/i.test(request.headers.authorization) ? "api" : "chatgpt"),
+              request.headers.authorization ?? "", request.headers["chatgpt-account-id"] ?? ""])).digest("hex") };
+          if (summaryLimitWindow.blocked(compactionFallback.limitKey)) {
             // AC-04: do not ask OpenAI again until its limit window ends.
             metric.remote_compaction_openai_skipped = true;
             await respondSelectedCompaction(compactionFallback);
@@ -779,8 +807,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             metric.remote_compaction_prepared = true;
           } catch (error) {
             if (!(compactionFallback && error instanceof HandoffError && error.upstreamStatus === 429)) throw error;
-            summaryLimitWindow.record(Date.now() + providerFallbackCooldownMs);
+            summaryLimitWindow.record(compactionFallback.limitKey, error.limitResetAt ?? Date.now() + providerFallbackCooldownMs);
             metric.remote_compaction_openai_status = 429;
+            metric.remote_compaction_openai_reset_known = Number.isFinite(error.limitResetAt);
             await respondSelectedCompaction(compactionFallback);
             return;
           }
@@ -1014,7 +1043,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         const now = Date.now();
         const limit = await classifyProviderLimit(upstream.clone(), { now, unknownCooldownMs: providerFallbackCooldownMs })
           ?? await classifyTransientProviderLimit(upstream.clone(), { now });
-        summaryLimitWindow.record(limit?.resetAt ?? now + providerFallbackCooldownMs);
+        summaryLimitWindow.record(compactionFallback.limitKey, limit?.resetAt ?? now + providerFallbackCooldownMs);
         metric.remote_compaction_openai_status = 429;
         metric.remote_compaction_openai_reset_known = Boolean(limit?.resetKnown);
         await upstream.body?.cancel().catch(() => {});

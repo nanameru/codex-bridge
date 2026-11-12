@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { readUpstreamFailure, isHandoffStatusItem } from "./handoff-status.mjs";
 import { normalizeToolCallId } from "./tool-adapter.mjs";
+import { classifyProviderLimit, classifyTransientProviderLimit } from "./provider-fallback.mjs";
 
 export class HandoffError extends Error {}
 
@@ -245,8 +246,17 @@ export function compactionHandoff({ fetcher, model, maxBytes, retryDelayMs = 100
             });
             upstreamStatus = response.status;
             if (!response.ok || !response.body) {
+              // Keep only the parsed reset time of a usage limit (#186), never the body.
+              let limitResetAt;
+              if ([402, 429].includes(response.status) && response.body) {
+                const now = Date.now();
+                const limit = await classifyProviderLimit(response, { now });
+                limitResetAt = limit?.resetKnown ? limit.resetAt
+                  : (await classifyTransientProviderLimit(response, { now }))?.resetAt;
+              }
               const detail = response.body ? await readUpstreamFailure(response) : {};
-              throw summaryFailure(detail.code, response.status, "http", attempt);
+              throw Object.assign(summaryFailure(detail.code, response.status, "http", attempt),
+                Number.isFinite(limitResetAt) ? { limitResetAt } : {});
             }
             const chunks = [];
             let size = 0;

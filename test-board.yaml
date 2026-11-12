@@ -15,7 +15,7 @@ cases:
     source: [src/model-router.mjs, src/selected-compaction.mjs, src/compaction-handoff.mjs]
     test_file: test/selected-compaction.test.mjs
     issues: [186]
-    notes: "実Codex 0.167.0-alpha.3.2 app-server＋模擬上流（test/selected-compaction-app-e2e.py selected/openai）で、圧縮2回・次の応答・resumeを確認。実OpenAI/DeepSeekへの送信は未実施。"
+    notes: "実Codex 0.167.0-alpha.3.2 app-server＋模擬上流（test/selected-compaction-app-e2e.py selected/openai）で、圧縮2回・次の応答・resumeを確認。PR #187のレビュー対応（native tool経路の印・事前要約の解除時刻・アカウント別の上限・全提供元上限の429）も回帰テスト済み。実OpenAI/DeepSeekへの送信は未実施。"
 
   - id: TC-118
     title: "既存の外部モデル会話でremote compactと巨大履歴を引き継ぐ"

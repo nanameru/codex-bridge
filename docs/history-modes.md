@@ -57,8 +57,9 @@ python3 scripts/portable_history.py --apply
 OpenAI以外のモデルを選んでいて、remote compaction（`compaction_trigger`付きの要求と`/responses/compact`）でOpenAIの要約モデルが429（利用上限）を返した場合は、選択中のモデルが代わりに要約します。自動のDeepSeek V4.1 Flashでは、同じモデルの設定済み提供元（OpenCode Go → Command Code → Ollama）を順に試します。`selected`と`openai`の両方が対象で、`ask`は従来どおり送信前に停止します。GPTを選んでいる会話の動きは変わりません。
 
 - 要約結果は、Bridgeだけが読める印（`cxbsel1:`）を付けた圧縮項目1件としてCodexへ返します。中身は暗号化ではなく要約の文章で、本人のCodexの会話ログに保存されます。
-- 次の要求でBridgeがこの項目を要約の文章に戻してから送信します。後でGPTに切り替えた会話でも、印の付いた項目をOpenAIへは送りません。壊れた項目は送信前に422で停止します。
-- 429の応答に書かれた解除時刻まで（分からない場合は短い既定時間、既定5分・`CODEX_PROVIDER_FALLBACK_COOLDOWN_MS`）、OpenAIには聞かずに最初から選択中のモデルで要約します。この記録はrouterのメモリ内だけで、再起動すると消えます。
+- 次の要求でBridgeがこの項目を要約の文章に戻してから送信します。画像生成・検索などOpenAI固有の経路も含め、後でGPTに切り替えた会話でも、印の付いた項目をOpenAIへは送りません。壊れた項目や、`input`の外・入れ子の中など戻せない位置にある項目は、送信前に422で停止します。
+- 429の応答に書かれた解除時刻まで（分からない場合は短い既定時間、既定5分・`CODEX_PROVIDER_FALLBACK_COOLDOWN_MS`）、OpenAIには聞かずに最初から選択中のモデルで要約します。長い圧縮で先に行う要約が429になった場合も、同じように応答の解除時刻を使います。記録はOpenAIのアカウント（認証情報と宛先のハッシュ）ごとで、別のアカウントに切り替えるとOpenAIを試します。この記録はrouterのメモリ内だけで、再起動すると消えます。
+- 選択中のモデルの提供元もすべて利用上限（402/429）の場合は、HTTP 429（`summary_provider_limits_exhausted`、分かれば`retry-after`付き）で止まり、履歴は保持します。
 - 以前にOpenAIの暗号化圧縮を使った会話は、元ログから文章を復元してから要約します（条件は上の「元ログから引き継げる条件」）。復元できない場合は送信前に停止します。
 - 代行したときは利用者向けに「OpenAI（要約用モデル）が利用上限のため、選択中のモデルで会話を要約しました」と表示し、routerのログに`remote_compaction_fallback:"selected"`、`remote_compaction_openai_status`、`remote_compaction_openai_skipped`、`remote_compaction_provider`を残します。会話の本文や認証情報はログに書きません。
 - 選択中のモデルの要約分の利用量が発生します。要約の質は選択中のモデルに依存し、過去の細部が引き継がれない場合があります。
