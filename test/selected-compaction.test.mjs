@@ -334,6 +334,18 @@ test('review 1 (AC-02): native tool endpoints unwrap the router item; nested ite
   }
   assert.equal(containsSelectedCompaction({ a: [{ b: item }] }), true);
   assert.equal(containsSelectedCompaction({ type: 'compaction', encrypted_content: 'native' }), false);
+  // Deeper than the walk limit must still be caught, never forwarded.
+  let deep = item;
+  for (let index = 0; index < 66; index++) deep = { next: deep };
+  assert.equal(containsSelectedCompaction(deep), true);
+  let plainDeep = { text: 'hello' };
+  for (let index = 0; index < 66; index++) plainDeep = { next: plainDeep };
+  assert.equal(containsSelectedCompaction(plainDeep), false);
+  const before = f.calls.length;
+  const response = await f.send({ model: 'gpt-test', query: deep }, '/v1/alpha/search');
+  assert.equal(response.status, 422);
+  assert.match(await response.text(), /selected_compaction_unsupported_location/);
+  assert.equal(f.calls.length, before, 'deep marker: no upstream request');
 });
 
 test('review 2 (AC-04): a pre-summary 429 keeps the reset time from the response, not only the default', async t => {

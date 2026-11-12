@@ -75,7 +75,9 @@ export function selectedCompactionResponse(item, { model, stream, compactEndpoin
 
 /** True when a router-owned item is anywhere in the value (e.g. outside a top-level `input`). */
 export function containsSelectedCompaction(value, depth = 0) {
-  if (!value || typeof value !== "object" || depth > 64) return false;
+  if (!value || typeof value !== "object") return false;
+  // Past the walk limit, fail closed: any marker text below still counts (#186 review).
+  if (depth > 64) return JSON.stringify(value).includes(SELECTED_COMPACTION_PREFIX);
   if (isSelectedCompaction(value)) return true;
   return (Array.isArray(value) ? value : Object.values(value)).some(child => containsSelectedCompaction(child, depth + 1));
 }
