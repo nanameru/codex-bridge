@@ -73,6 +73,20 @@ export function selectedCompactionResponse(item, { model, stream, compactEndpoin
     + frame({ type: "response.completed", response }) };
 }
 
+export const MAX_REQUEST_NESTING = 512;
+
+/** Iterative (no recursion) check, so absurdly deep JSON cannot overflow the stack (#186 review). */
+export function exceedsNesting(value, limit = MAX_REQUEST_NESTING) {
+  const stack = [[value, 0]];
+  while (stack.length) {
+    const [current, depth] = stack.pop();
+    if (!current || typeof current !== "object") continue;
+    if (depth >= limit) return true;
+    for (const child of Array.isArray(current) ? current : Object.values(current)) stack.push([child, depth + 1]);
+  }
+  return false;
+}
+
 /** True when a router-owned item is anywhere in the value (e.g. outside a top-level `input`). */
 export function containsSelectedCompaction(value, depth = 0) {
   if (!value || typeof value !== "object") return false;

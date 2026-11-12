@@ -46,7 +46,7 @@ async function fixture(t, { openai = () => usageLimit(), ...options } = {}) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const send = (body, path = '/v1/responses', token = 'owner-native-token') => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
-    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
   return { calls, metrics, send };
 }
 function home(t) {
@@ -346,6 +346,16 @@ test('review 1 (AC-02): native tool endpoints unwrap the router item; nested ite
   assert.equal(response.status, 422);
   assert.match(await response.text(), /selected_compaction_unsupported_location/);
   assert.equal(f.calls.length, before, 'deep marker: no upstream request');
+  // Absurd nesting (with or without a marker) is a clear 4xx, never a 502 or a forward.
+  for (const leaf of [item, { text: 'hello' }]) {
+    // Built as raw text: JSON.stringify itself cannot serialize this depth.
+    const huge = '{"model":"gpt-test","query":' + '{"next":'.repeat(8000) + JSON.stringify(leaf) + '}'.repeat(8000) + '}';
+    const count = f.calls.length;
+    const tooDeep = await f.send(huge, '/v1/alpha/search');
+    assert.equal(tooDeep.status, 422);
+    assert.match(await tooDeep.text(), /request_too_deep/);
+    assert.equal(f.calls.length, count, 'too deep: no upstream request');
+  }
 });
 
 test('review 2 (AC-04): a pre-summary 429 keeps the reset time from the response, not only the default', async t => {

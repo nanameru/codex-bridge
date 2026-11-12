@@ -17,7 +17,7 @@ import { authenticateCodex, codexHomeId, codexRoot as defaultCodexRoot, diagnose
 import { createRequestGuard } from "./request-guard.mjs";
 import { HISTORY_MODES, readHistoryMode, modeHelp } from "./history-mode.mjs";
 import { restoreRolloutHistory } from "./rollout-history.mjs";
-import { SELECTED_COMPACTION_NOTICE, SummaryLimitWindow, containsSelectedCompaction, encodeSelectedCompaction, isSelectedCompaction,
+import { SELECTED_COMPACTION_NOTICE, SummaryLimitWindow, containsSelectedCompaction, exceedsNesting, encodeSelectedCompaction, isSelectedCompaction,
   restoreSelectedCompactions, selectedCompactionResponse } from "./selected-compaction.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
 import { CHAT_PROVIDERS, KIMI_MODEL, KIMI_SLUG, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
@@ -434,6 +434,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       if (!body || Array.isArray(body) || typeof body !== "object") {
         fail(response, 400, "invalid_request", "リクエストはJSON objectで指定してください");
+        return;
+      }
+      // Codex never nests this deep; reject before any recursive handling can overflow (#186).
+      if (exceedsNesting(body)) {
+        fail(response, 422, "request_too_deep", "リクエストの入れ子が深すぎます。外部へは送信していません。履歴は保持しています");
         return;
       }
       if (!nativeTool && ((body.tools != null && (!Array.isArray(body.tools) || body.tools.some((tool) => !tool || typeof tool.type !== "string")))
