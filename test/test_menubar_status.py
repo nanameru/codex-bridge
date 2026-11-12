@@ -273,6 +273,58 @@ class MenubarStatusTests(unittest.TestCase):
         self.assertEqual((self.codex / "config.toml").read_text(), source)
         self.assertTrue((self.codex / "unified-router-state.json").exists())
 
+    def hold_switch_lock(self):
+        # 別のプロセスが切り替えのロックを持ったままにする。
+        holder = subprocess.Popen([sys.executable, "-c",
+                                   "import fcntl, sys, time\n"
+                                   "f = open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX)\n"
+                                   "print('locked', flush=True); time.sleep(60)\n",
+                                   str(self.codex / "codex-bridge-switch.lock")], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (holder.kill(), holder.wait()))
+        self.assertEqual(holder.stdout.readline().strip(), "locked")
+        return holder
+
+    def test_ac05_sigterm_while_waiting_for_the_lock_stops_and_changes_nothing(self):
+        # 検証役と同じ形: 別のプロセスがロックを持ったまま、SIGTERMを送る。
+        source = self.unified_fixture()
+        holder = self.hold_switch_lock()
+        toggle = subprocess.Popen([sys.executable, str(ROOT / "scripts/unified_config.py"), "off", "--port", str(free_port()),
+                                   "--bridge-port", str(free_port())], env=self.env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(1.5)
+            self.assertIsNone(toggle.poll(), "ロックが空くのを待っている")
+            toggle.terminate()
+            toggle.communicate(timeout=2)  # 2秒以内に終わる
+        finally:
+            if toggle.poll() is None:
+                toggle.kill()
+        self.assertNotEqual(toggle.returncode, 0)
+        holder.kill()
+        holder.wait()
+        time.sleep(0.5)  # ロックが外れたあとも、あとから書き換わらない
+        self.assertEqual((self.codex / "config.toml").read_text(), source)
+        self.assertTrue((self.codex / "unified-router-state.json").exists())
+
+    def test_ac05_lock_wait_is_bounded_and_changes_nothing(self):
+        source = self.unified_fixture()
+        self.hold_switch_lock()
+        harness = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
+            "import unified_config\n"
+            "unified_config.LOCK_WAIT_SECONDS = 1\n"
+            "sys.argv = ['unified_config.py', 'off', '--port', sys.argv[1], '--bridge-port', sys.argv[2]]\n"
+            "unified_config.main()\n")
+        started = time.monotonic()
+        result = subprocess.run([sys.executable, "-c", harness, str(free_port()), str(free_port())], env=self.env,
+                                capture_output=True, text=True, timeout=30)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("何も変更していません", result.stderr)
+        self.assertEqual((self.codex / "config.toml").read_text(), source)
+        self.assertTrue((self.codex / "unified-router-state.json").exists())
+
     def test_ac05_wait_idle_is_bounded(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/unified_config.py"), "off", "--wait-idle", "1801"],
                                 env=self.env, capture_output=True, text=True, timeout=30)
