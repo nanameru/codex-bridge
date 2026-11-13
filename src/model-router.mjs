@@ -56,7 +56,7 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./rollout-history.mjs", import.meta.url)))
   .update(readFileSync(new URL("./selected-compaction.mjs", import.meta.url)))
   .update(readFileSync(new URL("./models.json", import.meta.url))).digest("hex");
-const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
+const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "session-id", "thread-id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
 export function catalogRoutes(catalog) {
   const routes = new Map();
