@@ -186,6 +186,36 @@ test("turn-state crosses the OpenAI HTTP boundary in both directions and stays o
   }
 });
 
+test("session-id and thread-id reach the OpenAI upstream and stay out of OpenCode", async context => {
+  const sessionHeaders = { "session-id": "session-fixture-190", "thread-id": "thread-fixture-190" };
+  for (const stream of [true, false]) {
+    await context.test(stream ? "SSE" : "JSON", async t => {
+      const { calls, base } = await fixture(t, turnStateFixtureOptions(turnStateUpstream()));
+      const body = { model: "gpt-test", input: "continue", stream };
+      await assertTurnStateResponse(await sendTurnStateHttp(base, body, sessionHeaders), stream, turnStateValue);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].provider, "openai");
+      assert.equal(calls[0].path, "/v1/responses");
+      assert.equal(calls[0].headers["session-id"], "session-fixture-190");
+      assert.equal(calls[0].headers["thread-id"], "thread-fixture-190");
+
+      for (const [model, upstreamModel] of [
+        ["opencode/deepseek-test", "deepseek-test"],
+        ["opencode/direct-test", "direct-test"],
+      ]) {
+        await assertTurnStateResponse(await sendTurnStateHttp(base, { ...body, model }, sessionHeaders), stream, null);
+        const call = calls.at(-1);
+        assert.equal(call.provider, "opencode");
+        assert.equal(call.path, "/v1/responses");
+        assert.equal(call.body.model, upstreamModel);
+        assert.equal(call.headers["session-id"], undefined);
+        assert.equal(call.headers["thread-id"], undefined);
+      }
+      assert.equal(calls.length, 3);
+    });
+  }
+});
+
 test("turn-state is not invented when the OpenAI upstream omits it", async context => {
   for (const stream of [true, false]) {
     await context.test(stream ? "SSE" : "JSON", async t => {
