@@ -5,6 +5,42 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-122
+    title: "OpenAIのturn-stateを往復し他の提供元や未許可ヘッダーへ漏らさない"
+    feature: "OpenAI turn-state ヘッダーの中継"
+    scenario: "模擬上流とのHTTPでSSEとJSONの往復、OpenCode bridge/directへの分離、既存応答ヘッダーの維持、未許可・hop-by-hopの遮断、Connection指定と未送信を検証する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/model-router.test.mjs
+    issues: [190]
+    notes: "2026-11-13 macOSで実行。node --test test/model-router.test.mjs は91件全pass（exit 0）。python3 scripts/run_test_inventory.py --output test-results/issue-190 は Node410件・Python199件すべてpass（exit 0）。システムpython3が3.9のためPATH先頭にuvのcpython-3.12.16を置いて実行（CIの3.11相当）。bash -n両スクリプト・py_compile・git diff --check・build.sh --testも全てexit 0。PowerShell構文確認はpwsh未導入のため未実施。ループバック偽上流のみで実Codex・実API・E2Eは未実施。実APIでのキャッシュ率は未検証。"
+
+  - id: TC-121
+    title: "メニューバーアプリで状態を見て、要約の担当・ブリッジ・鍵を変える"
+    feature: "メニューバーアプリ"
+    scenario: "ルーター/ブリッジの稼働と版、要約の担当の切替、OpenAI上限と提供元の内訳、Command Code/Ollamaの鍵登録（標準入力のみ）、会話が空くまで待つon/off、待ち受けポートなし"
+    status: done
+    priority: high
+    type: integration
+    source: [scripts/menubar_status.py, scripts/manual_providers.py, scripts/unified_config.py, src/selected-compaction.mjs, src/model-router.mjs, macos/CodexBridgeMenu]
+    test_file: test/test_menubar_status.py
+    issues: [188]
+    notes: "模擬のHOME・CODEX_HOME・ポートだけで確認。画面以外の処理は macos/CodexBridgeMenu/build.sh --test。/healthのsummary_limit_untilは test/selected-compaction.test.mjs。"
+
+  - id: TC-120
+    title: "OpenAIの上限中はremote compactionを選択中のモデルで代行する"
+    feature: "上限中の会話要約の代行"
+    scenario: "Lunaが429なら選択モデル（自動DeepSeekは同一モデルの別提供元も）で要約し、ルーター専用の圧縮項目1件を返す。次の要求で文章に戻し、OpenAIへ印を送らない。解除時刻まではLunaを省く。selected/openaiで代行、askは送信前停止、GPT選択は不変"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/selected-compaction.mjs, src/compaction-handoff.mjs]
+    test_file: test/selected-compaction.test.mjs
+    issues: [186]
+    notes: "実Codex 0.167.0-alpha.3.2 app-server＋模擬上流（test/selected-compaction-app-e2e.py selected/openai）で、圧縮2回・次の応答・resumeを確認。PR #187のレビュー対応（native tool経路の印・事前要約の解除時刻・アカウント別の上限・全提供元上限の429）も回帰テスト済み。実OpenAI/DeepSeekへの送信は未実施。"
+
   - id: TC-118
     title: "既存の外部モデル会話でremote compactと巨大履歴を引き継ぐ"
     feature: "既存会話の圧縮互換性"

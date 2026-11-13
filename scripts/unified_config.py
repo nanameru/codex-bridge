@@ -181,6 +181,9 @@ def prepare(root, source_root):
     return path
 
 
+LOCK_WAIT_SECONDS = 10
+
+
 def configure(root, mode, port):
     if not 1 <= port <= 65535:
         raise ValueError("ポートは1〜65535で指定してください")
@@ -366,6 +369,10 @@ def main():
     parser = argparse.ArgumentParser(description="同じチャットで双方向にモデルを切り替える設定")
     parser.add_argument("mode", choices=["prepare", "on", "off", "transports", "normal-on", "flash-code-mode"])
     parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--bridge-port", type=int, default=8788,
+                        help="--wait-idleで、routerと一緒に会話の接続が空くのを待つブリッジのポート")
+    parser.add_argument("--wait-idle", type=int, default=0,
+                        help="on/offの前に、routerの会話の接続が空くまで最大この秒数だけ待つ（接続は止めない）")
     arguments = parser.parse_args()
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if arguments.mode == "transports":
@@ -380,10 +387,34 @@ def main():
     elif arguments.mode == "prepare":
         print(prepare(root, Path(__file__).resolve().parents[1]))
         return
+    if not 1 <= arguments.bridge_port <= 65535:
+        raise ValueError("ブリッジのポートは1〜65535で指定してください")
+    if not 0 <= arguments.wait_idle <= 1800:
+        raise ValueError("接続待機は0〜1800秒で指定してください")
+    if arguments.wait_idle:
+        from install_router_service import wait_for_idle
+        wait_for_idle(arguments.wait_idle, ports=(arguments.port, arguments.bridge_port))
     import fcntl
+    import signal
+    import time
     with (root / "codex-bridge-switch.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        configure(root, arguments.mode, arguments.port)
+        # ロック待ちも待つ段階。期限を付け、SIGTERMで止まってよい（まだ何も書いていない）。
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise SystemExit("統合設定を変更できません: 別の切り替えが実行中です。何も変更していません")
+                time.sleep(0.1)
+        # ここから先は書き込み。期限のSIGTERM（メニューバーアプリ）で止まると、config.tomlと
+        # 統合状態が食い違うので、ロックを取ったあとの書き込みの間だけ無視して最後まで書き終える。
+        previous = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            configure(root, arguments.mode, arguments.port)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == "__main__":

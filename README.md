@@ -743,6 +743,27 @@ routerのキャッシュ・計測だけを更新しても、旧8788の推論設�
 
 ---
 
+## メニューバーアプリ（macOS）
+
+`macos/CodexBridgeMenu/` は、ルーターとブリッジの状態を見て、よく変える設定だけを切り替える小さなアプリです。署名・配布はしません。手元でビルドして使います。
+
+```bash
+./macos/CodexBridgeMenu/build.sh          # macos/CodexBridgeMenu/build/CodexBridgeMenu.app
+./macos/CodexBridgeMenu/build.sh --test   # 画面以外の処理のテスト
+open macos/CodexBridgeMenu/build/CodexBridgeMenu.app
+```
+
+- 見られるもの: ルーター（8790）とブリッジ（8788）が動いているか、動いている版、会話中かどうか、OpenAI の要約の上限（例「OpenAI 上限中。17:00 まで代わりのモデルで要約」）、直近の要求の提供元の内訳と上限中の提供元、鍵が登録済みかどうか。
+- 変えられるもの: 要約の担当（選択中のモデル / OpenAI / 毎回聞く、`src/history-mode.mjs`）、ブリッジを使うかどうか（`scripts/unified_config.py on|off --bridge-port 8788 --wait-idle 120`。ルーターとブリッジの会話の接続が空くまで最大2分待ってから切り替え、接続は切りません。空かなければ切り替えません）、Command Code と Ollama の鍵（`scripts/manual_providers.py set-key <provider> --stdin`）。
+- 鍵は標準入力だけで渡し、画面・ログ・コマンドの引数・環境変数には出しません。ルーターが使える鍵（本人だけが読めるファイルで、形式が正しいもの）かどうかだけを表示します。
+- 呼ぶコマンドにはすべて制限時間があり、過ぎたら止めて失敗と表示します。
+- アプリは待ち受けのポートを開きません。状態は `scripts/menubar_status.py` を15秒ごとに呼んで読みます（読み取りのみ。パス・本文・鍵の中身は返しません）。
+- ルーターやブリッジの停止・再起動はしません。`~/.codex/config.toml` へ項目を足しません。
+- 場所の指定: ビルド時の Python 3.11 以上・Node・リポジトリの場所を Info.plist に書きます。起動時の環境変数 `CODEX_BRIDGE_HOME` / `CODEX_BRIDGE_PYTHON` / `CODEX_BRIDGE_NODE` / `CODEX_BRIDGE_ROUTER_PORT` / `CODEX_BRIDGE_BRIDGE_PORT` で上書きできます。
+- 上限の解除時刻はルーターの `/health` の `summary_limit_until` から読みます。この値を返さない古いルーターでは、ログの直近の代行回数だけを表示します。
+
+---
+
 ## 常駐させる（macOS）
 
 `launchd` で自動起動する場合の例です。
