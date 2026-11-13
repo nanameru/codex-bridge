@@ -40,13 +40,18 @@ async function fixture(context, options = {}) {
   });
   const native = upstream("openai");
   const bridge = upstream("opencode");
+  let router;
+  context.after(async () => {
+    for (const server of [router, native, bridge]) {
+      if (server?.listening) await close(server);
+    }
+  });
   const nativeBase = await listen(native);
   const bridgeBase = await listen(bridge);
-  const router = createRouter({ catalog, historyMode: "openai", nativeBase, bridgeBase, openCodeBase: bridgeBase,
+  router = createRouter({ catalog, historyMode: "openai", nativeBase, bridgeBase, openCodeBase: bridgeBase,
     openCodeKey: () => "fake-opencode-key", allowTestOrigins: true, allowDirectResponses: true,
     authenticate: () => true, bridgeKey: () => "test-internal-key", ...options });
   const base = await listen(router);
-  context.after(async () => { await close(router); await close(native); await close(bridge); });
   const send = (body, headers = {}) => fetch(base + "/responses", {
     method: "POST", headers: { authorization: "Bearer fake-native-token", "content-type": "application/json",
       "x-codex-bridge-direct": "1", ...headers },
@@ -54,6 +59,205 @@ async function fixture(context, options = {}) {
   });
   return { calls, base, send };
 }
+
+const turnStateValue = "opaque-turn-state.v1-test_+/=";
+const turnStateResponse = { id: "resp_turn_state_fixture", status: "completed", output: [], padding: "x".repeat(2048) };
+
+function turnStateWireBody(stream) {
+  const payload = stream
+    ? `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: turnStateResponse })}\n\n`
+    : JSON.stringify(turnStateResponse);
+  return { payload, compressed: zlib.gzipSync(payload) };
+}
+
+function turnStateUpstream({ state = turnStateValue, connection = "keep-alive, X-Upstream-Hop" } = {}) {
+  return async ({ response, body }) => {
+    const { compressed } = turnStateWireBody(body.stream === true);
+    response.writeHead(200, {
+      "content-type": body.stream === true ? "text/event-stream" : "application/json",
+      "content-encoding": "gzip",
+      "content-length": String(compressed.length),
+      connection,
+      "x-upstream-hop": "private-hop-value",
+      "retry-after": "17",
+      "x-request-id": "req-fixture-190",
+      "x-codex-imagegen-request-id": "image-fixture-190",
+      "x-codex-unknown": "private-codex-value",
+      "x-openai-unknown": "private-openai-value",
+      authorization: "Bearer private-upstream-value",
+      "set-cookie": "upstream-private=cookie",
+      "proxy-authenticate": "Basic realm=private",
+      ...(state === null ? {} : { "x-codex-turn-state": state }),
+    });
+    response.end(compressed);
+    return true;
+  };
+}
+
+async function assertTurnStateResponse(response, stream, expectedState) {
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), stream ? "text/event-stream" : "application/json");
+  assert.equal(response.headers.get("x-codex-turn-state"), expectedState);
+  assert.equal(response.headers.get("retry-after"), "17");
+  assert.equal(response.headers.get("x-request-id"), "req-fixture-190");
+  assert.equal(response.headers.get("x-codex-imagegen-request-id"), "image-fixture-190");
+  for (const name of ["x-codex-unknown", "x-openai-unknown", "authorization", "set-cookie", "proxy-authenticate", "x-upstream-hop", "content-encoding"]) {
+    assert.equal(response.headers.get(name), null, `${name} must not be copied from the upstream`);
+  }
+  const connection = (response.headers.get("connection") ?? "").toLowerCase().split(",").map(value => value.trim());
+  assert.equal(connection.includes("x-upstream-hop"), false);
+  const { payload, compressed } = turnStateWireBody(stream);
+  assert.ok(compressed.length < Buffer.byteLength(payload));
+  // The upstream length is for gzip bytes; Node may independently emit a
+  // legitimate length for the decoded response, so absence is not required.
+  const contentLength = response.headers.get("content-length");
+  assert.notEqual(contentLength, String(compressed.length));
+  const text = await response.text();
+  if (contentLength !== null) assert.equal(Number(contentLength), Buffer.byteLength(text));
+  if (stream) assert.match(text, /event: response\.completed\ndata: .*resp_turn_state_fixture/);
+  else assert.equal(JSON.parse(text).id, "resp_turn_state_fixture");
+}
+
+// Inspect the public HTTP response directly, including headers such as
+// Set-Cookie, and allow a client-nominated Connection token.
+function sendTurnStateHttp(base, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(base + "/responses", { method: "POST", agent: false, headers: {
+      authorization: "Bearer fake-native-token", "content-type": "application/json",
+      "x-codex-bridge-direct": "1", ...headers,
+    } }, response => {
+      const chunks = [];
+      response.on("data", chunk => chunks.push(chunk));
+      response.on("error", reject);
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        resolve({ status: response.statusCode, headers: new Headers(response.headers), text: async () => text });
+      });
+    });
+    request.on("error", reject);
+    request.end(JSON.stringify(body));
+  });
+}
+
+function turnStateFixtureOptions(upstreamResponse) {
+  return {
+    // Do not consult the owner's router configuration or connect to real APIs.
+    codexRoot: join(tmpdir(), `codex-turn-state-fixture-${process.pid}-${Math.random().toString(36).slice(2)}`),
+    autoBudgetHandoff: false, handoffStatusDelayMs: 30000,
+    opencodeSoftLimitTokens: 900000, opencodeHardLimitTokens: 1000000,
+    upstreamResponse,
+  };
+}
+
+test("turn-state crosses the OpenAI HTTP boundary in both directions and stays out of OpenCode", async context => {
+  for (const stream of [true, false]) {
+    await context.test(stream ? "SSE" : "JSON", async t => {
+      const { calls, base } = await fixture(t, turnStateFixtureOptions(turnStateUpstream()));
+      const body = { model: "gpt-test", input: "continue", stream };
+      const first = await sendTurnStateHttp(base, body);
+      const state = first.headers.get("x-codex-turn-state");
+      await assertTurnStateResponse(first, stream, turnStateValue);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].provider, "openai");
+      assert.equal(calls[0].path, "/v1/responses");
+      assert.equal(calls[0].headers["x-codex-turn-state"], undefined);
+
+      const next = await sendTurnStateHttp(base, body, { "x-codex-turn-state": state });
+      await assertTurnStateResponse(next, stream, turnStateValue);
+      assert.equal(calls.length, 2);
+      assert.equal(calls[1].provider, "openai");
+      assert.equal(calls[1].headers["x-codex-turn-state"], state);
+
+      for (const [model, upstreamModel, authorization] of [
+        ["opencode/deepseek-test", "deepseek-test", undefined],
+        ["opencode/direct-test", "direct-test", "Bearer fake-opencode-key"],
+      ]) {
+        const response = await sendTurnStateHttp(base, { ...body, model }, { "x-codex-turn-state": state });
+        await assertTurnStateResponse(response, stream, null);
+        const call = calls.at(-1);
+        assert.equal(call.provider, "opencode");
+        assert.equal(call.path, "/v1/responses");
+        assert.equal(call.body.model, upstreamModel);
+        assert.equal(call.headers.authorization, authorization);
+        assert.equal(call.headers["x-codex-turn-state"], undefined);
+      }
+      assert.equal(calls.length, 4);
+    });
+  }
+});
+
+test("turn-state is not invented when the OpenAI upstream omits it", async context => {
+  for (const stream of [true, false]) {
+    await context.test(stream ? "SSE" : "JSON", async t => {
+      const { calls, base } = await fixture(t, turnStateFixtureOptions(turnStateUpstream({ state: null })));
+      const body = { model: "gpt-test", input: "continue", stream };
+      await assertTurnStateResponse(await sendTurnStateHttp(base, body), stream, null);
+      await assertTurnStateResponse(await sendTurnStateHttp(base, body, { "x-codex-turn-state": turnStateValue }), stream, null);
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].headers["x-codex-turn-state"], undefined);
+      assert.equal(calls[1].headers["x-codex-turn-state"], turnStateValue);
+    });
+  }
+});
+
+test("OpenAI rate-limit responses retain the existing retry and request ID headers", async context => {
+  for (const stream of [true, false]) {
+    await context.test(stream ? "SSE request" : "JSON request", async t => {
+      const error = { error: { type: "rate_limit_exceeded", code: "rate_limit_exceeded", message: "fixture limit" } };
+      const upstreamResponse = async ({ response }) => {
+        response.writeHead(429, { "content-type": "application/json", "retry-after": "17",
+          "x-request-id": "req-rate-limit-190", "x-codex-imagegen-request-id": "image-rate-limit-190" });
+        response.end(JSON.stringify(error));
+        return true;
+      };
+      const { calls, base } = await fixture(t, turnStateFixtureOptions(upstreamResponse));
+      const response = await sendTurnStateHttp(base, { model: "gpt-test", input: "continue", stream });
+      assert.equal(response.status, 429);
+      assert.equal(response.headers.get("retry-after"), "17");
+      assert.equal(response.headers.get("x-request-id"), "req-rate-limit-190");
+      assert.equal(response.headers.get("x-codex-imagegen-request-id"), "image-rate-limit-190");
+      assert.equal(response.headers.get("x-codex-turn-state"), null);
+      assert.deepEqual(JSON.parse(await response.text()), error);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].provider, "openai");
+    });
+  }
+});
+
+test("upstream Connection nominates turn-state case-insensitively using complete tokens", async context => {
+  for (const stream of [true, false]) {
+    for (const [connection, expected] of [
+      ["keep-alive, X-CoDeX-TuRn-StAtE, X-Upstream-Hop", null],
+      ["keep-alive, X-CoDeX-TuRn-StAtE-Extra, X-Upstream-Hop", turnStateValue],
+    ]) {
+      await context.test(`${stream ? "SSE" : "JSON"}: ${connection}`, async t => {
+        const { calls, base } = await fixture(t, turnStateFixtureOptions(turnStateUpstream({ connection })));
+        const response = await sendTurnStateHttp(base, { model: "gpt-test", input: "continue", stream });
+        await assertTurnStateResponse(response, stream, expected);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].provider, "openai");
+      });
+    }
+  }
+});
+
+test("client Connection nominates the response turn-state case-insensitively using complete tokens", async context => {
+  for (const stream of [true, false]) {
+    for (const [connection, expected] of [
+      ["close, X-CoDeX-TuRn-StAtE", null],
+      ["close, X-CoDeX-TuRn-StAtE-Extra", turnStateValue],
+    ]) {
+      await context.test(`${stream ? "SSE" : "JSON"}: ${connection}`, async t => {
+        const { calls, base } = await fixture(t, turnStateFixtureOptions(turnStateUpstream()));
+        const response = await sendTurnStateHttp(base, { model: "gpt-test", input: "continue", stream },
+          { "x-codex-turn-state": turnStateValue, connection });
+        await assertTurnStateResponse(response, stream, expected);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].provider, "openai");
+      });
+    }
+  }
+});
 
 test("remote compaction trigger uses the native model instead of Chat conversion", async context => {
   const originalInput = [{ role: "user", content: "continue" }, { type: "compaction_trigger" }];

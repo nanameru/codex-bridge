@@ -1221,6 +1221,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       for (const name of ["retry-after", "x-request-id", "x-codex-imagegen-request-id"]) {
         if (upstream.headers.has(name)) responseHeaders[name] = upstream.headers.get(name);
       }
+      if (route.provider === "openai" && upstream.headers.has("x-codex-turn-state")) {
+        const hopByHop = [upstream.headers.get("connection"), request.headers["connection"]]
+          .flatMap(value => String(value ?? "").split(",")).map(token => token.trim().toLowerCase());
+        if (!hopByHop.includes("x-codex-turn-state")) responseHeaders["x-codex-turn-state"] = upstream.headers.get("x-codex-turn-state");
+      }
       if (!handoffStatus.started) {
         for (const [name, value] of Object.entries(responseHeaders)) response.setHeader(name, value);
         response.writeHead(upstream.status);
