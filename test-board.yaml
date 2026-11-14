@@ -9,25 +9,37 @@ cases:
     title: "許可したファイルだけで再現可能な配布ZIPを作る"
     feature: "配布ZIP"
     scenario: "固定allowlistと統合router依存、疑似機密や未許可ファイルの除外、リンクと危険パスの拒否、manifestと展開後のハッシュ、再現性、既存出力の保護"
-    status: todo
+    status: done
     priority: high
     type: integration
     source: [scripts/build_distribution.py, distribution/START_HERE.md, distribution/AGENTS.md, scripts/portable_setup.py, src/codex-bridge.mjs, src/model-router.mjs, scripts/portable_router.mjs, scripts/portable_catalog.mjs]
     test_file: test/test_portable_distribution.py
     issues: [194]
-    notes: "一部fixture実行済み。全件初回はローカルPython 3.9で1件失敗（3.11以上が必要）、3.11以上で再実行が必要。python3 -m unittest discover -s test -p 'test_portable_distribution.py'。秘密混入の検出はallowlistと追加の検査であり、内容レビューの代替ではない。"
+    notes: "2026-11-14 20:17–20:20 AEDT、macOS arm64/Python 3.12.16/Node 24.22.2、033cfc0で配布fixture 15件成功。実ZIPは38ファイル+manifest、ZIP/manifest/git blobの全ハッシュ一致、16種の秘密・作者情報パターン0件。初回の依存検査/Python不足の失敗はIssue履歴に保持。秘密混入検査はallowlistと定義パターンの範囲であり、内容レビューの代替ではない。"
+    last_run:
+      revision: 033cfc01012800cebdd9fcd9d8c3ae7f3e3a0b41
+      at: "2026-11-14T20:20:00+11:00"
+      provider: swe-2-flash-local-offline
+      result: passed
+      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6875148150"]
 
   - id: TC-124
     title: "環境を読み取り確認し選択と承認を経て前景起動する"
     feature: "配布版preflight"
     scenario: "3 OSの判定fixture、依存不足、既存設定、権限・リンク、ポート競合、環境変数の隔離、healthと子PIDの照合、承認拒否でプロセスを起動しない"
-    status: todo
+    status: done
     priority: high
     type: unit
     source: [scripts/portable_setup.py, distribution/START_HERE.md, distribution/AGENTS.md]
     test_file: test/test_portable_distribution.py
     issues: [194]
-    notes: "一部fixture実行済み。Python 3.9でpreflight fixtureは失敗、3.11以上で再実行が必要。WindowsネイティブはACL検証不可のため停止、WSLを案内。fixtureは実機検証ではない。"
+    notes: "033cfc0、macOS/Python 3.12.16で配布fixture 15件とPython関連96件、Node関連202件成功。3 OS判定、依存不足、既存設定不変更、承認拒否、環境分離、health/PID照合をfixtureで確認。初回auth関連はPATH内のPython 3.9で8/12失敗、3.12をPATH先頭にして12/12成功。Windowsネイティブは起動拒否・WSLを案内。実Codex/各OS実機/実provider/実復元は未検証、TC-125を参照。"
+    last_run:
+      revision: 033cfc01012800cebdd9fcd9d8c3ae7f3e3a0b41
+      at: "2026-11-14T20:20:00+11:00"
+      provider: swe-2-flash-local-offline-fixture
+      result: passed
+      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6875148150"]
 
   - id: TC-125
     title: "受取人がZIPから本人の環境を確認して前景起動する"
