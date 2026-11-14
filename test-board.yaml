@@ -15,13 +15,13 @@ cases:
     source: [scripts/build_distribution.py, distribution/START_HERE.md, distribution/AGENTS.md, scripts/portable_setup.py, src/codex-bridge.mjs, src/model-router.mjs, scripts/portable_router.mjs, scripts/portable_catalog.mjs]
     test_file: test/test_portable_distribution.py
     issues: [194]
-    notes: "2026-11-14 20:35 AEDT、macOS arm64/Python 3.12.16/Node 24.22.2、78bd30fで配布fixture 17件・router回帰3件成功。新ZIPは38ファイル+manifest、ZIP/manifest/git blobの全ハッシュ一致、定義した秘密・作者名・個人パスの検査0件。初回の依存検査/Python不足の失敗はIssue履歴に保持。秘密混入検査はallowlistと定義パターンの範囲であり、内容レビューの代替ではない。"
+    notes: "2026-11-14 20:40 AEDT、macOS arm64/Python 3.12.16/Node 24.22.2、93a194cで配布fixture 17件・router回帰4件成功。新ZIPは38ファイル+manifest、ZIP/manifest/git blobの全ハッシュ一致、定義した秘密・作者名・個人パスの検査0件。初回の依存検査/Python不足の失敗はIssue履歴に保持。秘密混入検査はallowlistと定義パターンの範囲であり、内容レビューの代替ではない。"
     last_run:
-      revision: 78bd30f1bc9fa2d8a48b9d1a8be6125e3011c91a
-      at: "2026-11-14T20:35:00+11:00"
+      revision: 93a194c78f4176eca67c7bc78aafa7b737f7686f
+      at: "2026-11-14T20:40:00+11:00"
       provider: codex-local-offline
       result: passed
-      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6875300099"]
+      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6875364053"]
 
   - id: TC-124
     title: "環境を読み取り確認し選択と承認を経て前景起動する"
@@ -33,13 +33,13 @@ cases:
     source: [scripts/portable_setup.py, scripts/portable_router.mjs, distribution/START_HERE.md, distribution/AGENTS.md]
     test_file: test/test_portable_distribution.py
     issues: [194]
-    notes: "78bd30f、macOS/Python 3.12.16/Node 24.22.2で配布fixture 17件とtest/portable-router.test.mjsの3件成功。3 OS判定・既存設定不変更に加え、カタログ再検証失敗の非起動、親tokenの破棄と生成tokenの子限定、非BMPパスを確認。旧033cfc0のPython関連96件・Node関連202件とPython不足の失敗履歴はIssueに保持。Windowsネイティブは起動拒否・WSLを案内。実Codex/各OS実機/実provider/実復元は未検証、TC-125を参照。"
+    notes: "93a194c、macOS/Python 3.12.16/Node 24.22.2で配布fixture 17件とtest/portable-router.test.mjsの4件成功。3 OS判定・既存設定不変更に加え、カタログ再検証失敗の非起動、親tokenの破棄と生成tokenの子限定、非BMPパスとBridge不要時の同一ポート許可を確認。旧033cfc0のPython関連96件・Node関連202件とPython不足の失敗履歴はIssueに保持。Windowsネイティブは起動拒否・WSLを案内。実Codex/各OS実機/実provider/実復元は未検証、TC-125を参照。"
     last_run:
-      revision: 78bd30f1bc9fa2d8a48b9d1a8be6125e3011c91a
-      at: "2026-11-14T20:35:00+11:00"
+      revision: 93a194c78f4176eca67c7bc78aafa7b737f7686f
+      at: "2026-11-14T20:40:00+11:00"
       provider: codex-local-offline-fixture
       result: passed
-      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6875300099"]
+      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6875364053"]
 
   - id: TC-125
     title: "受取人がZIPから本人の環境を確認して前景起動する"
