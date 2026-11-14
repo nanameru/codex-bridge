@@ -250,3 +250,47 @@ test('thread guard preserves authentication and does not rate-limit another chat
  const rejected=await send('A');assert.equal(rejected.status,429);assert.ok(Number(rejected.headers.get('retry-after'))>0);await rejected.text();
  const other=await send('B');assert.equal(other.status,200);await other.text();
 });
+
+test('portable session neither loads nor persists usage data when disabled', { timeout: 15000 }, async context => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-portable-usage-'));
+  const usageDirectory = join(directory, '.home-runner');
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(usageDirectory);
+  const original = JSON.stringify({ totalCost: 77, threads: { previous: { cost: 77 } } });
+  await writeFile(join(usageDirectory, 'usage.json'), original);
+  await writeFile(join(directory, 'bridge-local-token'), 'a'.repeat(64), { mode: 0o600 });
+  const upstream = http.createServer(async (request, response) => {
+    for await (const chunk of request) { /* consume synthetic request */ }
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+  });
+  const upstreamPort = await listen(upstream);
+  const reservation = http.createServer();
+  const port = await listen(reservation);
+  await new Promise(done => reservation.close(done));
+  const child = spawn(process.execPath, [join(root, 'src/codex-bridge.mjs')], { env: {
+    ...process.env, HOME: directory, CODEX_HOME: directory, PORT: String(port),
+    OPENCODE_API_KEY: 'dummy-test-token', UPSTREAM_BASE: `http://127.0.0.1:${upstreamPort}/v1`,
+    CODEX_BRIDGE_TEST_UPSTREAM: '1', CODEX_BRIDGE_NO_USAGE: '1', DISABLE_DUMP: '1', LOG_LEVEL: 'info',
+  }, stdio: ['ignore', 'pipe', 'pipe'] });
+  context.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) { const done = once(child, 'exit'); child.kill(); await done; }
+    upstream.closeAllConnections(); await new Promise(done => upstream.close(done));
+    await rm(directory, { recursive: true, force: true });
+  });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('startup timeout')), 5000);
+    child.stdout.on('data', chunk => { if (String(chunk).includes('codex-bridge listening')) { clearTimeout(timer); resolve(); } });
+    child.once('exit', () => { clearTimeout(timer); reject(new Error('bridge exited')); });
+  });
+  const headers = { 'content-type': 'application/json', 'x-codex-bridge-auth': 'a'.repeat(64) };
+  const initial = await fetch(`http://127.0.0.1:${port}/usage?json`, { headers });
+  assert.equal((await initial.json()).total_cost_usd, 0);
+  const result = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST', headers,
+    body: JSON.stringify({ model: 'test-model', input: 'synthetic', stream: false }) });
+  assert.equal(result.status, 200);
+  await result.text();
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  assert.equal(await readFile(join(usageDirectory, 'usage.json'), 'utf8'), original);
+});

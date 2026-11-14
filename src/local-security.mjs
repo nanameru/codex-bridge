@@ -165,7 +165,7 @@ export function codexHomeId(root = codexRoot()) {
 }
 
 export function readBridgeKey(root = codexRoot()) {
-  const value = readPrivateFile(root, "bridge-local-token")?.trim();
+  const value = process.env.CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN ?? readPrivateFile(root, "bridge-local-token")?.trim();
   return /^[a-f0-9]{64}$/.test(value ?? "") ? value : null;
 }
 
@@ -197,7 +197,7 @@ export function guardBridgeRequest(request, response) {
   const pathname = localError ? null : new URL(request.url, "http://127.0.0.1").pathname;
   if (!localError && request.method === "GET" && pathname === "/health") {
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-    response.end(JSON.stringify({ ok: true, security: SECURITY_VERSION,
+    response.end(JSON.stringify({ ok: true, pid: process.pid, security: SECURITY_VERSION,
       implementation: process.env.CODEX_BRIDGE_SECURITY_REVISION,
       request_dump: process.env.ALLOW_REQUEST_DUMP === "1" && process.env.DISABLE_DUMP !== "1" }));
     return false;
