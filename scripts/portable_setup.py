@@ -182,16 +182,34 @@ def clean_env(root):
 
 
 def catalog_info(args):
+    if os.name == 'nt':
+        raise ValueError('Native Windows catalog verification is unavailable; use WSL.')
     path = Path(args.catalog).expanduser().absolute()
     if file_state(path, private=True) != 'present' or home_states(path.parent)['home'] != 'present':
         raise ValueError('Catalog must be an owned, private regular file in a safe directory.')
-    if path.stat().st_size > 1024 * 1024:
-        raise ValueError('Catalog is too large.')
-    data = json.loads(path.read_text())
+    before = path.lstat()
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    with os.fdopen(fd, 'rb') as stream:
+        current = os.fstat(stream.fileno())
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+                                 info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if (identity(before) != identity(current) or not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1 or current.st_uid != os.getuid() or current.st_mode & 0o077
+                or current.st_size > 1024 * 1024):
+            raise ValueError('Catalog is unsafe or too large.')
+        content = stream.read(1024 * 1024 + 1)
+        if len(content) > 1024 * 1024 or identity(current) != identity(os.fstat(stream.fileno())):
+            raise ValueError('Catalog changed or is too large.')
+    data = json.loads(content)
+    if not isinstance(data, dict):
+        raise ValueError('Invalid catalog.')
     models = data.get('models')
     if not isinstance(models, list) or not models or len(models) > 500 or not all(isinstance(m, dict) for m in models):
         raise ValueError('Invalid catalog.')
-    entries = {m.get('slug'): m.get('router_provider') for m in models}
+    if any(not isinstance(m.get('slug'), str) or not MODEL.fullmatch(m['slug'])
+           or not isinstance(m.get('router_provider'), str) for m in models):
+        raise ValueError('Invalid catalog model.')
+    entries = {m['slug']: m['router_provider'] for m in models}
     if len(entries) != len(models) or args.model not in entries or entries.get(args.summary_model) != 'openai':
         raise ValueError('Select a catalog model and an OpenAI summary model in the catalog.')
     providers = set(entries.values())
@@ -247,7 +265,11 @@ def run_session(args, node, codex, root):
         print('Environment changed or is unsafe; rerun preflight.')
         return 1
     unified = args.provider == 'unified'
-    catalog, providers = catalog_info(args) if unified else (None, {'opencode'})
+    try:
+        catalog, providers = catalog_info(args) if unified else (None, {'opencode'})
+    except (OSError, ValueError, TypeError):
+        print('Catalog changed or is unsafe; rerun preview. No process started.')
+        return 1
     if unified and ('opencode' in providers and (args.bridge_port == args.port or port_state(args.bridge_port) != 'no-listener-detected')):
         print('Bridge port unavailable; no process started.')
         return 1
@@ -296,7 +318,7 @@ def run_session(args, node, codex, root):
                     'model_providers.bridge-portable.wire_api="responses"',
                     'model_providers.bridge-portable.requires_openai_auth=true']
         if unified:
-            settings.append('model_catalog_json=' + json.dumps(str(catalog)))
+            settings.append('model_catalog_json=' + json.dumps(str(catalog), ensure_ascii=False))
         command = [codex, '--model', args.model]
         for setting in settings:
             command.extend(['-c', setting])
@@ -338,7 +360,10 @@ def main():
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             parser.error(str(exc))
     report, node, codex, root = preflight(args.port)
-    show_plan(args, report)
+    try:
+        show_plan(args, report)
+    except (OSError, ValueError, TypeError):
+        parser.error('Catalog changed or is unsafe; rerun preview. No process started.')
     if args.command == 'run':
         if not report['plan']['ready_for_approval']:
             print('Preflight blocked; no process started.')

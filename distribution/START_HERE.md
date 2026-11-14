@@ -81,6 +81,8 @@ python3 scripts/portable_setup.py run --provider unified --model MODEL_SLUG --su
 
 実行直前に `YES` を要求し、OpenCode がカタログに含まれる場合はキーを非表示入力します。router と Bridge の間は、この起動だけのランダムな認証値で保護し、ファイルや Codex に渡しません。両プロセスは前景セッションに付随し、終了時に今回の子プロセスだけを停止します。Codex の CLI オプションでカタログ・ルーター・初期モデルを指定し、既存 config は編集しません。利用者の `CODEX_HOME` は通常どおり使われ、Codex は履歴を保存することがあります。router は本人の既存認証や履歴設定を参照することがあります。
 
+内部認証値は親シェルから継承せず、起動時に新しく生成して Bridge と router だけへ渡します。Codex の環境には渡しません。音声（Realtime）はこの配布経路の対象外です。専用の音声接続先が既存設定にない場合、ローカルのテキスト中継へ接続して失敗します。音声が必要な場合は起動を止め、利用者が公式手順と専用接続先・費用を確認して別途設定してください。このランチャーは音声接続先を自動変更しません。
+
 送信先は選択したルートに応じ OpenAI（ChatGPT または API）、OpenCode Go `https://opencode.ai`、Command Code `https://api.commandcode.ai`、Ollama Cloud `https://ollama.com`、WhatsToken `https://www.whatstoken.ai` です。利用者が送った内容や履歴がその提供元に渡り、料金が発生する場合があります。長い履歴や圧縮の処理では、選択した OpenAI 要約モデルへ内容が追加送信され、追加費用が発生する場合があります。キーはチャットに渡さず、各提供元の認証方法と通信先、課金を事前に確認してください。カタログに不要な提供元を入れないでください。ネットワーク・有料推論・実 OS での動作は未検証です。
 
 ## バックアップと復元

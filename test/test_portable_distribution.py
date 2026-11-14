@@ -228,9 +228,11 @@ class PortablePreflightTests(unittest.TestCase):
     def test_clean_environment_and_health_identity(self):
         with mock.patch.dict(os.environ, {'CMD_API_KEY': 'fake', 'OPENAI_API_KEY': 'fake',
                                           'CODEX_BRIDGE_TEST_UPSTREAM': '1', 'UPSTREAM_BASE': 'fake',
-                                          'ALLOW_REQUEST_DUMP': '1'}, clear=False):
+                                          'ALLOW_REQUEST_DUMP': '1',
+                                          'CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN': 'a' * 64}, clear=False):
             env = setup.clean_env(Path('/chosen-home'))
-        for name in ('CMD_API_KEY', 'OPENAI_API_KEY', 'CODEX_BRIDGE_TEST_UPSTREAM', 'UPSTREAM_BASE', 'ALLOW_REQUEST_DUMP'):
+        for name in ('CMD_API_KEY', 'OPENAI_API_KEY', 'CODEX_BRIDGE_TEST_UPSTREAM', 'UPSTREAM_BASE',
+                     'ALLOW_REQUEST_DUMP', 'CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'):
             self.assertNotIn(name, env)
         child = mock.Mock(pid=42)
         child.poll.return_value = None
@@ -251,6 +253,53 @@ class PortablePreflightTests(unittest.TestCase):
         catalog.assert_not_called()
         key.assert_not_called()
         process.assert_not_called()
+
+    @unittest.skipIf(os.name == 'nt', 'native Windows is intentionally unsupported')
+    def test_catalog_fd_read_refuses_replacement_and_unsafe_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            catalog = root / 'catalog.json'
+            content = json.dumps({'models': [{'slug': 'recipient-gpt', 'router_provider': 'openai'}]})
+            catalog.write_text(content)
+            catalog.chmod(0o600)
+            args = mock.Mock(catalog=str(catalog), model='recipient-gpt', summary_model='recipient-gpt')
+            self.assertEqual(setup.catalog_info(args), (catalog, {'openai'}))
+            outside = root / 'other.json'
+            outside.write_text(content)
+            outside.chmod(0o600)
+            original_open = os.open
+
+            def swap(path, flags):
+                catalog.unlink()
+                catalog.symlink_to(outside)
+                return original_open(path, flags)
+
+            with mock.patch.object(setup.os, 'open', side_effect=swap) as opened:
+                with self.assertRaises((OSError, ValueError)):
+                    setup.catalog_info(args)
+                opened.assert_called_once()
+            catalog.unlink()
+            for content in ('x' * (1024 * 1024 + 1), '[]', '{"models":[{"slug":[],"router_provider":"openai"}]}'):
+                catalog.write_text(content)
+                catalog.chmod(0o600)
+                with self.assertRaises(ValueError):
+                    setup.catalog_info(args)
+
+    def test_catalog_change_after_approval_stops_before_auth_or_launch(self):
+        args = mock.Mock(port=18790, provider='unified')
+        with mock.patch('builtins.input', return_value='YES'), \
+             mock.patch.object(setup, 'preflight', return_value=({'plan': {'ready_for_approval': True}}, None, None, None)), \
+             mock.patch.object(setup, 'catalog_info', side_effect=ValueError('SYNTHETIC_SECRET')), \
+             mock.patch.object(setup.subprocess, 'run') as doctor, \
+             mock.patch.object(setup.subprocess, 'Popen') as process, \
+             mock.patch.object(setup.getpass, 'getpass') as key, \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(setup.run_session(args, 'node', 'codex', Path('.')), 1)
+        self.assertIn('rerun preview', output.getvalue())
+        self.assertNotIn('SYNTHETIC_SECRET', output.getvalue())
+        doctor.assert_not_called()
+        process.assert_not_called()
+        key.assert_not_called()
 
     def test_refusal_of_approval_never_starts_process_or_reads_key(self):
         args = mock.Mock(port=8788, model='recipient-choice', provider='opencode-go')
@@ -273,24 +322,29 @@ class PortablePreflightTests(unittest.TestCase):
             return child
         with mock.patch('builtins.input', return_value='YES'), \
              mock.patch.object(setup, 'preflight', return_value=({'plan': {'ready_for_approval': True}}, None, None, None)), \
-             mock.patch.object(setup, 'catalog_info', return_value=(Path('/recipient/catalog.json'), {'openai', 'opencode'})), \
+             mock.patch.object(setup, 'catalog_info', return_value=(Path('/recipient/📦/catalog.json'), {'openai', 'opencode'})), \
              mock.patch.object(setup, 'port_state', return_value='no-listener-detected'), \
              mock.patch.object(setup, 'wait_child', return_value=True), \
              mock.patch.object(setup.getpass, 'getpass', return_value='SYNTHETIC_KEY'), \
              mock.patch.object(setup.subprocess, 'run', return_value=mock.Mock(returncode=0)), \
              mock.patch.object(setup.subprocess, 'Popen', side_effect=spawn), \
              mock.patch.object(setup.subprocess, 'call', return_value=0) as codex, \
-             mock.patch.dict(os.environ, {'OLLAMA_API_KEY': 'fake', 'UPSTREAM_BASE': 'fake'}), \
+             mock.patch.dict(os.environ, {'OLLAMA_API_KEY': 'fake', 'UPSTREAM_BASE': 'fake',
+                                          'CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN': 'a' * 64}), \
+             mock.patch.object(setup.secrets, 'token_hex', return_value='b' * 64), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(setup.run_session(args, '/bin/node', '/bin/codex', Path('/chosen-home')), 0)
         self.assertEqual(len(launches), 2)
         self.assertEqual(launches[0][1]['OPENCODE_API_KEY'], 'SYNTHETIC_KEY')
         self.assertNotIn('OPENCODE_API_KEY', launches[1][1])
         self.assertEqual(launches[0][1]['CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'], launches[1][1]['CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'])
+        self.assertEqual(launches[0][1]['CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'], 'b' * 64)
         self.assertNotIn('CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN', codex.call_args.kwargs['env'])
         self.assertNotIn('OLLAMA_API_KEY', launches[0][1])
         self.assertNotIn('UPSTREAM_BASE', codex.call_args.kwargs['env'])
-        self.assertIn('model_catalog_json="/recipient/catalog.json"', codex.call_args.args[0])
+        import tomllib
+        setting = next(x for x in codex.call_args.args[0] if x.startswith('model_catalog_json='))
+        self.assertEqual(tomllib.loads(setting)['model_catalog_json'], '/recipient/📦/catalog.json')
         self.assertIn('recipient-gpt', launches[1][0])
         for _, _, child in launches:
             child.terminate.assert_called_once()
