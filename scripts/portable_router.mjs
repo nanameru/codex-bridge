@@ -48,18 +48,25 @@ export function readPortableCatalog(path, summaryModel) {
   return catalog;
 }
 
-export function runPortableRouter(args) {
+export function portableRouterConfig(args) {
   const [catalogPath, summaryModel, routerPort, bridgePort] = args;
   const port = value => typeof value === 'string' && /^[0-9]{1,5}$/.test(value) && Number(value) >= 1 && Number(value) <= 65535;
   if (args.length !== 4 || !catalogPath || !MODEL.test(summaryModel ?? '')
-      || !port(routerPort) || !port(bridgePort) || Number(routerPort) === Number(bridgePort)) throw Error('Invalid router arguments');
+      || !port(routerPort) || !port(bridgePort)) throw Error('Invalid router arguments');
   const catalog = readPortableCatalog(catalogPath, summaryModel);
-  const server = createRouter({ catalog, summaryModel,
+  if (catalog.models.some(m => m.router_provider === 'opencode') && Number(routerPort) === Number(bridgePort)) {
+    throw Error('Invalid router arguments: OpenCode requires a separate Bridge port');
+  }
+  return { catalog, summaryModel,
     bridgeBase: `http://127.0.0.1:${bridgePort}/v1`,
     manualProvidersEnabled: false, cliModelSyncEnabled: false,
-    autoProviderFallback: false, autoBudgetHandoff: false });
+    autoProviderFallback: false, autoBudgetHandoff: false };
+}
+
+export function runPortableRouter(args) {
+  const server = createRouter(portableRouterConfig(args));
   server.once('error', () => { console.error('Portable router could not start.'); process.exitCode = 1; });
-  server.listen(Number(routerPort), '127.0.0.1');
+  server.listen(Number(args[2]), '127.0.0.1');
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.once(signal, () => server.close(() => process.exit(0)));
   }

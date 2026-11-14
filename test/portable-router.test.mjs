@@ -5,19 +5,31 @@ import { chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, syml
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readPortableCatalog, runPortableRouter } from '../scripts/portable_router.mjs';
+import { portableRouterConfig, readPortableCatalog, runPortableRouter } from '../scripts/portable_router.mjs';
 
 const script = fileURLToPath(new URL('../scripts/portable_router.mjs', import.meta.url));
 const catalog = { models: [{ slug: 'recipient-gpt', router_provider: 'openai' }] };
 
 test('router validates arguments before opening files or listeners', () => {
-  for (const args of [[], ['x'], ['x', 'model', '0', '2'], ['x', 'model', '1', '1'], ['x', '../bad', '1', '2']]) {
+  for (const args of [[], ['x'], ['x', 'model', '0', '2'], ['x', 'model', '1', '65536'], ['x', '../bad', '1', '2']]) {
     assert.throws(() => runPortableRouter(args), /Invalid router arguments/);
   }
   const child = spawnSync(process.execPath, [script], { encoding: 'utf8' });
   assert.equal(child.status, 1);
   assert.match(child.stderr, /invalid or unsafe; no listener started/);
   assert.doesNotMatch(child.stderr, /at |TypeError|ENOENT/);
+});
+
+test('same ports are allowed only when the catalog needs no OpenCode Bridge', { skip: process.platform === 'win32' }, () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'portable-catalog-')));
+  try {
+    const path = join(root, 'catalog.json');
+    writeFileSync(path, JSON.stringify(catalog), { mode: 0o600 });
+    assert.equal(portableRouterConfig([path, 'recipient-gpt', '8788', '8788']).summaryModel, 'recipient-gpt');
+    writeFileSync(path, JSON.stringify({ models: [...catalog.models, { slug: 'opencode/model', router_provider: 'opencode' }] }));
+    assert.throws(() => portableRouterConfig([path, 'recipient-gpt', '8788', '8788']), /separate Bridge port/);
+    assert.equal(portableRouterConfig([path, 'recipient-gpt', '8790', '8788']).bridgeBase, 'http://127.0.0.1:8788/v1');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('router reads a private catalog without starting a service', { skip: process.platform === 'win32' }, () => {
