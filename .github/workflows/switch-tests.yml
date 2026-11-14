@@ -57,8 +57,8 @@ jobs:
           }
       - name: Windowsでカタログ診断・移行テストを実行する
         run: python -m unittest discover -s test -p "test_catalog_doctor.py" -v
-      - name: Windowsで本人認証の読み取り分岐を検証する
-        run: node --test test/windows-auth.test.mjs
+      - name: Windowsで本人認証と診断本文の保存拒否を検証する
+        run: node --test test/windows-auth.test.mjs test/request-dump.test.mjs
       - name: Windowsで旧OpenCode専用カタログをPowerShell経由で診断する
         shell: powershell
         run: |
