@@ -547,7 +547,7 @@ test("rejects external native or bridge targets", () => {
 });
 
 test("refuses provider-specific continuation IDs and oversized bodies", async (context) => {
-  const { calls, send } = await fixture(context, { maxBytes: 200 });
+  const { calls, send } = await fixture(context, { maxBytes: 200, maxForwardedBytes: 200, maxRequestBytes: 800 });
   assert.equal((await send({ model: "gpt-test", previous_response_id: "other-provider-id" })).status, 422);
   assert.equal((await send({ model: "gpt-test", input: "x".repeat(300) })).status, 413);
   assert.equal(calls.length, 0);
@@ -568,7 +568,7 @@ test("accepts compressed Codex requests without forwarding encoding headers", as
 });
 
 test("limits decompressed data and rejects unsupported encodings", async (context) => {
-  const { base, calls } = await fixture(context, { maxBytes: 200, maxRequestBytes: 200 });
+  const { base, calls } = await fixture(context, { maxBytes: 200, maxForwardedBytes: 200, maxRequestBytes: 200 });
   for (const [encoding, body, status] of [
     ["gzip", zlib.gzipSync(Buffer.from("x".repeat(500))), 413],
     ["constructor", Buffer.from("{}"), 415],
@@ -583,7 +583,7 @@ test("limits decompressed data and rejects unsupported encodings", async (contex
 test("byte-heavy image history reaches summarization before the forwarding limit, for plain/gzip/zstd requests", async (context) => {
   const forwarded = [];
   const metrics = [];
-  const { base } = await fixture(context, { maxBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
+  const { base } = await fixture(context, { maxBytes: 5000, maxForwardedBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
     opencodeSoftLimitTokens: 100000, opencodeHardLimitTokens: 200000, onMetric: m => metrics.push(m),
     fetcher: async (url, options) => {
       const body = JSON.parse(options.body); forwarded.push({ url, body, headers: options.headers });
@@ -621,9 +621,9 @@ test("byte-heavy image history reaches summarization before the forwarding limit
   assert.equal(JSON.stringify(body), original);
 });
 
-test("default limits recover a compressed image history larger than 32 MiB", async context => {
+test("the former 32 MiB forwarding threshold recovers a compressed image history", async context => {
   const metrics = []; let summaryCalls = 0; let answerCalls = 0;
-  const { base } = await fixture(context, { summaryModel: "gpt-test", onMetric: m => metrics.push(m),
+  const { base } = await fixture(context, { maxForwardedBytes: 32 * 1024 * 1024, summaryModel: "gpt-test", onMetric: m => metrics.push(m),
     fetcher: async (_url, init) => {
       const body = JSON.parse(init.body);
       if (body.model === "gpt-test") {
@@ -651,7 +651,7 @@ test("default limits recover a compressed image history larger than 32 MiB", asy
 test("byte recovery keeps protected images, pending tools, schemas and native routing bounded", async context => {
   for (const scenario of ["latest", "pending", "tools", "disabled", "native", "insufficient", "compacted"]) {
     const sent = []; const metrics = [];
-    const { send } = await fixture(context, { maxBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
+    const { send } = await fixture(context, { maxBytes: 5000, maxForwardedBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
       autoBudgetHandoff: scenario !== "disabled", onMetric: m => metrics.push(m),
       fetcher: async (_url, init) => {
         const body = JSON.parse(init.body); sent.push(body);
@@ -681,7 +681,7 @@ test("byte recovery keeps protected images, pending tools, schemas and native ro
 
 test("wire and decoded request limits remain finite with inclusive boundaries", async context => {
   const metrics = [];
-  const { base, calls } = await fixture(context, { maxBytes: 1000, maxRequestBytes: 1000, onMetric: m => metrics.push(m) });
+  const { base, calls } = await fixture(context, { maxBytes: 1000, maxForwardedBytes: 1000, maxRequestBytes: 1000, onMetric: m => metrics.push(m) });
   const stub = JSON.stringify({ model: "gpt-test", input: "" });
   const exact = Buffer.from(JSON.stringify({ model: "gpt-test", input: "a".repeat(1000 - Buffer.byteLength(stub)) }));
   assert.equal(exact.length, 1000);
@@ -693,13 +693,13 @@ test("wire and decoded request limits remain finite with inclusive boundaries", 
   }
   assert.ok(calls.length >= 3);
   assert.ok(metrics.filter(m => m.status === 413).every(m => ["wire_bytes", "decoded_bytes"].includes(m.input_limit_reason)));
-  for (const maxRequestBytes of [0, Infinity, NaN, 999]) assert.throws(() => createRouter({ catalog, historyMode: "openai", maxBytes: 1000, maxRequestBytes }));
+  for (const maxRequestBytes of [0, Infinity, NaN, 999]) assert.throws(() => createRouter({ catalog, historyMode: "openai", maxBytes: 1000, maxForwardedBytes: 1000, maxRequestBytes }));
 });
 
 test("byte recovery can summarize completed image tools within one turn without losing steering or pending calls", async context => {
   for (const compacted of [false, true]) {
     const sent = []; const metrics = [];
-    const { send } = await fixture(context, { maxBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
+    const { send } = await fixture(context, { maxBytes: 5000, maxForwardedBytes: 5000, maxRequestBytes: 20000, summaryModel: "gpt-test",
       onMetric: m => metrics.push(m), fetcher: async (_url, init) => {
         sent.push(JSON.parse(init.body));
         return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Previous images created." }] }] });
@@ -1078,7 +1078,7 @@ test("records reversed soft/hard limits while still recovering at the hard thres
 
 test("records received bytes for rejected and empty input", async (context) => {
   const metrics = [];
-  const { send, base } = await fixture(context, { maxBytes: 200, onMetric: (metric) => metrics.push(metric) });
+  const { send, base } = await fixture(context, { maxBytes: 200, maxForwardedBytes: 200, maxRequestBytes: 800, onMetric: (metric) => metrics.push(metric) });
   const oversized = await send({ model: "gpt-test", input: "x".repeat(300) });
   await oversized.text();
   assert.equal(oversized.status, 413);
@@ -1192,7 +1192,7 @@ test("image budget never discounts Base64 in plain text, schemas or malformed im
 });
 
 test("image token reservation does not bypass the raw request byte limit", async context=>{
- const {send,calls}=await fixture(context,{maxBytes:2048,opencodeHardLimitTokens:20000});
+ const {send,calls}=await fixture(context,{maxBytes:2048,maxForwardedBytes:2048,maxRequestBytes:8192,opencodeHardLimitTokens:20000});
  const response=await send({model:'deepseek-test',input:[{role:'user',content:[{type:'input_image',image_url:'data:image/png;base64,'+'A'.repeat(3000)}]}]});
  assert.equal(response.status,413);await response.text();assert.equal(calls.length,0);
 });
@@ -1631,4 +1631,21 @@ test("aborting an incomplete request body is classified as client input cancella
   assert.equal(metric.outcome, 'aborted');
   assert.equal(metric.termination_reason, 'client_request_aborted');
   assert.equal(calls.length, 0);
+});
+
+test('Issue 198: raising the input limit does not enlarge the handoff summary response limit', async context => {
+  const calls = [];
+  const { send } = await fixture(context, { maxBytes: 2048, maxForwardedBytes: 8192, maxRequestBytes: 16384,
+    summaryModel: 'gpt-test', opencodeSoftLimitTokens: 300, opencodeHardLimitTokens: 2000,
+    fetcher: async (_url, init) => {
+      const body = JSON.parse(init.body); calls.push(body.model);
+      return Response.json({ status: 'completed', output: [{ type: 'message', role: 'assistant',
+        content: [{ type: 'output_text', text: 'x'.repeat(3000) }] }] });
+    } });
+  const body = { model: 'deepseek-test', input: [{ role: 'user', content: 'x'.repeat(4000) },
+    { role: 'assistant', content: 'old answer' }, { role: 'user', content: 'latest' }] };
+  assert.ok(Buffer.byteLength(JSON.stringify(body)) > 2048);
+  const response = await send(body);
+  assert.equal(response.status, 502); await response.text();
+  assert.deepEqual(calls, ['gpt-test']);
 });

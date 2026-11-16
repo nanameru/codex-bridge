@@ -219,3 +219,102 @@ test('Command Code 400 exposes only fixed diagnostics and does not imply invalid
   assert.equal(metrics.at(-1).upstream_error_code, 'invalid_tool_definition');
   assert.doesNotMatch(JSON.stringify(metrics), /PRIVATE|native-secret|commandcode-key/);
 });
+
+test('Issue 198: UTF-8 Chat conversion observes inclusive forwarding boundary and preserves the old direct-call default', async () => {
+  const body = { model: MANUAL_PROVIDERS.ollama.model, input: [{ role: 'user', content: '界'.repeat(90) }], stream: false };
+  const options = { headers: { authorization: 'Bearer synthetic' }, body: JSON.stringify(body) };
+  const chatBytes = Buffer.byteLength(JSON.stringify(manualChatBody('ollama', body)));
+  const answerBytes = Buffer.byteLength(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }] }));
+  let calls = 0;
+  const fetcher = async (_url, init) => { calls++; assert.equal(Buffer.byteLength(init.body), chatBytes); return answer(); };
+  for (const delta of [-1, 0, 1]) {
+    const before = calls;
+    const response = await fetchManualProvider('ollama', MANUAL_PROVIDERS.ollama.base + '/responses', options,
+      fetcher, answerBytes + 1, undefined, [], { maxForwardedBytes: chatBytes + delta });
+    assert.equal(response.status, delta < 0 ? 413 : 200); await response.text();
+    assert.equal(calls - before, delta < 0 ? 0 : 1);
+  }
+  const old = await fetchManualProvider('ollama', MANUAL_PROVIDERS.ollama.base + '/responses', options, fetcher, chatBytes - 1);
+  assert.equal(old.status, 413); await old.text(); assert.equal(calls, 2);
+});
+
+test('Issue 198: larger manual input does not raise the JSON or SSE response limits', async () => {
+  const url = MANUAL_PROVIDERS.ollama.base + '/responses';
+  const maxBytes = 256;
+  for (const stream of [false, true]) {
+    const body = { model: MANUAL_PROVIDERS.ollama.model, input: '界'.repeat(300), stream };
+    const options = { headers: { authorization: 'Bearer synthetic' }, body: JSON.stringify(body) };
+    const maxForwardedBytes = 4096;
+    assert.ok(Buffer.byteLength(JSON.stringify(manualChatBody('ollama', body))) > maxBytes);
+    let calls = 0;
+    const ok = async () => { calls++; return stream
+      ? new Response('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: 'OK' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      : answer(); };
+    const accepted = await fetchManualProvider('ollama', url, options, ok, maxBytes, undefined, [], { maxForwardedBytes });
+    assert.equal(accepted.status, 200);
+    const acceptedText = await accepted.text();
+    assert.match(acceptedText, stream ? /response.completed/ : /"status":"completed"/);
+    const oversized = async () => { calls++; return stream
+      ? new Response('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: 'x'.repeat(500) }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      : Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: 'x'.repeat(500) }, finish_reason: 'stop' }] }); };
+    if (stream) {
+      const rejected = await fetchManualProvider('ollama', url, options, oversized, maxBytes, undefined, [], { maxForwardedBytes });
+      const text = await rejected.text(); assert.match(text, /response.failed/); assert.doesNotMatch(text, /response.completed/);
+    } else {
+      await assert.rejects(fetchManualProvider('ollama', url, options, oversized, maxBytes, undefined, [], { maxForwardedBytes }), /manual_response_too_large/);
+    }
+    assert.equal(calls, 2);
+  }
+});
+
+test('Issue 198: normal manual route permits input larger than response bound and rejects oversized Chat before fetch', async t => {
+  const body = { model: 'ollama/deepseek-v4.1-flash', input: '界'.repeat(450) };
+  const routed = { ...body, model: MANUAL_PROVIDERS.ollama.model };
+  const chatBytes = Buffer.byteLength(JSON.stringify(manualChatBody('ollama', routed)));
+  const routedBytes = Buffer.byteLength(JSON.stringify(routed));
+  assert.ok(chatBytes > routedBytes, 'fixture must exercise conversion rather than the earlier router limit');
+  for (const limit of [chatBytes - 1, chatBytes]) {
+    const f = await fixture(t, { maxBytes: 1024, maxForwardedBytes: limit, maxRequestBytes: 8192, autoBudgetHandoff: false });
+    const response = await f.send(body); assert.equal(response.status, limit < chatBytes ? 413 : 200);
+    await response.text(); assert.equal(f.calls.length, limit < chatBytes ? 0 : 1);
+  }
+});
+
+test('Issue 198: default manual JSON and SSE response ceiling remains 32 MiB', async t => {
+  const limit = 32 * 1024 * 1024;
+  function chatResponse(stream, total) {
+    const prefix = stream ? 'data: {"choices":[{"index":0,"delta":{"content":"'
+      : '{"choices":[{"index":0,"message":{"role":"assistant","content":"';
+    const suffix = stream ? '"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+      : '"},"finish_reason":"stop"}]}';
+    let remaining = total - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
+    let stage = 0;
+    return new Response(new ReadableStream({ pull(controller) {
+      if (stage === 0) { controller.enqueue(Buffer.from(prefix)); stage = 1; return; }
+      if (remaining > 0) {
+        const count = Math.min(remaining, 65536); remaining -= count;
+        controller.enqueue(Buffer.alloc(count, 0x78)); return;
+      }
+      controller.enqueue(Buffer.from(suffix)); controller.close();
+    } }), { headers: { 'content-type': stream ? 'text/event-stream' : 'application/json' } });
+  }
+  for (const stream of [false, true]) {
+    let calls = 0, bytes = 1024 * 1024;
+    const f = await fixture(t, { maxForwardedBytes: 2 * limit, maxRequestBytes: 2 * limit,
+      fetcher: async () => { calls++; return chatResponse(stream, bytes); } });
+    const body = { model: 'ollama/deepseek-v4.1-flash', input: 'synthetic', stream };
+    const accepted = await f.send(body);
+    assert.equal(accepted.status, 200);
+    const acceptedText = await accepted.text();
+    assert.match(acceptedText, stream ? /response.completed/ : /"status":"completed"/);
+    bytes = limit + 1;
+    const rejected = await f.send(body);
+    if (stream) {
+      assert.equal(rejected.status, 200);
+      const text = await rejected.text(); assert.match(text, /response.failed/); assert.doesNotMatch(text, /response.completed/);
+    } else {
+      assert.equal(rejected.status, 502); await rejected.text();
+    }
+    assert.equal(calls, 2);
+  }
+});

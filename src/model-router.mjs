@@ -188,6 +188,20 @@ function envLimit(name, fallback) {
   return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
+// Finite local safety ceiling, not a guarantee about any upstream provider.
+const INPUT_BYTES_CEILING = 512 * 1024 * 1024;
+const DEFAULT_INPUT_BYTES = 128 * 1024 * 1024;
+function inputBytesEnv(name) {
+  const raw = process.env[name];
+  if (raw === undefined) return DEFAULT_INPUT_BYTES;
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be a positive integer in bytes`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > INPUT_BYTES_CEILING) {
+    throw new Error(`${name} must be between 1 and ${INPUT_BYTES_CEILING} bytes`);
+  }
+  return value;
+}
+
 export const readOpenCodeKey = readOpenCodeApiKey;
 
 export async function fetchWithAvailabilityRetry(fetcher, url, options, onRetry = () => {}, { retry429 = true } = {}) {
@@ -246,8 +260,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
-  // Accept bounded history before reducing it to the smaller forwarding budget.
-  maxRequestBytes = maxBytes * 4,
+  maxForwardedBytes = inputBytesEnv("ROUTER_MAX_FORWARDED_BYTES"),
+  maxRequestBytes = inputBytesEnv("ROUTER_MAX_REQUEST_BYTES"),
   whatstokenFreeEnabled = process.env.CODEX_WHATSTOKEN_FREE === "1", whatstokenFreeGate,
   manualProvidersEnabled = false, manualKey = provider => readManualKey(provider, codexRoot),
   cliModelSync, cliModelSyncEnabled = false,
@@ -260,7 +274,9 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
-  if (![maxBytes, maxRequestBytes].every(n => Number.isSafeInteger(n) && n > 0) || maxRequestBytes < maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1
+      || ![maxForwardedBytes, maxRequestBytes].every(n => Number.isSafeInteger(n) && n > 0 && n <= INPUT_BYTES_CEILING)
+      || maxRequestBytes < maxForwardedBytes) {
     throw new Error("受信上限は送信上限以上の正の整数で指定してください");
   }
   if (manualProvidersEnabled) catalog = withManualModels(catalog, { whatstoken: whatstokenFreeEnabled });
@@ -300,7 +316,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         }
         const request = { ...options, body: JSON.stringify(routedBody(body, route, maxBytes)) };
         return CHAT_PROVIDERS[route.provider]
-          ? fetchManualProvider(route.provider, url, request, fetcher, maxBytes)
+          ? fetchManualProvider(route.provider, url, request, fetcher, maxBytes, undefined, [],
+            { maxForwardedBytes: Math.min(maxBytes, maxForwardedBytes) })
           : fetcher(url, request);
       } });
     if (selectedSummaries.size >= 16) selectedSummaries.delete(selectedSummaries.keys().next().value);
@@ -339,7 +356,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         summary_model: summaryModel, history_mode: activeHistoryMode,
         summary_limit_until: summaryLimitWindow.latestUntil(),
         whatstoken_free: { enabled: whatstokenFreeEnabled, configured: Boolean(manualKey('whatstoken')) },
-        request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxBytes },
+        request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxForwardedBytes },
         history_transport: allowDirectResponses ? "model" : "chat",
         direct_header: "x-codex-bridge-direct",
         direct_models: (allowDirectResponses ? catalog.models : []).filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
@@ -855,7 +872,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           const preview = JSON.stringify(routedBody(reused, route, maxRequestBytes));
           const threshold = softLimitTokens > 0
             ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
-          if (threshold > 0 && estimateInputTokens(preview) <= threshold && Buffer.byteLength(preview) <= maxBytes) {
+          if (threshold > 0 && estimateInputTokens(preview) <= threshold && Buffer.byteLength(preview) <= maxForwardedBytes) {
             body = reused;
             metric.budget_prefix_cache = "hit";
             compactionExpanded = true;
@@ -908,11 +925,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           }
           const threshold = softLimitTokens > 0
             ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
-          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
+          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxForwardedBytes);
           const preview = JSON.stringify(routedBody(body, route, maxRequestBytes));
           const extend = autoBudgetHandoff && hardLimitTokens > 0
             && plan.prefixEnd > body.input.findLastIndex((item) => item.type === "compaction") + 1
-            && (estimateInputTokens(preview) > threshold || Buffer.byteLength(preview) > maxBytes);
+            && (estimateInputTokens(preview) > threshold || Buffer.byteLength(preview) > maxForwardedBytes);
           if (extend) metric.budget_compaction_extended = true;
           if (extend && plan.preserveRecentUsers) metric.budget_intra_turn = true;
           if (!selected || restoredPlan) {
@@ -943,13 +960,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           metric.budget_limit_clamped = true;
         }
         if (route.provider !== "openai" && !directResponses && autoBudgetHandoff && hardLimitTokens > 0
-            && (initialTokens > threshold || initialBytes > maxBytes) && !compactionExpanded) {
+            && (initialTokens > threshold || initialBytes > maxForwardedBytes) && !compactionExpanded) {
           if (mode === 'ask') {
             fail(response, 422, 'history_mode_confirmation_required', HISTORY_MODES.ask.notice + modeHelp); return;
           }
           metric.budget_initial_tokens = initialTokens;
           metric.budget_initial_bytes = initialBytes;
-          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
+          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxForwardedBytes);
           const { prefixEnd, minimum, minimumBytes } = plan;
           if (prefixEnd > 0 && prefixEnd < body.input.length) {
             if (selectedSummaryUnsupported) {
@@ -958,7 +975,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
               fail(response, 422, 'history_mode_summary_unsupported', WHATSTOKEN_SUMMARY_UNSUPPORTED);
               return;
             }
-            if (minimum < hardLimitTokens && minimumBytes < maxBytes && (selected || routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization)) {
+            if (minimum < hardLimitTokens && minimumBytes < maxForwardedBytes && (selected || routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization)) {
               metric.stage = "budget_handoff";
               providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
               if (plan.preserveRecentUsers) metric.budget_intra_turn = true;
@@ -967,15 +984,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
                 body = await expandHistory(body, { ...handoffOptions, ...plan,
                   observe: ({ cache }) => { metric.budget_summary_cache = cache; handoffStatus.observe(cache, "budget"); } });
               } finally { metric.budget_summary_ms = Math.round(performance.now() - summaryStart); }
-              routedObject = routedBody(body, route, maxBytes);
+              routedObject = routedBody(body, route, maxForwardedBytes);
               routed = JSON.stringify(routedObject);
-              if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
+              if (Buffer.byteLength(routed) > maxForwardedBytes) throw new RangeError("expanded request too large");
               metric.budget_recovered = estimateInputTokens(routed) <= hardLimitTokens;
-            } else metric.budget_recovery_skipped = minimum >= hardLimitTokens || minimumBytes >= maxBytes ? "protected_input_too_large"
+            } else metric.budget_recovery_skipped = minimum >= hardLimitTokens || minimumBytes >= maxForwardedBytes ? "protected_input_too_large"
               : !summaryHeaders.authorization ? "summary_auth_missing" : "summary_model_missing";
           } else metric.budget_recovery_skipped = "no_completed_history";
         }
-        if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
+        if (Buffer.byteLength(routed) > maxForwardedBytes) throw new RangeError("expanded request too large");
       } catch (error) {
         if (!(error instanceof RangeError)) throw error;
         metric.input_limit_reason = "forwarded_bytes";
@@ -1021,7 +1038,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           candidateRoute.provider === 'whatstoken' ? [
             ...Object.keys(CHAT_PROVIDERS).map(manualKey), bridgeKey(), openCodeKey(),
             request.headers.authorization?.replace(/^Bearer /i, ''),
-          ] : []); }
+          ] : [], { maxForwardedBytes }); }
           catch (error) {
             if (error instanceof ToolSearchError || candidateRoute.provider !== 'whatstoken' || options.signal?.aborted) throw error;
             return Response.json({ error: { code: 'whatstoken_unavailable' } }, { status: 503 });

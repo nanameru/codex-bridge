@@ -5,6 +5,78 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-198-FORWARD
+    title: "画像の多い合成履歴を既定上限で模擬上流へ送る"
+    feature: "入力容量の回帰"
+    scenario: "約34MiBの画像形状履歴を実HTTPで送る。固定baseでは413、新既定では200と上流1件を期待する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs, src/tool-adapter.mjs]
+    test_file: test/router-input-limits.test.mjs
+    issues: [198]
+    notes: "2026-11-16 macOS/Node24.22.2。固定旧base6cdf14dでは34MiB入力がHTTP413・上流0件で回帰失敗、現行dirty artifactは200・上流1件で成功。全Node441/Python201成功。artifact識別と初回失敗/再実行はIssue #198コメント6908244228。合成・loopback限定、実会話は未使用。"
+
+  - id: TC-198-CONFIG
+    title: "受信と送信を独立に設定し不正値で起動を止める"
+    feature: "入力容量の設定"
+    scenario: "各既定128MiB、1〜512MiBの整数、受信>=送信、healthと不正CLI起動を確認する"
+    status: done
+    priority: high
+    type: integration
+    source: [src/model-router.mjs]
+    test_file: test/router-input-limits.test.mjs
+    issues: [198]
+    notes: "2026-11-16、各既定128MiBと独立設定、health、無効値/範囲/大小関係、CLI非起動を確認。Nodeの末尾改行も拒否。全件成功とartifactはIssue #198コメント6908244228。環境変数・CLIは隔離設定、本人configは未変更。"
+
+  - id: TC-198-BOUNDARIES
+    title: "UTF-8の受信・展開・変換後送信を境界で制限する"
+    feature: "入力容量の安全境界"
+    scenario: "境界未満/同値/超過、利用可能な圧縮方式、展開過大、未認証と上流0件を確認する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/router-input-limits.test.mjs
+    issues: [198]
+    notes: "2026-11-16 Node24.22.2でidentity/gzip/deflate/br/zstd、UTF-8の境界以下/同値/超過、展開過大・未認証で上流0件を確認。全件成功はIssue #198コメント6908244228。実Codex/E2Eは未実施。"
+
+  - id: TC-198-MANUAL
+    title: "Chat変換後の上限と応答・要約の上限を分離する"
+    feature: "manual provider容量境界"
+    scenario: "通常/fallback/選択要約、入力超過で未送信、入力拡大後もJSON/SSE応答と要約を制限する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/manual-providers.mjs, src/model-router.mjs, src/compaction-handoff.mjs]
+    test_file: test/manual-providers.test.mjs
+    issues: [198]
+    notes: "2026-11-16、Chat変換後の通常/fallback境界、入力拡大後もJSON/SSE32MiB超を拒否、選択要約の小さい方の制限を確認。初回1失敗は分割要約に反する新規期待の不整合で、各断片の容量と過大応答拒否/最小要求不可の上流0件へ修正し再確認成功。履歴6908152243・6908244228を保持。"
+
+  - id: TC-198-SERVICE
+    title: "サービス生成の入力設定とPython検証を副作用より前に行う"
+    feature: "入力容量の常駐設定"
+    scenario: "明示env上書きと既存値保持、不正値/Python tomllib不備で鍵・runtime・log・登録変更を行わない"
+    status: done
+    priority: high
+    type: integration
+    source: [scripts/install_router_service.py, scripts/local_security.py]
+    test_file: test/test_service_python.py
+    issues: [198]
+    notes: "2026-11-16 Python3.12.16でservice fixture7件成功。明示env上書き/既存値保持、不正値やPython不備で鍵/runtime/log/登録を変更しないことを確認。一時HOMEとlaunchctlモックのみ、実サービスは未変更。portable入口は対象baseに存在しない。詳細はIssue #198コメント6908244228。"
+
+  - id: TC-198-MEMORY
+    title: "画像履歴の容量別ピークRSSと処理時間を計測する"
+    feature: "入力容量のメモリ計測"
+    scenario: "約34MiBと128MiB付近を独立プロセスで順番に実HTTPへ送り、送受信量・結果・資源量のみ記録する"
+    status: done
+    priority: high
+    type: manual
+    source: [src/model-router.mjs, test/fixtures/router-input-memory-probe.mjs]
+    test_file: test/fixtures/router-input-memory-probe.mjs
+    issues: [198]
+    notes: "2026-11-16 macOS arm64/Node24.22.2、34MiB input35651860B/forward35651851B、200/上流1、peak535600KiB・478ms。上限付近input133169428B/forward133169419B、200/上流1、peak1518880KiB・1622ms。各ケース別プロセスで順次、生成器+router+sink全体でrouter単体増分ではない。手動helperで通常テストでは自動起動しない。履歴6908152243、同一製品コードの確認6908244228。"
+
   - id: TC-122
     title: "OpenAIのturn-stateを往復し他の提供元や未許可ヘッダーへ漏らさない"
     feature: "OpenAI turn-state ヘッダーの中継"
