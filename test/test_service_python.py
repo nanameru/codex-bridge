@@ -216,7 +216,7 @@ class RouterInputServiceTests(unittest.TestCase):
                         mock.patch.object(install_router_service, 'replace_registration') as replace, \
                         mock.patch.object(install_router_service, 'ensure_bridge_key', wraps=install_router_service.ensure_bridge_key) as ensure:
                     if failure:
-                        with self.assertRaises(ValueError):
+                        with self.assertRaises(SystemExit if failure == 'input' else ValueError):
                             install_router_service.install()
                         ensure.assert_not_called()
                         replace.assert_not_called()

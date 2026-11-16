@@ -139,7 +139,10 @@ def install():
         raise SystemExit("リンクされた常駐設定は更新しません")
     previous = path.read_bytes() if path.exists() else None
     prior_environment = plistlib.loads(previous).get("EnvironmentVariables", {}) if previous else {}
-    configured_environment = router_input_environment(prior_environment)
+    try:
+        configured_environment = router_input_environment(prior_environment)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     environment = service_environment(configured_environment, node=node)
     ensure_bridge_key(root)
     modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs", "live-catalog.mjs", "make-catalog.mjs", "sync-models.mjs", "catalog-safety.mjs", "manual-providers.mjs", "whatstoken-free.mjs", "provider-fallback.mjs", "cli-control.mjs", "cli-model-sync.mjs", "provider-help.mjs", "chat-protocol.mjs", "tool-search.mjs", "usage.mjs", "upstream-options.mjs", "request-guard.mjs", "history-mode.mjs", "rollout-history.mjs", "selected-compaction.mjs", "models.json"]}
