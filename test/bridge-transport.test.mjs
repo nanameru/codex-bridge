@@ -87,6 +87,7 @@ test("actual bridge sends model controls and stable conversation sessions to moc
   }
   const child = spawn(process.execPath, [script], { env: { ...process.env, HOME: directory, CODEX_HOME: directory, PORT: String(port),
     OPENCODE_API_KEY: "dummy-test-token", UPSTREAM_BASE: `http://127.0.0.1:${mockPort}/v1`,
+    CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN: "c".repeat(64),
     CODEX_BRIDGE_TEST_UPSTREAM: "1",
     ALLOW_REQUEST_DUMP: "0", DISABLE_DUMP: "0", DUMP_DIR: join(directory, "dumps"), PRUNE_EXISTING_DUMPS: "0", USAGE_HOST: "", LOG_LEVEL: "info" }, stdio: ["ignore", "pipe", "pipe"] });
   context.after(async () => {
@@ -107,7 +108,8 @@ test("actual bridge sends model controls and stable conversation sessions to moc
     child.once("error", (error) => { clearTimeout(timer); reject(error); });
     child.once("exit", () => { clearTimeout(timer); reject(new Error("bridge startup failed: " + logs)); });
   });
-  for (const headers of [{}, { "x-codex-bridge-auth": "invented" }, { authorization: "Bearer invented" }]) {
+  for (const headers of [{}, { "x-codex-bridge-auth": "invented" },
+    { "x-codex-bridge-auth": "c".repeat(64) }, { authorization: "Bearer invented" }]) {
     const rejected = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST",
       headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ input: "PRIVATE_TEXT" }) });
     assert.equal(rejected.status, 401);

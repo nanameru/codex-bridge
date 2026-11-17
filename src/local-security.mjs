@@ -165,7 +165,7 @@ export function codexHomeId(root = codexRoot()) {
 }
 
 export function readBridgeKey(root = codexRoot()) {
-  const value = process.env.CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN ?? readPrivateFile(root, "bridge-local-token")?.trim();
+  const value = readPrivateFile(root, "bridge-local-token")?.trim();
   return /^[a-f0-9]{64}$/.test(value ?? "") ? value : null;
 }
 

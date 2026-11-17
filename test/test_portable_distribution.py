@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -25,7 +26,8 @@ def load(name, path):
 
 
 build = load('build_distribution', 'scripts/build_distribution.py')
-setup = load('portable_setup', 'scripts/portable_setup.py')
+with mock.patch.object(sys, 'path', [str(REPO / 'scripts'), *sys.path]):
+    setup = load('portable_setup', 'scripts/portable_setup.py')
 
 
 class DistributionArchiveTests(unittest.TestCase):
@@ -329,16 +331,17 @@ class PortablePreflightTests(unittest.TestCase):
              mock.patch.object(setup.subprocess, 'run', return_value=mock.Mock(returncode=0)), \
              mock.patch.object(setup.subprocess, 'Popen', side_effect=spawn), \
              mock.patch.object(setup.subprocess, 'call', return_value=0) as codex, \
+             mock.patch.object(setup, 'ensure_bridge_key') as ensure_key, \
              mock.patch.dict(os.environ, {'OLLAMA_API_KEY': 'fake', 'UPSTREAM_BASE': 'fake',
                                           'CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN': 'a' * 64}), \
-             mock.patch.object(setup.secrets, 'token_hex', return_value='b' * 64), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(setup.run_session(args, '/bin/node', '/bin/codex', Path('/chosen-home')), 0)
         self.assertEqual(len(launches), 2)
         self.assertEqual(launches[0][1]['OPENCODE_API_KEY'], 'SYNTHETIC_KEY')
         self.assertNotIn('OPENCODE_API_KEY', launches[1][1])
-        self.assertEqual(launches[0][1]['CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'], launches[1][1]['CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'])
-        self.assertEqual(launches[0][1]['CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'], 'b' * 64)
+        ensure_key.assert_called_once_with(Path('/chosen-home'))
+        self.assertNotIn('CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN', launches[0][1])
+        self.assertNotIn('CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN', launches[1][1])
         self.assertNotIn('CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN', codex.call_args.kwargs['env'])
         self.assertNotIn('OLLAMA_API_KEY', launches[0][1])
         self.assertNotIn('UPSTREAM_BASE', codex.call_args.kwargs['env'])
@@ -348,6 +351,34 @@ class PortablePreflightTests(unittest.TestCase):
         self.assertIn('recipient-gpt', launches[1][0])
         for _, _, child in launches:
             child.terminate.assert_called_once()
+
+    @unittest.skipIf(os.name == 'nt', 'native Windows is intentionally unsupported')
+    def test_unified_key_is_private_stable_and_unsafe_existing_key_blocks_launch(self):
+        args = mock.Mock(port=18790, bridge_port=18788, model='opencode/model',
+                         summary_model='recipient-gpt', provider='unified')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            path = root / 'bridge-local-token'
+            setup.ensure_bridge_key(root)
+            original = path.read_bytes()
+            self.assertRegex(original.decode().strip(), r'^[a-f0-9]{64}$')
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            setup.ensure_bridge_key(root)
+            self.assertEqual(path.read_bytes(), original)
+            path.chmod(0o644)
+            with mock.patch('builtins.input', return_value='YES'), \
+                 mock.patch.object(setup, 'preflight', return_value=({'plan': {'ready_for_approval': True}}, None, None, None)), \
+                 mock.patch.object(setup, 'catalog_info', return_value=(root / 'catalog.json', {'openai', 'opencode'})), \
+                 mock.patch.object(setup, 'port_state', return_value='no-listener-detected'), \
+                 mock.patch.object(setup.getpass, 'getpass', return_value='SYNTHETIC_KEY'), \
+                 mock.patch.object(setup.subprocess, 'run', return_value=mock.Mock(returncode=0)), \
+                 mock.patch.object(setup.subprocess, 'Popen') as process, \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(setup.run_session(args, '/bin/node', '/bin/codex', root), 1)
+            process.assert_not_called()
+            self.assertIn('unsafe or unavailable', output.getvalue())
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
 
     def test_approved_session_scopes_key_and_applies_only_temporary_options(self):
         args = mock.Mock(port=18788, model='recipient-choice', provider='opencode-go')

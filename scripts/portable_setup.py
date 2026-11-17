@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import re
-import secrets
 import shutil
 import socket
 import stat
@@ -15,6 +14,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from local_security import ensure_bridge_key
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._/-]{0,255}\Z')
@@ -244,6 +244,8 @@ def show_plan(args, report):
             print('Recipient catalog: %s; providers: %s' % (path, ', '.join(sorted(providers))))
             print('OpenAI summary model: %s. Summary requests may send conversation content and incur additional charges.' % args.summary_model)
             print('OpenCode Bridge port: %s (used when the catalog contains OpenCode).' % args.bridge_port)
+            if 'opencode' in providers:
+                print('After approval, a private bridge-local-token is created in CODEX_HOME if missing, or the safe existing key is reused. It remains after exit.')
         print('Temporary overrides:')
         print('  model = ' + json.dumps(args.model))
         print('  model_provider = "bridge-portable"')
@@ -280,19 +282,21 @@ def run_session(args, node, codex, root):
         print('Codex authentication unavailable or unsupported. Run node src/auth-doctor.mjs locally for the reason.')
         return 1
     children = []
-    # Ephemeral internal router-to-bridge authentication; never written or passed to Codex.
-    internal_token = secrets.token_hex(32) if unified and 'opencode' in providers else None
     try:
         if 'opencode' in providers:
             key = getpass.getpass('OpenCode Go API key (hidden; never paste into chat): ')
             if not key or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in key):
                 print('Invalid key input; no process started.')
                 return 1
+            if unified:
+                try:
+                    ensure_bridge_key(root)
+                except (OSError, ValueError, UnicodeError):
+                    print('Local bridge key is unsafe or unavailable; no process started.')
+                    return 1
             bridge_port = args.bridge_port if unified else args.port
             bridge_env = dict(env, OPENCODE_API_KEY=key, PORT=str(bridge_port), DEFAULT_MODEL=args.model, LOG_LEVEL='info')
             del key
-            if internal_token:
-                bridge_env['CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'] = internal_token
             bridge = subprocess.Popen([node, str(ROOT / 'src/codex-bridge.mjs')], env=bridge_env,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             del bridge_env
@@ -302,8 +306,6 @@ def run_session(args, node, codex, root):
                 return 1
         if unified:
             router_env = dict(env)
-            if internal_token:
-                router_env['CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN'] = internal_token
             router = subprocess.Popen([node, str(ROOT / 'scripts/portable_router.mjs'), str(catalog),
                                        args.summary_model, str(args.port), str(args.bridge_port)],
                                       env=router_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
