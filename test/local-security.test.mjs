@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createRouter } from "../src/model-router.mjs";
-import { validateOpenCodeBase, fetchOpenCode } from "../src/local-security.mjs";
+import { authenticateBridge, readBridgeKey, validateOpenCodeBase, fetchOpenCode } from "../src/local-security.mjs";
 
 async function fixture(context, options = {}) {
   const root = mkdtempSync(join(tmpdir(), "router-security-"));
@@ -37,6 +37,31 @@ async function fixture(context, options = {}) {
   });
   return { root, auth, bridgeKey, calls, server, base, send };
 }
+
+test("injected portable environment token cannot replace the private bridge key", (context) => {
+  const root = mkdtempSync(join(tmpdir(), "bridge-key-injection-"));
+  const path = join(root, "bridge-local-token");
+  const original = process.env.CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN;
+  const injected = "a".repeat(64);
+  const owned = "b".repeat(64);
+  context.after(() => {
+    if (original === undefined) delete process.env.CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN;
+    else process.env.CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN = original;
+    rmSync(root, { recursive: true, force: true });
+  });
+  process.env.CODEX_BRIDGE_PORTABLE_LOCAL_TOKEN = injected;
+  const request = value => ({ headers: { "x-codex-bridge-auth": value } });
+  assert.equal(readBridgeKey(root), null);
+  assert.equal(authenticateBridge(request(injected), root), false);
+  writeFileSync(path, owned, { mode: 0o600 });
+  assert.equal(readBridgeKey(root), owned);
+  assert.equal(authenticateBridge(request(injected), root), false);
+  assert.equal(authenticateBridge(request(owned), root), true);
+  chmodSync(path, 0o644);
+  assert.equal(readBridgeKey(root), null);
+  assert.equal(authenticateBridge(request(injected), root), false);
+  assert.equal(authenticateBridge(request(owned), root), false);
+});
 
 test("rejects arbitrary Bearer tokens on native and OpenCode routes before calling upstream", async (context) => {
   const { send, calls } = await fixture(context);

@@ -5,6 +5,66 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-123
+    title: "許可したファイルだけで再現可能な配布ZIPを作る"
+    feature: "配布ZIP"
+    scenario: "固定allowlistと統合router依存、疑似機密や未許可ファイルの除外、リンクと危険パスの拒否、manifestと展開後のハッシュ、再現性、既存出力の保護"
+    status: done
+    priority: high
+    type: integration
+    source: [scripts/build_distribution.py, distribution/START_HERE.md, distribution/AGENTS.md, scripts/portable_setup.py, src/codex-bridge.mjs, src/model-router.mjs, scripts/portable_router.mjs, scripts/portable_catalog.mjs]
+    test_file: test/test_portable_distribution.py
+    issues: [194]
+    notes: "2026-11-14 20:40 AEDT、macOS arm64/Python 3.12.16/Node 24.22.2、93a194cで配布fixture 17件・router回帰4件成功。新ZIPは38ファイル+manifest、ZIP/manifest/git blobの全ハッシュ一致、定義した秘密・作者名・個人パスの検査0件。初回の依存検査/Python不足の失敗はIssue履歴に保持。秘密混入検査はallowlistと定義パターンの範囲であり、内容レビューの代替ではない。"
+    last_run:
+      revision: 93a194c78f4176eca67c7bc78aafa7b737f7686f
+      at: "2026-11-14T20:40:00+11:00"
+      provider: codex-local-offline
+      result: passed
+      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6875364053"]
+
+  - id: TC-124
+    title: "環境を読み取り確認し選択と承認を経て前景起動する"
+    feature: "配布版preflight"
+    scenario: "3 OSの判定fixture、依存不足、既存設定、権限・リンク・差し替え、ポート競合、環境変数の隔離、private内部鍵、healthと子PIDの照合、承認拒否・再検証失敗の非起動、非BMPパス"
+    status: done
+    priority: high
+    type: unit
+    source: [scripts/portable_setup.py, scripts/portable_router.mjs, distribution/START_HERE.md, distribution/AGENTS.md]
+    test_file: test/test_portable_distribution.py
+    issues: [194]
+    notes: "93a194c時点の配布fixture 17件・router回帰4件の履歴はIssueに保持。後続修正では環境変数tokenを廃止し、承認後にprivate内部鍵を作成または安全な既存鍵を再利用する。実Codex/各OS実機/実provider/実復元は未検証、TC-125を参照。"
+    last_run:
+      revision: 93a194c78f4176eca67c7bc78aafa7b737f7686f
+      at: "2026-11-14T20:40:00+11:00"
+      provider: codex-local-offline-fixture
+      result: passed
+      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6875364053"]
+
+  - id: TC-125
+    title: "受取人がZIPから本人の環境を確認して前景起動する"
+    feature: "配布版の受取人導入"
+    scenario: "macOS、Linux、Windows WSLのそれぞれで展開、preflight、選択、preview、承認、模擬上流による起動と復旧を確認する"
+    status: todo
+    priority: high
+    type: e2e
+    source: [scripts/portable_setup.py, scripts/build_distribution.py, distribution/START_HERE.md, src/codex-bridge.mjs]
+    test_file: ""
+    issues: [194]
+    notes: "未実施・実機未検証。実行ごとに録画しprivateに保存・読戻す。実有料推論は行わない。模擬上流を使う方法は安全な隔離環境で別途整備する。"
+
+  - id: TC-194-LOCAL-KEY-INJECTION
+    title: "環境変数の注入で内部認証鍵を上書きできない"
+    feature: "配布版の内部認証"
+    scenario: "環境変数の任意値を拒否し、private鍵のみ認証し、鍵が欠落または権限不正なら失敗する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/local-security.mjs, scripts/portable_setup.py, src/codex-bridge.mjs]
+    test_file: test/local-security.test.mjs
+    issues: [194]
+    notes: "認証関数と合成環境の実Bridge HTTPを検証。配布ランチャーの子環境と鍵作成・既存不正鍵の停止はtest/test_portable_distribution.py、HTTP統合はtest/bridge-transport.test.mjs。実Codexと実providerは未検証。"
+
   - id: TC-122
     title: "OpenAIのturn-stateを往復し他の提供元や未許可ヘッダーへ漏らさない"
     feature: "OpenAI turn-state ヘッダーの中継"

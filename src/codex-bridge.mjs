@@ -53,13 +53,16 @@ const PRICES = JSON.parse(readFileSync(new URL("./prices.json", import.meta.url)
 const usageByThread = new Map(); // thread_id -> { model, inTok, outTok, cost, turns, updated }
 let totalCost = 0;
 const USAGE_FILE = join(homedir(), ".home-runner", "usage.json");
-try {
-  const saved = JSON.parse(readFileSync(USAGE_FILE, "utf8"));
-  totalCost = saved.totalCost ?? 0;
-  for (const [k, v] of Object.entries(saved.threads ?? {})) usageByThread.set(k, v);
-} catch {}
+if (process.env.CODEX_BRIDGE_NO_USAGE !== "1") {
+  try {
+    const saved = JSON.parse(readFileSync(USAGE_FILE, "utf8"));
+    totalCost = saved.totalCost ?? 0;
+    for (const [k, v] of Object.entries(saved.threads ?? {})) usageByThread.set(k, v);
+  } catch {}
+}
 let saveTimer = null;
 function saveUsage() {
+  if (process.env.CODEX_BRIDGE_NO_USAGE === "1") return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try {
