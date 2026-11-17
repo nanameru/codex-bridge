@@ -5,6 +5,18 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-196-REQUEST-DUMP
+    title: "診断本文を安全な保存先の新規ファイルにだけ保存する"
+    feature: "診断ログの保存"
+    scenario: "既定無効と無効指定の優先、安全な新規保存、所有者・権限・リンク不正の拒否、既存内容・権限の不変を合成データで確認する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/codex-bridge.mjs, src/local-security.mjs]
+    test_file: test/request-dump.test.mjs
+    issues: [196]
+    notes: "修正前の実Bridge回帰1件は失敗、修正後の新規16件と全Node448件・Python216件が成功（macOS、Node24.22.2、Python3.12.16）。初回は子プロセスのPython3.9混入でNode8/Python12失敗、PATH固定後に成功。POSIX実ファイル検証、所有者不一致・Windows拒否は模擬分岐。正式再スキャン・実OS横断検証は未実施。"
+
   - id: TC-123
     title: "許可したファイルだけで再現可能な配布ZIPを作る"
     feature: "配布ZIP"
