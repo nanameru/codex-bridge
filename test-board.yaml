@@ -141,13 +141,19 @@ cases:
     title: "受取人がZIPから本人の環境を確認して前景起動する"
     feature: "配布版の受取人導入"
     scenario: "macOS、Linux、Windows WSLのそれぞれで展開、preflight、選択、preview、承認、模擬上流による起動と復旧を確認する"
-    status: todo
+    status: doing
     priority: high
     type: e2e
     source: [scripts/portable_setup.py, scripts/build_distribution.py, distribution/START_HERE.md, src/codex-bridge.mjs]
     test_file: ""
     issues: [194]
-    notes: "未実施・実機未検証。実行ごとに録画しprivateに保存・読戻す。実有料推論は行わない。模擬上流を使う方法は安全な隔離環境で別途整備する。"
+    notes: "2026-11-19 Devin側でdev 7577a95のZIP(SHA-256 fd218e78…ab2d一致)をmacOS・Linux・Windows WSL(Ubuntu 24.04)で実行。3環境とも展開・照合・preflight・選択・preview・run(YES)・Bridge起動と/health・Codex起動・終了時のBridge停止と通常codex復元・実HOME無変更を確認。同梱runはclean_envがUPSTREAM_BASEを渡さず模擬上流へ届かないため、往復は同等の環境変数を付けた手動起動で確認。標準run経由の往復のみ未確認。Issue #202の検証ハーネス導入後に再確認する。録画はDevin側の非公開記録。詳細はIssue #194コメント6980689276。実有料推論は行わない。"
+    last_run:
+      revision: 7577a95cdc60d02c862c79842fa64c1bb8d43427
+      at: "2026-11-18T13:57:00Z"
+      provider: devin-cloud-macos-linux-wsl
+      result: partial
+      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6980689276"]
 
   - id: TC-194-LOCAL-KEY-INJECTION
     title: "環境変数の注入で内部認証鍵を上書きできない"
