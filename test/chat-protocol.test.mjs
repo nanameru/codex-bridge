@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
+import { createInterface } from 'node:readline';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { chatToResponses, pipeChatStream, chatMessages } from '../src/chat-protocol.mjs';
 const call = { id: 'call_1', type: 'function', function: { name: 'probe', arguments: '{"query":"status"}' } };
 const chat = (finish, calls = []) => ({ choices: [{ message: { content: 'Checking', tool_calls: calls }, finish_reason: finish }] });
@@ -54,6 +57,54 @@ test('SSE cannot execute tools on EOF without finish_reason or on length/content
     assert.equal(output.at(-1).response.error.code,'invalid_prompt');
     assert.ok(!output.some(e=>e.item?.type==='function_call'));
   }
+});
+
+test('portable launcher mock upstream completes text and tool SSE through the Bridge converter', { timeout: 10000 }, async (t) => {
+  const script = fileURLToPath(new URL('./mock-upstream.mjs', import.meta.url));
+  const mock = spawn(process.execPath, [script], {
+    env: { MOCK_PORT: '0' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const closed = once(mock, 'close');
+  const logs = createInterface({ input: mock.stdout });
+  t.after(async () => {
+    logs.close();
+    if (mock.exitCode === null && mock.signalCode === null) mock.kill();
+    await closed;
+  });
+  const [ready] = await Promise.race([
+    once(logs, 'line', { signal: t.signal }),
+    closed.then(([code, signal]) => assert.fail(`Mock upstream exited before listening (${code ?? signal})`)),
+  ]);
+  const match = /^\[mock\] listening ([1-9]\d*)$/.exec(ready);
+  assert.ok(match, ready);
+  const url = `http://127.0.0.1:${match[1]}/v1/chat/completions`;
+
+  async function complete(content) {
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stream: true, messages: [{ role: 'user', content }] }),
+      signal: t.signal,
+    });
+    assert.equal(upstream.status, 200);
+    assert.equal(upstream.headers.get('content-type'), 'text/event-stream');
+    const res = response();
+    await pipeChatStream(upstream, res, 'test', 'thread');
+    const terminal = events(res).at(-1);
+    assert.equal(terminal.type, 'response.completed', terminal.response.error?.message);
+    assert.equal(terminal.response.output.length, 1);
+    return terminal.response.output[0];
+  }
+
+  const answer = await complete('Reply BRIDGE_OK. Do not use tools.');
+  assert.equal(answer.phase, 'final_answer');
+  assert.equal(answer.content[0].text, 'BRIDGE_OK');
+  const tool = await complete('USE_TOOL_NOW');
+  assert.equal(tool.type, 'function_call');
+  assert.equal(tool.call_id, 'call_mock_1');
+  assert.equal(tool.name, 'get_weather');
+  assert.deepEqual(JSON.parse(tool.arguments), { city: 'Tokyo' });
 });
 
 test('valid SSE preserves UTF8, reasoning, usage and exactly one completed tool', async () => {

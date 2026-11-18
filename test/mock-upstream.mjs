@@ -12,7 +12,12 @@ function chunks(text) {
   return out;
 }
 
-http
+function endStream(res, finishReason) {
+  res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: finishReason }] })}\n\n`);
+  res.end("data: [DONE]\n\n");
+}
+
+const server = http
   .createServer(async (req, res) => {
     let data = "";
     for await (const c of req) data += c;
@@ -34,8 +39,7 @@ http
           res.writeHead(200, { "content-type": "text/event-stream" });
           res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: tc.id, type: "function", function: { name: tc.function.name, arguments: "" } }] } }] })}\n\n`);
           res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: tc.function.arguments } }] } }] })}\n\n`);
-          res.write("data: [DONE]\n\n");
-          res.end();
+          endStream(res, "tool_calls");
         } else {
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({
@@ -52,8 +56,7 @@ http
         for (const part of chunks(answer)) {
           res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: part } }] })}\n\n`);
         }
-        res.write("data: [DONE]\n\n");
-        res.end();
+        endStream(res, "stop");
       } else {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
@@ -66,4 +69,4 @@ http
 
     res.writeHead(404).end();
   })
-  .listen(PORT, "127.0.0.1", () => log(`listening ${PORT}`));
+  .listen(PORT, "127.0.0.1", () => log(`listening ${server.address().port}`));

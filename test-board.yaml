@@ -60,7 +60,7 @@ cases:
     status: todo
     priority: high
     type: e2e
-    source: [scripts/portable_setup.py, scripts/build_distribution.py, distribution/START_HERE.md, src/codex-bridge.mjs, test/portable_launcher_harness.py]
+    source: [scripts/portable_setup.py, scripts/build_distribution.py, distribution/START_HERE.md, src/codex-bridge.mjs, test/portable_launcher_harness.py, test/mock-upstream.mjs]
     test_file: test/portable_launcher_harness.py
     issues: [194, 202]
     notes: "先行macOS実行は手動起動で部分合格。標準ランチャー経由はmacOS・Linux・WSLで未検証。実行ごとに録画しprivateに保存・読戻す。実有料推論は行わない。"
@@ -76,6 +76,18 @@ cases:
     test_file: test/test_portable_launcher_harness.py
     issues: [202]
     notes: "標準ランチャー・模擬上流・ネットワーク隔離の実行はモック化した単体テストで確認。録画付きの実動作はTC-125で確認する。"
+
+  - id: TC-202-MOCK-SSE
+    title: "配布ランチャー用の模擬上流がSSEを正常終了する"
+    feature: "配布版の検証ハーネス"
+    scenario: "実際の模擬上流のSSEをBridge変換処理に通し、BRIDGE_OKの最終回答とツール呼び出しがそれぞれ完了する"
+    status: done
+    priority: high
+    type: regression
+    source: [test/mock-upstream.mjs, src/chat-protocol.mjs]
+    test_file: test/chat-protocol.test.mjs
+    issues: [202]
+    notes: "ループバックHTTPとの結合テスト。Codexと標準ランチャーの通し検証はTC-125で扱う。"
 
   - id: TC-194-LOCAL-KEY-INJECTION
     title: "環境変数の注入で内部認証鍵を上書きできない"
