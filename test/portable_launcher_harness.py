@@ -74,8 +74,8 @@ def prepare_session(work, node, codex, mock_port):
     config = codex_home / "config.toml"
     config.write_text('cli_auth_credentials_store = "file"\n', encoding="utf-8")
     auth = codex_home / "auth.json"
-    auth.touch(mode=0o600, exist_ok=False)
-    auth.write_text(json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": CODEX_KEY}), encoding="utf-8")
+    with open(auth, "x", encoding="utf-8", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
+        json.dump({"auth_mode": "apikey", "OPENAI_API_KEY": CODEX_KEY}, stream)
     answer = work / "last-message.txt"
 
     # Wrap only the exact archived Bridge entry point. The auth probe and version
@@ -153,6 +153,7 @@ def exercise(work_path, node, codex, bridge_port, mock_port):
         mock = subprocess.Popen([node, str(ROOT / "test/mock-upstream.mjs")],
                                 cwd=work, env={"MOCK_PORT": str(mock_port)},
                                 stdout=output, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        failure = None
         try:
             wait_for_mock(mock, mock_port, log)
             for step, args in (("preflight", options), ("preview", [*options, *choices])):
@@ -166,12 +167,20 @@ def exercise(work_path, node, codex, bridge_port, mock_port):
             if not any(line.startswith("[mock] POST /v1/chat/completions ")
                        for line in log.read_text(encoding="utf-8").splitlines()):
                 raise RuntimeError("mock did not receive a chat completions request")
+        except BaseException as exc:
+            failure = exc
+            raise
         finally:
-            stop_mock(mock)
-            if port_is_open(bridge_port) or port_is_open(mock_port):
-                raise RuntimeError("Bridge or mock listener still open")
-            if file_digest(config) != before:
-                raise RuntimeError("config.toml changed")
+            try:
+                stop_mock(mock)
+                if port_is_open(bridge_port) or port_is_open(mock_port):
+                    raise RuntimeError("Bridge or mock listener still open")
+                if file_digest(config) != before:
+                    raise RuntimeError("config.toml changed")
+            except Exception as exc:
+                if failure is None:
+                    raise
+                failure.add_note(f"Cleanup verification also failed: {exc}")
     print(f"PASS: Codex returned {ANSWER} through the mock upstream. "
           f"Bridge and mock stopped. config.toml SHA-256 unchanged: {before}", flush=True)
 

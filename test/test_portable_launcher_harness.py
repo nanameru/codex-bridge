@@ -105,8 +105,13 @@ class PortableLauncherHarnessTests(unittest.TestCase):
         popen.assert_not_called()
 
     def test_launch_sequence_checks_response_stop_and_config(self):
+        launcher_script = str(self.work / "distribution/scripts/portable_setup.py")
+
+        def step(command):
+            return command[command.index(launcher_script) + 1]
+
         def record_run(command, **kwargs):
-            if command[4] == "run":
+            if step(command) == "run":
                 (self.work / "last-message.txt").write_text(harness.ANSWER)
                 (self.work / "mock.log").write_text("[mock] POST /v1/chat/completions model: fixture\n")
 
@@ -119,7 +124,20 @@ class PortableLauncherHarnessTests(unittest.TestCase):
               patch.object(harness.subprocess, "run", side_effect=record_run) as run,
               patch("builtins.print")):
             harness.exercise(self.work, "/node", "/codex", 18788, 18999)
-        self.assertEqual([call.args[0][4] for call in run.call_args_list], ["preflight", "preview", "run"])
+        self.assertEqual([step(call.args[0]) for call in run.call_args_list], ["preflight", "preview", "run"])
         self.assertEqual([call.args[0] for call in check_port.call_args_list], [18788, 18999, 18788, 18999])
         child.terminate.assert_called_once()
         child.wait.assert_called_once_with(timeout=5)
+
+    def test_launcher_failure_remains_primary_when_cleanup_also_fails(self):
+        launcher_error = subprocess.CalledProcessError(1, ["portable_setup.py"])
+        with (patch.object(harness.socket, "if_nameindex", return_value=[(1, "lo")]),
+              patch.object(harness, "port_is_open", side_effect=[False, False, True]),
+              patch.object(harness, "wait_for_mock"),
+              patch.object(harness, "stop_mock"),
+              patch.object(harness.subprocess, "Popen"),
+              patch.object(harness.subprocess, "run", side_effect=launcher_error)):
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                harness.exercise(self.work, "/node", "/codex", 18788, 18999)
+        self.assertIs(failure.exception, launcher_error)
+        self.assertIn("Bridge or mock listener still open", " ".join(launcher_error.__notes__))
