@@ -436,3 +436,42 @@ test('review 5: a router item inside a compaction request reaches the selected m
   assert.equal(f.metrics.at(-1).history_source, undefined, 'the owner log is not needed');
   assert.equal(f.metrics.at(-1).selected_compaction_restored, 1);
 });
+
+test('Issue 198: selected manual summary honors the smaller forwarding and summary bounds', async t => {
+  async function run({ maxBytes, maxForwardedBytes }) {
+    const calls = [];
+    const server = createRouter({ catalog, codexRoot: home(t), authenticate: () => true, historyMode: 'selected',
+      manualProvidersEnabled: true, manualKey: () => 'synthetic', bridgeKey: () => 'synthetic', summaryModel: 'gpt-test',
+      summaryLimitWindow: { blocked: () => true, latestUntil: () => null }, maxBytes, maxForwardedBytes, maxRequestBytes: 16384,
+      fetcher: async (_url, init) => {
+        calls.push(Buffer.byteLength(init.body));
+        return new Response('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: 'Synthetic summary' }, finish_reason: 'stop' }] })
+          + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      } });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    try {
+      const request = { model: 'ollama/deepseek-v4.1-flash', stream: false,
+        input: [{ role: 'user', content: '界'.repeat(300) }, { type: 'compaction_trigger' }] };
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/responses`, {
+        method: 'POST', headers: { authorization: 'Bearer synthetic', 'content-type': 'application/json' }, body: JSON.stringify(request) });
+      const status = response.status; const text = await response.text();
+      return { status, text, calls };
+    } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  }
+  const baseline = await run({ maxBytes: 16384, maxForwardedBytes: 16384 });
+  assert.equal(baseline.status, 200, baseline.text); assert.equal(baseline.calls.length, 1);
+  const convertedBytes = baseline.calls[0];
+  assert.ok(convertedBytes > 1000 && convertedBytes < 16384);
+  const forwarding = await run({ maxBytes: 16384, maxForwardedBytes: convertedBytes - 1 });
+  assert.ok(forwarding.status >= 400); assert.equal(forwarding.calls.length, 0);
+  const summaryBound = convertedBytes - 1;
+  const summary = await run({ maxBytes: summaryBound, maxForwardedBytes: 16384 });
+  // A logical history can be split into bounded requests. The response budget
+  // still applies after a valid fragment reaches the upstream.
+  assert.equal(summary.status, 502);
+  assert.match(summary.text, /compaction_handoff_failed/);
+  assert.ok(summary.calls.length > 0);
+  assert.ok(summary.calls.every(bytes => bytes <= summaryBound));
+  const cannotFit = await run({ maxBytes: 1, maxForwardedBytes: 16384 });
+  assert.ok(cannotFit.status >= 400); assert.equal(cannotFit.calls.length, 0);
+});

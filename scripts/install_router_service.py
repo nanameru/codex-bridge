@@ -3,6 +3,7 @@ import hashlib
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,34 @@ ROUTER_SERVICES = {
     "com.kimurataiyou.codex-model-router": 8790,
     "com.kimurataiyou.codex-model-router-8791": 8791,
 }
+
+
+INPUT_LIMIT_NAMES = ("ROUTER_MAX_FORWARDED_BYTES", "ROUTER_MAX_REQUEST_BYTES")
+INPUT_LIMIT_DEFAULT = 128 * 1024 * 1024
+INPUT_LIMIT_CEILING = 512 * 1024 * 1024
+
+
+def router_input_environment(previous):
+    # An explicitly supplied installer environment overrides the old registration.
+    environment = dict(previous)
+    for name in INPUT_LIMIT_NAMES:
+        if name in os.environ:
+            environment[name] = os.environ[name]
+    values = []
+    for name in INPUT_LIMIT_NAMES:
+        raw = environment.get(name, str(INPUT_LIMIT_DEFAULT))
+        # Accept existing plist integers, then emit strings for launchd.
+        if type(raw) is int:
+            raw = environment[name] = str(raw)
+        if not isinstance(raw, str) or not re.fullmatch(r"[0-9]+", raw):
+            raise ValueError(f"{name} must be a positive integer in bytes")
+        value = int(raw)
+        if not 1 <= value <= INPUT_LIMIT_CEILING:
+            raise ValueError(f"{name} must be between 1 and {INPUT_LIMIT_CEILING} bytes")
+        values.append(value)
+    if values[1] < values[0]:
+        raise ValueError("ROUTER_MAX_REQUEST_BYTES must be at least ROUTER_MAX_FORWARDED_BYTES")
+    return environment
 
 
 def wait_for_unload(service):
@@ -101,11 +130,23 @@ def install():
     if not node:
         raise SystemExit("Node.jsが必要です")
     subprocess.run([node, "-e", 'if (typeof require("node:zlib").zstdDecompressSync !== "function") process.exit(1)'], check=True)
-    environment = service_environment(node=node)
     source = Path(__file__).resolve().parents[1]
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     if not (root / "unified-model-catalog.json").exists():
         raise SystemExit("先にunified_config.py prepareを実行してください")
+    label = arguments.service
+    port = ROUTER_SERVICES[label]
+    agents = Path.home() / "Library/LaunchAgents"
+    path = agents / (label + ".plist")
+    if path.is_symlink():
+        raise SystemExit("リンクされた常駐設定は更新しません")
+    previous = path.read_bytes() if path.exists() else None
+    prior_environment = plistlib.loads(previous).get("EnvironmentVariables", {}) if previous else {}
+    try:
+        configured_environment = router_input_environment(prior_environment)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    environment = service_environment(configured_environment, node=node)
     ensure_bridge_key(root)
     modules = {name: (source / "src" / name).read_bytes() for name in ["model-router.mjs", "tool-adapter.mjs", "compaction-handoff.mjs", "local-security.mjs", "handoff-status.mjs", "tool-recovery.mjs", "live-catalog.mjs", "make-catalog.mjs", "sync-models.mjs", "catalog-safety.mjs", "manual-providers.mjs", "whatstoken-free.mjs", "provider-fallback.mjs", "cli-control.mjs", "cli-model-sync.mjs", "provider-help.mjs", "chat-protocol.mjs", "tool-search.mjs", "usage.mjs", "upstream-options.mjs", "request-guard.mjs", "history-mode.mjs", "rollout-history.mjs", "selected-compaction.mjs", "models.json"]}
     revision = hashlib.sha256(b"".join(modules.values())).hexdigest()
@@ -115,13 +156,7 @@ def install():
         atomic_write(runtime / name, content.decode("utf-8"))
     logs = root / "log"
     logs.mkdir(exist_ok=True, mode=0o700)
-    label = arguments.service
-    port = ROUTER_SERVICES[label]
-    agents = Path.home() / "Library/LaunchAgents"
     agents.mkdir(parents=True, exist_ok=True)
-    path = agents / (label + ".plist")
-    if path.is_symlink():
-        raise SystemExit("リンクされた常駐設定は更新しません")
     payload = {
         "Label": label, "ProgramArguments": [node, str(runtime / "model-router.mjs")],
         "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 10,
@@ -129,9 +164,7 @@ def install():
         "StandardOutPath": str(logs / "model-router.log") if port == 8790 else str(logs / f"model-router-{port}.log"),
         "StandardErrorPath": str(logs / "model-router.stderr.log") if port == 8790 else str(logs / f"model-router-{port}.stderr.log"),
     }
-    previous = path.read_bytes() if path.exists() else None
     if previous:
-        payload["EnvironmentVariables"] = {**service_environment(plistlib.loads(previous).get("EnvironmentVariables", {}), node=node), "CODEX_HOME": str(root)}
         registered_port = payload["EnvironmentVariables"].get("ROUTER_PORT")
         if registered_port is not None and str(registered_port) != str(port):
             raise SystemExit("常駐設定のROUTER_PORTが選択したサービスと一致しません。更新していません")

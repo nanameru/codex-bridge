@@ -293,3 +293,19 @@ test('自動用Command Code/Ollamaの選択IDでもチェーンを維持し上�
   await (await f.send({model:'auto-ollama/deepseek-v4.1-flash'})).text();
   assert.equal(f.calls.at(-1).provider,'opencode');
 });
+
+test('Issue 198: fallback manual Chat applies forwarding limit rather than response limit', async t => {
+  const input = '界'.repeat(450);
+  const routed = { model: MANUAL_PROVIDERS.commandcode.model, input };
+  // Chat's messages wrapper adds bytes after the original Responses check.
+  const { manualChatBody } = await import('../src/manual-providers.mjs');
+  const chatBytes = Buffer.byteLength(JSON.stringify(manualChatBody('commandcode', routed)));
+  assert.ok(chatBytes > Buffer.byteLength(JSON.stringify({ model: 'deepseek-v4.1-flash', input })));
+  for (const limit of [chatBytes - 1, chatBytes + 100]) {
+    const f = await fixture(t, p => p === 'opencode' ? quota() : answer(p),
+      { maxBytes: 1024, maxForwardedBytes: limit, maxRequestBytes: 8192, autoBudgetHandoff: false });
+    const response = await f.send({ input });
+    assert.equal(response.status, limit < chatBytes ? 413 : 200); await response.text();
+    assert.deepEqual(f.calls.map(call => call.provider), limit < chatBytes ? ['opencode'] : ['opencode', 'commandcode']);
+  }
+});

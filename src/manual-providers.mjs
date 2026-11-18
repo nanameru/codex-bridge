@@ -89,7 +89,10 @@ async function boundedJSON(response, maxBytes) {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-export async function fetchManualProvider(provider, url, options, fetcher, maxBytes, maxInputTokens, credentials = []) {
+// maxBytes bounds responses; the optional final setting bounds the Chat request.
+// Omitting it preserves the original shared limit for direct callers.
+export async function fetchManualProvider(provider, url, options, fetcher, maxBytes, maxInputTokens, credentials = [],
+  { maxForwardedBytes = maxBytes } = {}) {
   const config = CHAT_PROVIDERS[provider];
   if (!config || url !== config.base + '/responses') throw new Error('manual_destination_invalid');
   const body = JSON.parse(options.body);
@@ -102,7 +105,7 @@ export async function fetchManualProvider(provider, url, options, fetcher, maxBy
   }
   // The router checks Responses input before this final Chat wire check.
   // Neither representation is truncated to satisfy a budget.
-  if (Buffer.byteLength(serialized) > maxBytes) return Response.json({ error: { type: 'request_too_large', message: 'Chat変換後の入力が送信上限を超えました。履歴は保持しています。' } }, { status: 413 });
+  if (Buffer.byteLength(serialized) > maxForwardedBytes) return Response.json({ error: { type: 'request_too_large', message: 'Chat変換後の入力が送信上限を超えました。履歴は保持しています。' } }, { status: 413 });
   if (maxInputTokens && maxInputTokens(provider === 'whatstoken' ? JSON.parse(serialized) : chat) === false) return Response.json({ error: { type: 'input_budget_exceeded', message: 'Chat変換後の入力がモデル上限を超えました。履歴は保持しています。' } }, { status: 413 });
   const upstream = await fetcher(config.base + '/chat/completions', { method: 'POST', redirect: 'manual', signal: options.signal,
     headers: { authorization: options.headers.authorization, 'content-type': 'application/json', accept: 'text/event-stream, application/json' }, body: serialized });
