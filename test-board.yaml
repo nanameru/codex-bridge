@@ -141,19 +141,26 @@ cases:
     title: "受取人がZIPから本人の環境を確認して前景起動する"
     feature: "配布版の受取人導入"
     scenario: "macOS、Linux、Windows WSLのそれぞれで展開、preflight、選択、preview、承認、模擬上流による起動と復旧を確認する"
-    status: doing
+    status: done
     priority: high
     type: e2e
     source: [scripts/portable_setup.py, scripts/build_distribution.py, distribution/START_HERE.md, src/codex-bridge.mjs]
     test_file: ""
     issues: [194]
-    notes: "2026-11-19 Devin側でdev 7577a95のZIP(SHA-256 fd218e78…ab2d一致)をmacOS・Linux・Windows WSL(Ubuntu 24.04)で実行。3環境とも展開・照合・preflight・選択・preview・run(YES)・Bridge起動と/health・Codex起動・終了時のBridge停止と通常codex復元・実HOME無変更を確認。同梱runはclean_envがUPSTREAM_BASEを渡さず模擬上流へ届かないため、往復は同等の環境変数を付けた手動起動で確認。標準run経由の往復のみ未確認。Issue #202の検証ハーネス導入後に再確認する。録画はDevin側の非公開記録。詳細はIssue #194コメント6980689276。実有料推論は行わない。"
+    notes: "2026-11-18 Devin側でdev 27f65a1689363e0e4fde58fdb7198bf69d82dfc3 の配布ZIP（SHA-256 eea190a6345b4f7c196e920d3d65e6af2568f28ff6bc0a54e2e89ecb18adea68、3環境で同一）をmacOS・Windows WSL2 Ubuntu・Linuxで実行し、3環境ともPASS。使い捨てHOME・合成鍵・模擬上流で標準ランチャーを通し、展開・照合・preflight・選択・preview・run(YES)・BRIDGE_OK、Bridgeと模擬上流の停止、config.toml SHA-256 4a6d91cf…069a 不変をDevin実行者が報告。実行時刻: macOS 23:00〜23:05Z頃、WSL 23:00〜23:08Z頃、Linux（dev ZIPでの再実行）23:15:12〜23:16:12Z。録画は実行ごとにDevin側へ保存済みで、Devin Botが内容を確認済み。この台帳を更新した子は動画を再生しておらず、確認はBot報告に基づく。使い捨て環境・合成鍵・模擬上流の範囲であり、実サービス・実認証・実有料推論は未検証。"
     last_run:
-      revision: 7577a95cdc60d02c862c79842fa64c1bb8d43427
-      at: "2026-11-18T13:57:00Z"
+      revision: 27f65a1689363e0e4fde58fdb7198bf69d82dfc3
+      at: "2026-11-18T23:16:12Z"
       provider: devin-cloud-macos-linux-wsl
-      result: partial
-      evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6980689276"]
+      result: passed
+      evidence:
+        - "macOS: https://app.devin.ai/sessions/f503ec45bf764b2080671b900ad0aedc?testRecording=f740c176-bebd-4d74-be28-61e59c157dcc"
+        - "WSL2 Ubuntu: https://app.devin.ai/sessions/ce3e73608e2c4a7cae48f52971c20bca?testRecording=c1eceef0-4bdb-423d-bb33-cfea7287b927"
+        - "Linux（dev ZIP再実行）: https://app.devin.ai/sessions/fc517f6efa7c46c39ffdc414444438c9?testRecording=daf44d81-f72f-44c1-a181-78bd81dcb2d9"
+    additional_evidence:
+      - "経緯: Linuxは当初 PR #203 head 5c99ef9a35d543a8e33d02361b4fb708bbc93066 のZIP（SHA-256 fd218e78…と報告）で実行され、macOS・WSLのdev ZIPと不一致だった。Linux初回は模擬上流のSSE終了欠陥で失敗、修正後にPASS。その後Linuxもdev 27f65a1の同一ZIP（eea190a6…）で再実行されPASSし、こちらを正とする。PR #203 headでの実行は経緯として残す。旧Linux録画（修正後）: https://app.devin.ai/sessions/68e49349b4a447c58adea975b448d864?testRecording=d95376fd-c4c4-4a83-912e-b338afc23994 、旧Linux初回失敗: https://app.devin.ai/sessions/68e49349b4a447c58adea975b448d864?testRecording=06b360cd-3469-449b-b532-b791be002490"
+      - "旧実行: dev 7577a95cdc60d02c862c79842fa64c1bb8d43427 のZIP（SHA-256 fd218e78…ab2d一致）をmacOS・Linux・WSL(Ubuntu 24.04)で実行しpartial。3環境とも展開・照合・preflight・選択・preview・run(YES)・Bridge起動と/health・Codex起動・終了時のBridge停止と通常codex復元・実HOME無変更を確認したが、同梱runがclean_envでUPSTREAM_BASEを渡さず模擬上流へ届かず、往復は同等の環境変数を付けた手動起動で確認した。標準run経由の往復未確認という制限は、検証ハーネス導入（PR #203）後の標準ランチャー実行で解消。詳細はIssue #194コメント6980689276。"
+      - "実有料推論は行わない。録画の公開・外部同期はしない（Devin側の非公開記録）。"
 
   - id: TC-194-LOCAL-KEY-INJECTION
     title: "環境変数の注入で内部認証鍵を上書きできない"
@@ -1579,7 +1586,7 @@ cases:
     source: [test/portable_launcher_harness.py, scripts/portable_setup.py]
     test_file: test/test_portable_launcher_harness.py
     issues: [202]
-    notes: "TC-125はIssue #194と共通で、標準ランチャー経由のmacOS・Linux・WSL通し検証と録画読戻しは未検証。標準ランチャー・模擬上流・ネットワーク隔離の実行はモック化した単体テストで確認。録画付きの実動作はTC-125で確認する。"
+    notes: "標準ランチャー・模擬上流・ネットワーク隔離はモック化した単体テストで確認。Devin側の3環境の標準ランチャー実行結果・対象SHA・ZIPハッシュ・録画リンクはTC-125のlast_runとadditional_evidenceを参照。3環境ともdev 27f65a1の同一ZIP（SHA-256 eea190a6…）でPASS。LinuxはPR #203 headでの実行（初回失敗→修正後PASS）を経てdev ZIPで再実行し、こちらを正とする。録画は実行ごとにDevin側へ保存済みで、Devin Botが内容を確認済み（台帳更新の子は未再生）。"
 
   - id: TC-202-MOCK-SSE
     title: "配布ランチャー用の模擬上流がSSEを正常終了する"
