@@ -168,9 +168,9 @@ class RouterInputServiceTests(unittest.TestCase):
                     with self.subTest(name=name, invalid=invalid), mock.patch.dict(os.environ, {name: invalid}):
                         with self.assertRaises(ValueError):
                             install_router_service.router_input_environment({})
-                with self.subTest(name=name, invalid='non-string previous'):
-                    with self.assertRaises(ValueError):
-                        install_router_service.router_input_environment({name: 12})
+                for invalid in (True, False, 12.0, 0, -1, 512 * 1024 * 1024 + 1):
+                    with self.subTest(name=name, invalid=invalid), self.assertRaises(ValueError):
+                        install_router_service.router_input_environment({name: invalid})
             with mock.patch.dict(os.environ, {forward: '201', receive: '200'}):
                 with self.assertRaises(ValueError):
                     install_router_service.router_input_environment(previous)
@@ -180,7 +180,10 @@ class RouterInputServiceTests(unittest.TestCase):
         scenarios = [
             ('fresh', {}, {forward: '101', receive: '202'}, None),
             ('preserved', {forward: '100', receive: '200'}, {}, None),
+            ('integer-plist', {forward: 100, receive: 200}, {}, None),
             ('overridden', {forward: '100', receive: '200'}, {forward: '150'}, None),
+            ('overridden-integer-plist', {forward: 100, receive: 200}, {forward: '150'}, None),
+            ('inverted-integer-plist', {forward: 200, receive: 100}, {}, 'input'),
             ('bad-input', {forward: '100', receive: '200'}, {forward: '201'}, 'input'),
             ('bad-python', {}, {}, 'python'),
         ]
@@ -192,7 +195,7 @@ class RouterInputServiceTests(unittest.TestCase):
                 (root / 'unified-model-catalog.json').write_text('{"models":[]}')
                 path = home / 'Library/LaunchAgents/com.kimurataiyou.codex-model-router.plist'
                 previous_bytes = None
-                if label in ('preserved', 'overridden', 'bad-input'):
+                if old_limits:
                     path.parent.mkdir(parents=True)
                     previous_bytes = plistlib.dumps({'Label': 'com.kimurataiyou.codex-model-router',
                         'EnvironmentVariables': {'CODEX_HOME': str(root), 'KEEP': 'old', **old_limits}})
@@ -228,8 +231,8 @@ class RouterInputServiceTests(unittest.TestCase):
                     else:
                         install_router_service.install()
                         generated = replace.call_args.args[1]['EnvironmentVariables']
-                        self.assertEqual(generated.get(forward), overrides.get(forward, old_limits.get(forward)))
-                        self.assertEqual(generated.get(receive), overrides.get(receive, old_limits.get(receive)))
+                        for name in self.LIMITS:
+                            self.assertEqual(generated[name], str(overrides.get(name, old_limits.get(name))))
                         if previous_bytes:
                             self.assertEqual(generated['KEEP'], 'old')
                         self.assertEqual(generated['CODEX_BRIDGE_PYTHON'], os.path.abspath(sys.executable))

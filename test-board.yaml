@@ -56,7 +56,7 @@ cases:
   - id: TC-198-SERVICE
     title: "サービス生成の入力設定とPython検証を副作用より前に行う"
     feature: "入力容量の常駐設定"
-    scenario: "明示env上書きと既存値保持、不正値/Python tomllib不備で鍵・runtime・log・登録変更を行わない"
+    scenario: "明示env上書きと既存値保持、整数型plist値の文字列化、不正値/Python tomllib不備で鍵・runtime・log・登録変更を行わない"
     status: done
     priority: high
     type: integration
@@ -64,6 +64,18 @@ cases:
     test_file: test/test_service_python.py
     issues: [198]
     notes: "2026-11-16 Python3.12.16でservice fixture7件成功。明示env上書き/既存値保持、不正値やPython不備で鍵/runtime/log/登録を変更しないことを確認。一時HOMEとlaunchctlモックのみ、実サービスは未変更。portable入口は対象baseに存在しない。詳細はIssue #198コメント6908244228。"
+
+  - id: TC-198-CONCURRENCY
+    title: "大きな入力の同時処理をルーターごとに1件に制限する"
+    feature: "入力容量の安全境界"
+    scenario: "32MiB超の受信・展開が競合すると503とRetry-Afterを返し、小さな要求は通る。完了・入力拒否・切断後に再試行できる"
+    status: done
+    priority: high
+    type: regression
+    source: [src/model-router.mjs]
+    test_file: test/router-input-limits.test.mjs
+    issues: [198]
+    notes: "node --test test/router-input-limits.test.mjs のAC-04。合成loopback HTTPと待機を制御する模擬上流で、大きい圧縮入力と未完了のチャンク入力を確認する。"
 
   - id: TC-198-MEMORY
     title: "画像履歴の容量別ピークRSSと処理時間を計測する"

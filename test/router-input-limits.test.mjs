@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -105,6 +106,106 @@ function utf8Body(bytes) {
   assert.ok(padding >= 0);
   return Buffer.from(JSON.stringify({ model: 'gpt-test', input: '界' + 'x'.repeat(padding) }));
 }
+
+test('AC-04 only one large input is processed while small requests keep working', { timeout: 15000 }, async t => {
+  const small = utf8Body(1024);
+  const large = utf8Body(32 * MiB + 1);
+  const compressed = zlib.gzipSync(large);
+  const started = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  let upstreamCalls = 0;
+  const f = await fixture({ fetcher: async () => {
+    if (++upstreamCalls === 1) {
+      started.resolve();
+      await finish.promise;
+    }
+    return Response.json({ id: 'synthetic', output: [] });
+  } });
+  t.after(async () => { finish.resolve(); await f.close(); });
+  const headers = { 'content-encoding': 'gzip' };
+  const active = send(f.base, compressed, headers);
+  // Register a rejection handler while assertions inspect the competing requests.
+  active.catch(() => {});
+  await started.promise;
+
+  const encoded = await send(f.base, compressed, headers);
+  assert.equal(encoded.status, 503);
+  assert.equal(encoded.headers.get('retry-after'), '1');
+  assert.equal((await encoded.json()).error.type, 'large_input_busy');
+
+  // Write a chunked body without an end marker. The router must reply while
+  // reading the body, without waiting for the client to finish uploading.
+  const chunked = await new Promise((resolve, reject) => {
+    const request = http.request(f.base + '/v1/responses', {
+      method: 'POST', headers: { authorization: 'Bearer synthetic', 'transfer-encoding': 'chunked' },
+      signal: AbortSignal.timeout(5000),
+    }, response => {
+      response.setEncoding('utf8');
+      let body = '';
+      response.on('data', chunk => { body += chunk; });
+      response.on('error', reject);
+      response.on('end', () => resolve({ status: response.statusCode, body }));
+    });
+    request.on('error', reject);
+    request.write(large);
+  });
+  assert.equal(chunked.status, 503);
+  assert.equal(JSON.parse(chunked.body).error.type, 'large_input_busy');
+  assert.equal(upstreamCalls, 1);
+  const smallResponse = await send(f.base, zlib.gzipSync(small), headers);
+  assert.equal(smallResponse.status, 200);
+  await smallResponse.text();
+
+  finish.resolve();
+  const firstResponse = await active;
+  assert.equal(firstResponse.status, 200);
+  await firstResponse.text();
+  const retry = await send(f.base, compressed, headers);
+  assert.equal(retry.status, 200);
+  await retry.text();
+  assert.equal(upstreamCalls, 3);
+});
+
+test('AC-04 rejected and disconnected requests release the large input slot', { timeout: 15000 }, async t => {
+  const bad = zlib.gzipSync(Buffer.alloc(32 * MiB + 1, 0x20));
+  const body = zlib.gzipSync(utf8Body(32 * MiB + 1));
+  const headers = { 'content-encoding': 'gzip' };
+  const started = Promise.withResolvers();
+  const cancelled = Promise.withResolvers();
+  let upstreamCalls = 0;
+  const f = await fixture({
+    fetcher: async (_url, { signal }) => {
+      if (++upstreamCalls === 1) {
+        started.resolve();
+        await new Promise((_, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      }
+      return Response.json({ id: 'synthetic', output: [] });
+    },
+    onMetric: metric => { if (metric.outcome === 'aborted') cancelled.resolve(); },
+  });
+  t.after(() => f.close());
+  const rejected = await send(f.base, bad, headers);
+  assert.equal(rejected.status, 400);
+  await rejected.text();
+  assert.equal(upstreamCalls, 0);
+
+  const controller = new AbortController();
+  const active = fetch(f.base + '/v1/responses', {
+    method: 'POST', headers: { ...headers, authorization: 'Bearer synthetic' },
+    body, signal: controller.signal,
+  });
+  const aborted = assert.rejects(active, { name: 'AbortError' });
+  await started.promise;
+  controller.abort();
+  await aborted;
+  await cancelled.promise;
+  const retry = await send(f.base, body, headers);
+  assert.equal(retry.status, 200);
+  await retry.text();
+  assert.equal(upstreamCalls, 2);
+});
 
 test('AC-03 UTF-8 received and decoded byte limits are inclusive for each available encoding', async t => {
   const limit = 1024;

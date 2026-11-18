@@ -31,6 +31,9 @@ def router_input_environment(previous):
     values = []
     for name in INPUT_LIMIT_NAMES:
         raw = environment.get(name, str(INPUT_LIMIT_DEFAULT))
+        # Accept existing plist integers, then emit strings for launchd.
+        if type(raw) is int:
+            raw = environment[name] = str(raw)
         if not isinstance(raw, str) or not re.fullmatch(r"[0-9]+", raw):
             raise ValueError(f"{name} must be a positive integer in bytes")
         value = int(raw)

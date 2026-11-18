@@ -128,6 +128,13 @@ function fail(response, status, code, message) {
   response.end(JSON.stringify({ error: { type: code, message: safeMessage } }));
 }
 
+function failLargeInputBusy(response, metric) {
+  metric.input_limit_reason = "large_input_concurrency";
+  response.setHeader("connection", "close");
+  response.setHeader("retry-after", "1");
+  fail(response, 503, "large_input_busy", "大きな入力を処理中です。しばらく待ってから再試行してください");
+}
+
 export function estimateInputTokens(value) {
   // Binary image transfer bytes are not text tokens. Only discount typed image
   // parts at wire-defined locations, never arbitrary strings or tool schemas.
@@ -191,6 +198,7 @@ function envLimit(name, fallback) {
 // Finite local safety ceiling, not a guarantee about any upstream provider.
 const INPUT_BYTES_CEILING = 512 * 1024 * 1024;
 const DEFAULT_INPUT_BYTES = 128 * 1024 * 1024;
+const LARGE_INPUT_BYTES = 32 * 1024 * 1024;
 function inputBytesEnv(name) {
   const raw = process.env[name];
   if (raw === undefined) return DEFAULT_INPUT_BYTES;
@@ -340,6 +348,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       throw new Error("OpenAI認証の転送先は公式originに限定されます");
     }
   }
+  let largeInputInFlight = false;
   const server = http.createServer(async (request, response) => {
     if (localRequestError(request)) {
       fail(response, 403, "local_request_required", "本人用loopback CLI接続だけを受け付けます");
@@ -415,16 +424,26 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     const started = performance.now();
     const metric = { event: "router_request", request_id: randomUUID(), path,
       summary_cache: "unused", summary_ms: 0, stage: "input", received_bytes: 0, response_bytes: 0 };
+    let holdsLargeInput = false;
     try {
       const chunks = [];
       let size = 0;
-      for await (const chunk of request) {
+      // Let HTTP send the rejection before closing an unfinished upload.
+      for await (const chunk of request.iterator({ destroyOnReturn: false })) {
         size += chunk.length;
         metric.received_bytes = size;
         if (size > maxRequestBytes) {
           metric.input_limit_reason = "wire_bytes";
+          response.setHeader("connection", "close");
           fail(response, 413, "request_too_large", "入力が大きすぎます");
           return;
+        }
+        if (size > LARGE_INPUT_BYTES && !holdsLargeInput) {
+          if (largeInputInFlight) {
+            failLargeInputBusy(response, metric);
+            return;
+          }
+          largeInputInFlight = holdsLargeInput = true;
         }
         chunks.push(chunk);
       }
@@ -432,7 +451,6 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       metric.received_bytes = size;
       if (abort.signal.aborted) return;
       let body;
-      let payload = Buffer.concat(chunks);
       const encoding = request.headers["content-encoding"] ?? "identity";
       const decompress = new Map([["gzip", zlib.gunzipSync], ["deflate", zlib.inflateSync],
         ["br", zlib.brotliDecompressSync], ["zstd", zlib.zstdDecompressSync]]).get(encoding);
@@ -440,12 +458,22 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 415, "unsupported_encoding", "このNode.jsでは圧縮形式を扱えません。新しいNode.jsを使用してください");
         return;
       }
+      // Small compressed requests can proceed, but their expansion must stay
+      // within the small-input limit while another request holds the slot.
+      const decodedLimit = largeInputInFlight && !holdsLargeInput ? Math.min(maxRequestBytes, LARGE_INPUT_BYTES) : maxRequestBytes;
       try {
-        if (decompress) payload = decompress(payload, { maxOutputLength: maxRequestBytes });
+        let payload = Buffer.concat(chunks, size);
+        chunks.length = 0;
+        if (decompress) payload = decompress(payload, { maxOutputLength: decodedLimit });
+        if (payload.length > LARGE_INPUT_BYTES) largeInputInFlight = holdsLargeInput = true;
         metric.decoded_bytes = payload.length;
         body = JSON.parse(payload.toString("utf8"));
       } catch (error) {
         const oversized = error.code === "ERR_BUFFER_TOO_LARGE";
+        if (oversized && decodedLimit < maxRequestBytes) {
+          failLargeInputBusy(response, metric);
+          return;
+        }
         if (oversized) metric.input_limit_reason = "decoded_bytes";
         fail(response, oversized ? 413 : 400, oversized ? "request_too_large" : "invalid_json", oversized ? "入力が大きすぎます" : "JSONが不正です");
         return;
@@ -1309,6 +1337,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         error instanceof ToolSearchError ? "unsupported_tool_search" : error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,
         error instanceof ToolSearchError ? error.message : error instanceof HandoffError ? error.message : timeout ? "応答の待機がタイムアウトしました" : "転送先への接続が中断されました");
     } finally {
+      if (holdsLargeInput) largeInputInFlight = false;
       handoffStatus?.dispose();
       clearTimeout(timer);
       metric.total_ms = Math.round(performance.now() - started);
