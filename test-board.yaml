@@ -1568,3 +1568,27 @@ cases:
     test_file: test/cli-model-sync-e2e.py
     issues: [99]
     notes: "CODEX_TEST_WHATSTOKEN=1、CODEX_TEST_MODEL_PROVIDER=codex-liveで模擬上流30要求。外部推論なし。"
+
+  - id: TC-202-LAUNCHER-HARNESS
+    title: "模擬上流の配布ランチャーハーネスが安全に起動を準備する"
+    feature: "配布版の検証ハーネス"
+    scenario: "ZIPのSHA-256とallowlist、隔離コマンド、合成鍵、Bridgeだけの上流注入、模擬上流未準備時の起動拒否、標準ランチャー呼出し順と終了確認"
+    status: done
+    priority: high
+    type: unit
+    source: [test/portable_launcher_harness.py, scripts/portable_setup.py]
+    test_file: test/test_portable_launcher_harness.py
+    issues: [202]
+    notes: "TC-125はIssue #194と共通で、標準ランチャー経由のmacOS・Linux・WSL通し検証と録画読戻しは未検証。標準ランチャー・模擬上流・ネットワーク隔離の実行はモック化した単体テストで確認。録画付きの実動作はTC-125で確認する。"
+
+  - id: TC-202-MOCK-SSE
+    title: "配布ランチャー用の模擬上流がSSEを正常終了する"
+    feature: "配布版の検証ハーネス"
+    scenario: "実際の模擬上流のSSEをBridge変換処理に通し、BRIDGE_OKの最終回答とツール呼び出しがそれぞれ完了する"
+    status: done
+    priority: high
+    type: regression
+    source: [test/mock-upstream.mjs, src/chat-protocol.mjs]
+    test_file: test/chat-protocol.test.mjs
+    issues: [202]
+    notes: "ループバックHTTPとの結合テスト。Codexと標準ランチャーの通し検証はTC-125で扱う。"
