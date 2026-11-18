@@ -16,7 +16,7 @@ const quota = (window = 'short', seconds = 60, status = 429) => Response.json({ 
 
 for (const status of [400, 422]) test(`自動Command Codeの${status}拒否は履歴とtoolsを保持してOllamaへ進む`, async t => {
   const f = await fixture(t, p => p === 'opencode' ? quota() : p === 'commandcode'
-    ? Response.json({error:{message:'Unrecognized request PRIVATE'}}, {status}) : answer(p));
+    ? Response.json({error:{message:'Unrecognized request PRIVATE', param:'messages[12].tool_call_id'}}, {status}) : answer(p));
   const tools = [{type:'function',name:'read',parameters:{type:'object',properties:{path:{type:'string'}}}}];
   const input = [{role:'user',content:'previous'}, {role:'assistant',content:'earlier'}, {role:'user',content:'latest'}];
   const r = await f.send({tools,input});
@@ -26,7 +26,23 @@ for (const status of [400, 422]) test(`自動Command Codeの${status}拒否は�
   assert.deepEqual(f.calls[1].body.tools, f.calls[2].body.tools);
   assert.equal(f.state.available('commandcode'), true);
   assert.equal(f.metrics.at(-1).provider_request_rejected_status, status);
+  assert.equal(f.metrics.at(-1).provider_request_rejected_param, 'messages.tool_call_id');
   assert.doesNotMatch(JSON.stringify(f.metrics), /PRIVATE/);
+});
+
+test('Command Codeの400で既知のparamだけを応答とメトリクスに残す', async t => {
+  for (const [param, expected] of [['tool_call_id', 'tool_call_id'], ['PRIVATE', 'unrecognized']]) {
+    const f = await fixture(t, () => Response.json({ error: {
+      type: 'invalid_request_error', message: 'Request rejected PRIVATE', param,
+    } }, { status: 400 }));
+    const r = await f.send({ model: 'commandcode/deepseek-v4.1-flash' });
+    assert.equal(r.status, 400);
+    const body = await r.json();
+    assert.equal(body.error.param, expected);
+    assert.equal(f.metrics.at(-1).upstream_error_param, expected);
+    assert.doesNotMatch(JSON.stringify([body, f.metrics]), /PRIVATE/);
+    assert.deepEqual(f.calls.map(c => c.provider), ['commandcode']);
+  }
 });
 
 test('Command Codeの400でも手動選択とcontent_filter拒否は他社へ再送しない', async t => {

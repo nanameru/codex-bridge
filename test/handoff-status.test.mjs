@@ -381,3 +381,20 @@ test('gateway error shapes classify incompatibilities without leaking raw data',
     assert.doesNotMatch(JSON.stringify(detail), /PRIVATE|sk-secret/);
   }
 });
+
+test("upstream diagnostics keep only recognized parameter fields", async () => {
+  for (const [param, expected] of [
+    ["tool_call_id", "tool_call_id"],
+    ["messages[12].tool_call_id", "messages.tool_call_id"],
+    ["tools.95.function.parameters", "tools.function.parameters"],
+    ["tools[1].function.parameters.properties.PRIVATE", "unrecognized"],
+    ["sk-secret", "unrecognized"],
+    [{ path: "tool_call_id" }, "unrecognized"],
+    [null, undefined],
+    [undefined, undefined],
+  ]) {
+    const detail = await readUpstreamFailure(Response.json({ error: { param, message: "PRIVATE" } }));
+    assert.equal(detail.param, expected);
+    assert.doesNotMatch(JSON.stringify(detail), /PRIVATE|sk-secret|\b12\b|\b95\b/);
+  }
+});

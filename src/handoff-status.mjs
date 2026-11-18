@@ -175,6 +175,24 @@ const SAFE_UPSTREAM_CODES = new Set(["invalid_request_error", "invalid_prompt", 
   "content_filter", "invalid_api_key", "not_found_error", "overloaded_error", "invalid_tool_history",
   "chat_history_conversion_failed", "invalid_output_limit", "invalid_reasoning_options", "invalid_chat_messages",
   "request_too_large", ...TOOL_SEARCH_REASON_CODES]);
+
+// A provider may put user data in error.param. Keep only fixed field names
+// and known paths, dropping provider-supplied array indexes.
+const SAFE_UPSTREAM_PARAMS = new Set([
+  "messages", "messages.role", "messages.content", "messages.tool_calls", "messages.tool_call_id",
+  "tool_call_id", "tools", "tools.function.name", "tools.function.parameters", "tool_choice",
+  "model", "max_tokens", "max_completion_tokens", "max_output_tokens", "temperature", "top_p",
+  "thinking", "reasoning_effort", "response_format", "stream",
+]);
+function safeUpstreamParam(value) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" && value.length <= 128) {
+    const field = value.replace(/\[\d+\]|\.\d+(?=\.|$)/g, "");
+    if (SAFE_UPSTREAM_PARAMS.has(field)) return field;
+  }
+  return "unrecognized";
+}
+
 export async function readUpstreamFailure(response, { maxBytes = 16384, timeoutMs = 1000 } = {}) {
   const reader = response.body.getReader();
   let timer;
@@ -213,7 +231,9 @@ export async function readUpstreamFailure(response, { maxBytes = 16384, timeoutM
           [/(?:messages|role).{0,40}(?:invalid|unsupported|must)|(?:invalid|unsupported).{0,30}(?:messages|role)/i, "invalid_chat_messages"],
         ]) if (pattern.test(message)) { code = category; break; }
       }
-      return { code, type: safe(error?.upstream_error_type ?? error?.type), read: "parsed" };
+      const param = safeUpstreamParam(error?.param);
+      return { code, type: safe(error?.upstream_error_type ?? error?.type), read: "parsed",
+        ...(param === undefined ? {} : { param }) };
     };
     return await Promise.race([readBody(), new Promise(resolve => {
       timer = setTimeout(() => resolve(fallback("timeout")), timeoutMs);

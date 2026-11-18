@@ -117,6 +117,7 @@ export async function fetchManualProvider(provider, url, options, fetcher, maxBy
       : '提供元の稼働状況を確認してください。';
     return Response.json({ error: { type: 'provider_error', code: limit ? 'usage_exceeded' : detail.code,
       upstream_error_type: detail.type ?? 'unknown_error', upstream_error_read: detail.read ?? 'empty',
+      ...(detail.param === undefined ? {} : { param: detail.param }),
       ...(limit ? { window: limit.window, ...(limit.resetKnown ? { resets_at: new Date(limit.resetAt).toISOString() } : {}), reset_known: limit.resetKnown } : {}),
       message: `${config.label}が要求を拒否しました（HTTP ${upstream.status}、${detail.code}、詳細取得: ${detail.read ?? 'empty'}）。${advice}${limit || authFailure ? providerHelp(provider) : ''}` } },
     { status: upstream.status, headers: /^\d{1,6}$/.test(retryAfter ?? '') ? { 'retry-after': retryAfter } : {} });
