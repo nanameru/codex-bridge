@@ -154,6 +154,12 @@ cases:
       provider: devin-cloud-macos-linux-wsl
       result: partial
       evidence: ["https://github.com/nanameru/codex-bridge/issues/194#issuecomment-6980689276"]
+    additional_evidence:
+      - "Devin実行者の報告: macOS・WSL2 Ubuntuはdev 27f65a1689363e0e4fde58fdb7198bf69d82dfc3 の配布ZIP、SHA-256 eea190a6345b4f7c196e920d3d65e6af2568f28ff6bc0a54e2e89ecb18adea68。LinuxはPR #203 head 5c99ef9a35d543a8e33d02361b4fb708bbc93066 の再実行でZIP SHA-256 fd218e78…と報告され、前記2環境とは一致しない。3環境とも使い捨てHOME・合成鍵・模擬上流で標準ランチャーを実行しBRIDGE_OK、Bridgeと模擬上流の停止、config.toml不変を報告。録画の保存後読戻しと実行日時は今回未確認。実サービス・実認証は未検証。"
+      - "macOS: https://app.devin.ai/sessions/f503ec45bf764b2080671b900ad0aedc?testRecording=f740c176-bebd-4d74-be28-61e59c157dcc"
+      - "WSL2 Ubuntu: https://app.devin.ai/sessions/ce3e73608e2c4a7cae48f52971c20bca?testRecording=c1eceef0-4bdb-423d-bb33-cfea7287b927"
+      - "Linux: https://app.devin.ai/sessions/68e49349b4a447c58adea975b448d864?testRecording=d95376fd-c4c4-4a83-912e-b338afc23994"
+      - "Linux初回は模擬上流のSSE終了欠陥で失敗し、修正後に再実行: https://app.devin.ai/sessions/68e49349b4a447c58adea975b448d864?testRecording=06b360cd-3469-449b-b532-b791be002490"
 
   - id: TC-194-LOCAL-KEY-INJECTION
     title: "環境変数の注入で内部認証鍵を上書きできない"
@@ -1579,7 +1585,7 @@ cases:
     source: [test/portable_launcher_harness.py, scripts/portable_setup.py]
     test_file: test/test_portable_launcher_harness.py
     issues: [202]
-    notes: "TC-125はIssue #194と共通で、標準ランチャー経由のmacOS・Linux・WSL通し検証と録画読戻しは未検証。標準ランチャー・模擬上流・ネットワーク隔離の実行はモック化した単体テストで確認。録画付きの実動作はTC-125で確認する。"
+    notes: "標準ランチャー・模擬上流・ネットワーク隔離はモック化した単体テストで確認。Devin Botからの3環境の標準ランチャー実行結果、対象SHA・ZIPハッシュ・録画リンクはTC-125のadditional_evidenceを参照。録画の保存後読戻しと実行日時は今回未確認。"
 
   - id: TC-202-MOCK-SSE
     title: "配布ランチャー用の模擬上流がSSEを正常終了する"
