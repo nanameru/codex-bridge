@@ -23,7 +23,7 @@
 import { chatToResponses, pipeChatStream, chatMessages } from "./chat-protocol.mjs";
 import { chatToolContext, chatToolChoice, toolChoiceForTools, ToolSearchError } from "./tool-search.mjs";
 import http from "node:http";
-import { guardBridgeRequest, validateOpenCodeBase, fetchOpenCode, readOpenCodeApiKey } from "./local-security.mjs";
+import { guardBridgeRequest, validateOpenCodeBase, fetchOpenCode, readOpenCodeApiKey, writeRequestDump } from "./local-security.mjs";
 import { DIRECT_RECOVERY_HELP } from "./provider-help.mjs";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -53,13 +53,16 @@ const PRICES = JSON.parse(readFileSync(new URL("./prices.json", import.meta.url)
 const usageByThread = new Map(); // thread_id -> { model, inTok, outTok, cost, turns, updated }
 let totalCost = 0;
 const USAGE_FILE = join(homedir(), ".home-runner", "usage.json");
-try {
-  const saved = JSON.parse(readFileSync(USAGE_FILE, "utf8"));
-  totalCost = saved.totalCost ?? 0;
-  for (const [k, v] of Object.entries(saved.threads ?? {})) usageByThread.set(k, v);
-} catch {}
+if (process.env.CODEX_BRIDGE_NO_USAGE !== "1") {
+  try {
+    const saved = JSON.parse(readFileSync(USAGE_FILE, "utf8"));
+    totalCost = saved.totalCost ?? 0;
+    for (const [k, v] of Object.entries(saved.threads ?? {})) usageByThread.set(k, v);
+  } catch {}
+}
 let saveTimer = null;
 function saveUsage() {
+  if (process.env.CODEX_BRIDGE_NO_USAGE === "1") return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try {
@@ -144,20 +147,6 @@ const requestGuard = createRequestGuard({
   maxPerThread: MAX_REQ_PER_MIN,
   maxGlobal: Number.isFinite(MAX_REQ_PER_MIN_GLOBAL) ? MAX_REQ_PER_MIN_GLOBAL : 0,
 });
-
-// 本文保存は明示的なローカル診断時だけ。既定は無効。
-import { appendFileSync } from "node:fs";
-const DUMP_DIR = process.env.DUMP_DIR ?? "/tmp/codex-bridge-dumps";
-if (process.env.ALLOW_REQUEST_DUMP === "1" && process.env.DISABLE_DUMP !== "1") {
-  try { mkdirSync(DUMP_DIR, { recursive: true, mode: 0o700 }); } catch {}
-}
-function dump(body) {
-  if (process.env.ALLOW_REQUEST_DUMP !== "1" || process.env.DISABLE_DUMP === "1") return;
-  try {
-    const file = `${DUMP_DIR}/${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-    appendFileSync(file, JSON.stringify({ at: Date.now(), body }, null, 2), { mode: 0o600 });
-  } catch {}
-}
 
 // ------------------------------------------------------------ 変換
 
@@ -259,7 +248,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    dump(body);
+    writeRequestDump(body);
 
     const model = body.model || DEFAULT_MODEL;
     const threadId = threadIdOf(body);

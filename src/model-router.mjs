@@ -350,7 +350,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       let activeHistoryMode;
       try { activeHistoryMode = historyMode ?? readHistoryMode(codexRoot); } catch { activeHistoryMode = 'invalid'; }
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
+      response.end(JSON.stringify({ ok: true, pid: process.pid, mode: "unified", implementation: IMPLEMENTATION, security: SECURITY_VERSION, models: catalog.models.length,
         live_catalog: Boolean(catalogProvider),
         catalog_auth: catalogProvider ? { codex_home: codexHomeId(codexRoot), ready: catalogAuthReady() } : undefined,
         summary_model: summaryModel, history_mode: activeHistoryMode,

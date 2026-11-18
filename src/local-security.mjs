@@ -1,13 +1,76 @@
 /** Local trust boundary shared by both services. Never logs or forwards credentials. */
-import { constants, openSync, closeSync, fstatSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { constants, openSync, closeSync, fstatSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
-import { join, isAbsolute } from "node:path";
+import { dirname, join, isAbsolute, resolve } from "node:path";
 
 export const INTERNAL_AUTH_HEADER = "x-codex-bridge-auth";
 export const SECURITY_VERSION = "local-owner-v1";
 export const codexRoot = () => process.env.CODEX_HOME ?? join(homedir(), ".codex");
+
+function dumpDirectories(directory, uid, privateLeaf = true) {
+  const paths = [];
+  for (let path = directory;; path = dirname(path)) {
+    paths.unshift(path);
+    if (dirname(path) === path) break;
+  }
+  return paths.map(path => {
+    const info = lstatSync(path);
+    const leaf = privateLeaf && path === directory;
+    // A root-owned sticky temp ancestor cannot let another user replace our
+    // owned child. All other ancestors must disallow group/other writes.
+    const stickyRoot = info.uid === 0 && (info.mode & 0o1000);
+    if (!info.isDirectory() || (leaf
+      ? info.uid !== uid || (info.mode & 0o077)
+      : (info.uid !== uid && info.uid !== 0) || ((info.mode & 0o022) && !stickyRoot))) {
+      throw new Error('unsafe dump directory');
+    }
+    return { path, info };
+  });
+}
+
+const sameDumpNode = (a, b) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode;
+
+/** Optional local diagnostics only. Refuse unsupported permissions; never repair an existing path. */
+export function writeRequestDump(body, { environment = process.env, home = homedir(), platform = process.platform } = {}) {
+  if (environment.ALLOW_REQUEST_DUMP !== '1' || environment.DISABLE_DUMP === '1') return false;
+  // Node's mode/uid and NOFOLLOW checks do not establish Windows ACL safety.
+  if (platform === 'win32' || typeof process.getuid !== 'function' || !constants.O_NOFOLLOW || !constants.O_DIRECTORY) return false;
+  let directoryFd, fileFd;
+  try {
+    const uid = process.getuid();
+    const configured = environment.DUMP_DIR ?? join(home, '.codex-bridge-dumps');
+    if (!isAbsolute(configured)) return false;
+    const directory = resolve(configured);
+    const payload = JSON.stringify({ at: Date.now(), body }, null, 2);
+    // Check all parents before creating even an empty directory. Only the final
+    // component may be new; recursive mkdir could traverse an unsafe parent.
+    const parents = dumpDirectories(dirname(directory), uid, false);
+    try { mkdirSync(directory, { mode: 0o700 }); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const nodes = dumpDirectories(directory, uid);
+    if (parents.some((node, i) => !sameDumpNode(node.info, nodes[i].info))) return false;
+    const leaf = nodes.at(-1).info;
+    directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    if (!sameDumpNode(leaf, fstatSync(directoryFd))) return false;
+    const file = join(directory, `${randomUUID()}.json`);
+    fileFd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const info = fstatSync(fileFd);
+    if (!info.isFile() || info.uid !== uid || (info.mode & 0o077) || info.nlink !== 1 || info.size !== 0) return false;
+    // Detect replacement before writing the body. Trusted owners (this uid/root)
+    // can still mutate their own tree; this is not a same-user sandbox.
+    if (!sameDumpNode(info, lstatSync(file)) || !sameDumpNode(leaf, fstatSync(directoryFd))) return false;
+    const current = dumpDirectories(directory, uid);
+    if (nodes.some((node, i) => !sameDumpNode(node.info, current[i].info))) return false;
+    writeFileSync(fileFd, payload);
+    return true;
+  } catch { return false; }
+  finally {
+    try { if (fileFd !== undefined) closeSync(fileFd); } catch {}
+    try { if (directoryFd !== undefined) closeSync(directoryFd); } catch {}
+  }
+}
 
 export function validateOpenCodeBase(value, allowLoopbackTest = process.env.CODEX_BRIDGE_TEST_UPSTREAM === "1") {
   const url = new URL(value);
@@ -197,7 +260,7 @@ export function guardBridgeRequest(request, response) {
   const pathname = localError ? null : new URL(request.url, "http://127.0.0.1").pathname;
   if (!localError && request.method === "GET" && pathname === "/health") {
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-    response.end(JSON.stringify({ ok: true, security: SECURITY_VERSION,
+    response.end(JSON.stringify({ ok: true, pid: process.pid, security: SECURITY_VERSION,
       implementation: process.env.CODEX_BRIDGE_SECURITY_REVISION,
       request_dump: process.env.ALLOW_REQUEST_DUMP === "1" && process.env.DISABLE_DUMP !== "1" }));
     return false;
