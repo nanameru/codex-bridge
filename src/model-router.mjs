@@ -1136,6 +1136,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           if (requestRejection) {
             metric.provider_request_rejected_code = requestRejection.code;
             metric.provider_request_rejected_status = upstream.status;
+            if (requestRejection.param !== undefined) metric.provider_request_rejected_param = requestRejection.param;
           }
           if (route.provider === 'whatstoken') freeGate.unavailable?.();
           providerNotices.push(requestRejection ? 'Command Codeが要求形式を受け付けなかったため、次の設定済み提供元を試します。'
@@ -1247,19 +1248,18 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 502, "empty_upstream", "転送先から応答がありません");
         return;
       }
-      if (!handoffStatus.started && !upstream.ok) {
-        const detail = await readUpstreamFailure(upstream.clone());
+      if (!upstream.ok) {
+        const detail = await readUpstreamFailure(handoffStatus.started ? upstream : upstream.clone());
         Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
-      }
-      if (handoffStatus.started && !upstream.ok) {
-        const detail = await readUpstreamFailure(upstream);
-        Object.assign(metric, { upstream_error_code: detail.code, upstream_error_type: detail.type, upstream_error_read: detail.read });
-        const conversionFailure = ["unsupported_tool_search", "invalid_tool_history"].includes(detail.type);
-        const message = conversionFailure
-          ? `Bridgeでツール情報または履歴の変換に失敗しました（理由: ${detail.code}）。元の履歴は保持しています。`
-          : `履歴の準備後、選択したサービスが要求を拒否しました（理由: ${detail.code}、種別: ${detail.type}、詳細取得: ${detail.read}）${providerHelp(route.provider)}`;
-        fail(response, upstream.status, "upstream_error", message);
-        return;
+        if (detail.param !== undefined) metric.upstream_error_param = detail.param;
+        if (handoffStatus.started) {
+          const conversionFailure = ["unsupported_tool_search", "invalid_tool_history"].includes(detail.type);
+          const message = conversionFailure
+            ? `Bridgeでツール情報または履歴の変換に失敗しました（理由: ${detail.code}）。元の履歴は保持しています。`
+            : `履歴の準備後、選択したサービスが要求を拒否しました（理由: ${detail.code}、種別: ${detail.type}、詳細取得: ${detail.read}）${providerHelp(route.provider)}`;
+          fail(response, upstream.status, "upstream_error", message);
+          return;
+        }
       }
       const responseHeaders = { "content-type": upstream.headers.get("content-type") ?? (body.stream ? "text/event-stream" : "application/json"), "cache-control": "no-store" };
       if (metric.auto_fallback) responseHeaders["x-codex-bridge-provider"] = route.provider;
