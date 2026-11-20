@@ -266,5 +266,18 @@ export function chatMessages(body, thinkingEnabled = false) {
   }
   if (deferredMessages.length) throw new ProtocolError('後続メッセージを含むツール処理が未完了です。');
   if (toolImages.length) throw new ProtocolError('画像を含むツール結果の並列処理が未完了です。');
-  flush(); return messages;
+  flush();
+  // Responses can interleave results from different assistant turns. Chat
+  // requires each assistant's tool results immediately after that assistant.
+  const owners = new Map(), results = new Map(), assigned = new Set();
+  for (const message of messages) {
+    for (const call of message.tool_calls ?? []) owners.set(call.id, message);
+    if (message.role === 'tool' && owners.has(message.tool_call_id)) {
+      const owner = owners.get(message.tool_call_id);
+      if (!results.has(owner)) results.set(owner, []);
+      results.get(owner).push(message);
+      assigned.add(message);
+    }
+  }
+  return messages.flatMap(message => assigned.has(message) ? [] : [message, ...(results.get(message) ?? [])]);
 }
