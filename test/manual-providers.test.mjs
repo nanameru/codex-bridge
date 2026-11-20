@@ -5,12 +5,63 @@ import { once } from 'node:events';
 import { mkdtempSync,writeFileSync,chmodSync,symlinkSync,rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createRouter } from '../src/model-router.mjs';
+import { createRouter, routedBody } from '../src/model-router.mjs';
 import { MANUAL_PROVIDERS, manualModels, manualChatBody, readManualKey, fetchManualProvider } from '../src/manual-providers.mjs';
 import { ToolSearchError } from '../src/tool-search.mjs';
 const catalog = { models: [{ slug: 'gpt-test', router_provider: 'openai' },
   { slug: 'opencode/deepseek-test', router_provider: 'opencode', router_model: 'deepseek-test' }] };
 const answer = () => Response.json({ choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }] });
+
+for (const count of [1, 2]) {
+  test(`Command Code receives all ${count} tool results before interleaved instructions`, async () => {
+    const config = MANUAL_PROVIDERS.commandcode;
+    const calls = Array.from({ length: count }, (_, index) => ({
+      type: 'function_call', call_id: `call_synthetic_${index}`, name: 'probe', arguments: '{}',
+    }));
+    const outputs = calls.map(({ call_id }) => ({
+      type: 'function_call_output', call_id, output: `result for ${call_id}`,
+    }));
+    const body = {
+      instructions: 'Initial instructions',
+      input: [
+        { type: 'message', role: 'user', content: 'Initial request' },
+        { type: 'message', role: 'assistant', content: 'Calling tools' },
+        calls[0],
+        { type: 'message', role: 'developer', content: 'Keep this developer instruction' },
+        ...calls.slice(1),
+        ...outputs.flatMap((output, index) => [
+          { type: 'message', role: 'system', content: `Keep instruction ${index}` },
+          output,
+        ]),
+        { type: 'message', role: 'user', content: 'Continue' },
+      ],
+    };
+    const before = structuredClone(body);
+    const routed = routedBody(body, { provider: 'commandcode', model: config.model });
+    const response = await fetchManualProvider('commandcode', config.base + '/responses', {
+      body: JSON.stringify(routed), headers: { authorization: 'Bearer synthetic' },
+    }, async (url, options) => {
+      assert.equal(url, config.base + '/chat/completions');
+      assert.deepEqual(JSON.parse(options.body).messages, [
+        { role: 'system', content: body.instructions },
+        { role: 'user', content: 'Initial request' },
+        {
+          role: 'assistant', content: 'Calling tools', reasoning_content: '[previous reasoning content unavailable]',
+          tool_calls: calls.map(call => ({
+            id: call.call_id, type: 'function', function: { name: call.name, arguments: call.arguments },
+          })),
+        },
+        ...outputs.map(output => ({ role: 'tool', tool_call_id: output.call_id, content: output.output })),
+        { role: 'system', content: 'Keep this developer instruction' },
+        ...outputs.map((_, index) => ({ role: 'system', content: `Keep instruction ${index}` })),
+        { role: 'user', content: 'Continue' },
+      ]);
+      return answer();
+    }, 100_000);
+    assert.equal((await response.json()).status, 'completed');
+    assert.deepEqual(body, before);
+  });
+}
 
 test('手動Chat経路でもtoolsなしのtool_choiceを送らない', () => {
   const body = { model:'deepseek-v4.1-flash', input:'hello' };
