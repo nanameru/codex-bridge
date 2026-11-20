@@ -16,13 +16,14 @@ for (const count of [1, 2]) {
   test(`Command Code receives all ${count} tool results before interleaved instructions`, async () => {
     const config = MANUAL_PROVIDERS.commandcode;
     const calls = Array.from({ length: count }, (_, index) => ({
-      type: 'function_call', call_id: `call_synthetic_${index}`, name: 'probe', arguments: '{}',
+      type: 'custom_tool_call', call_id: `call_synthetic_${index}`, name: 'apply_patch', input: 'synthetic patch',
     }));
     const outputs = calls.map(({ call_id }) => ({
-      type: 'function_call_output', call_id, output: `result for ${call_id}`,
+      type: 'custom_tool_call_output', call_id, output: `result for ${call_id}`,
     }));
     const body = {
       instructions: 'Initial instructions',
+      tools: [{ type: 'custom', name: 'apply_patch' }],
       input: [
         { type: 'message', role: 'user', content: 'Initial request' },
         { type: 'message', role: 'assistant', content: 'Calling tools' },
@@ -48,7 +49,7 @@ for (const count of [1, 2]) {
         {
           role: 'assistant', content: 'Calling tools', reasoning_content: '[previous reasoning content unavailable]',
           tool_calls: calls.map(call => ({
-            id: call.call_id, type: 'function', function: { name: call.name, arguments: call.arguments },
+            id: call.call_id, type: 'function', function: { name: call.name, arguments: JSON.stringify({ input: call.input }) },
           })),
         },
         ...outputs.map(output => ({ role: 'tool', tool_call_id: output.call_id, content: output.output })),
