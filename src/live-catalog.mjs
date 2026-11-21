@@ -1,4 +1,4 @@
-import { commonCatalog, COMMAND_MODEL_SEED, COMMAND_MODELS_URL, commandModelEntries } from "./common-models.mjs";
+import { commonCatalog, publicCommonCatalog, COMMAND_MODEL_SEED, COMMAND_MODELS_URL, commandModelEntries } from "./common-models.mjs";
 import { createHash } from "node:crypto";
 import { buildCatalog } from "./make-catalog.mjs";
 import { mergeRemoteModels, parsePayload } from "./sync-models.mjs";
@@ -138,7 +138,7 @@ export function createLiveCatalog({ initial, seed, fetcher = fetch, key, now = D
       if (!entry.models) throw new Error("native_catalog_unavailable");
       const source = { models: [...entry.models, ...go] };
       const catalog = commonModelsEnabled ? commonCatalog(source, command) : source;
-      if (Buffer.byteLength(JSON.stringify(catalog)) > 1024 * 1024) throw new Error("catalog_too_large");
+      if (Buffer.byteLength(JSON.stringify(publicCommonCatalog(catalog))) > 1024 * 1024) throw new Error("catalog_too_large");
       onUpdate(catalog);
       return catalog;
     },

@@ -61,7 +61,7 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./models.json", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "session-id", "thread-id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
-export function catalogRoutes(catalog) {
+export function catalogRoutes(catalog, { manualAliases = true } = {}) {
   const routes = new Map();
   for (const model of catalog.models) {
     if (!model.slug || !["openai", "opencode", ...Object.keys(CHAT_PROVIDERS)].includes(model.router_provider)) {
@@ -98,8 +98,10 @@ export function catalogRoutes(catalog) {
   }
   for (const model of catalog.models.filter(m => m.router_common_model)) {
     const route = routes.get(model.slug);
-    for (const alias of ['opencode/' + model.router_model, 'commandcode/' + model.router_common_model,
-      'auto-commandcode/' + model.router_model, 'commandcode/' + model.router_model]) {
+    const aliases = ['opencode/' + model.router_model];
+    if (manualAliases) aliases.push('commandcode/' + model.router_common_model,
+      'auto-commandcode/' + model.router_model, 'commandcode/' + model.router_model);
+    for (const alias of aliases) {
       if (!routes.has(alias)) routes.set(alias, route);
     }
   }
@@ -292,6 +294,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
+  autoProviderFallback = manualProvidersEnabled && autoProviderFallback;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1
       || ![maxForwardedBytes, maxRequestBytes].every(n => Number.isSafeInteger(n) && n > 0 && n <= INPUT_BYTES_CEILING)
       || maxRequestBytes < maxForwardedBytes) {
@@ -299,15 +302,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   }
   const initialCatalog = catalog;
   const withEnabledManualModels = candidate => manualProvidersEnabled
-    ? withManualModels(candidate, { whatstoken: whatstokenFreeEnabled }) : candidate;
-  const fixedModels = initialCatalog.models.filter(model => model.router_provider !== "openai" && !model.router_common_model);
+    ? withManualModels(candidate, { whatstoken: whatstokenFreeEnabled })
+    : { ...candidate, models: candidate.models.filter(model => !Object.hasOwn(CHAT_PROVIDERS, model.router_provider)) };
   const routesFor = candidate => {
     if (!commonModelsEnabled) return catalogRoutes(candidate);
-    // Saved conversations and the fixed CLI catalog still use explicit
-    // provider IDs. Register those before adding the shared aliases.
-    const fixed = new Map([...fixedModels, ...(candidate.fixedModels ?? [])].map(model => [model.slug, model]));
-    const routingCatalog = withEnabledManualModels({ models: [...candidate.models, ...fixed.values()] });
-    return catalogRoutes(routingCatalog);
+    // The live snapshot owns OpenCode membership. Its fallback before the
+    // first successful refresh is already seeded by the fixed catalog.
+    const routingCatalog = withEnabledManualModels({ models: [...candidate.models, ...(candidate.fixedModels ?? [])] });
+    return catalogRoutes(routingCatalog, { manualAliases: manualProvidersEnabled });
   };
   catalog = commonModelsEnabled ? commonCatalog(initialCatalog) : withEnabledManualModels(initialCatalog);
   let routes = routesFor(catalog);
@@ -326,8 +328,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     }
     else if (!commonModelsEnabled) candidate = withEnabledManualModels(candidate);
     const nextRoutes = routesFor(candidate);
-    const models = candidate.models.map(({ router_provider, router_model, router_transport, router_common_model, ...model }) => model);
-    const serialized = JSON.stringify({ models });
+    const serialized = JSON.stringify(publicCommonCatalog(candidate));
     if (Buffer.byteLength(serialized) > 1024 * 1024) throw new Error("catalog_too_large");
     catalog = candidate; routes = nextRoutes;
     return serialized;
@@ -563,7 +564,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       let route = nativeTool ? { provider: "openai" } : routes.get(body.model);
       // A session may retain its automatic ID after the feature is disabled.
-      if (!route && !whatstokenFreeEnabled && body.model === autoManualSlug('whatstoken'))
+      if (!route && (!manualProvidersEnabled || !whatstokenFreeEnabled) && body.model === autoManualSlug('whatstoken'))
         route = routes.get(CLI_AUTO_MODEL);
       if (!route && catalogProvider && typeof body.model === "string"
           && /^(?:opencode\/|shared\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.model)
@@ -1060,26 +1061,6 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       // opaque wire input. Match that same restored representation before
       // advancing the boundary and paying for another summary on every tool.
       if (!compactionExpanded && metric.history_source) reuseBudgetPrefix();
-      // A successful auxiliary summary may have exhausted the initially
-      // selected provider. Continue on its healthy same-model fallback instead
-      // of immediately hitting that blocked provider again for the answer.
-      if (metric.auto_fallback && route.commonModel && metric.summary_provider && !getFallbackState().available(route.provider)) {
-        const index = fallbackRoutes.findIndex(candidate => candidate.provider === metric.summary_provider
-          && getFallbackState().available(candidate.provider));
-        if (index >= 0) {
-          const candidate = fallbackRoutes[index];
-          const isGo = candidate.provider === 'opencode';
-          const key = isGo ? bridgeKey() : manualKey(candidate.provider);
-          if (key) {
-            route = fallbackRoutes.splice(index, 1)[0];
-            manual = CHAT_PROVIDERS[route.provider];
-            destination = isGo ? bridge.href.replace(/\/$/, '') : manual.base;
-            headers = { 'content-type': 'application/json', accept: 'text/event-stream, application/json',
-              ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: 'Bearer ' + key }) };
-            metric.provider = route.provider;
-          }
-        }
-      }
       const suffix = nativeTool ? path.slice(3) : path.endsWith("/compact") ? "/responses/compact" : "/responses";
       let routed;
       let routedObject;
@@ -1128,6 +1109,41 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             } else metric.budget_recovery_skipped = minimum >= hardLimitTokens || minimumBytes >= maxForwardedBytes ? "protected_input_too_large"
               : !summaryHeaders.authorization ? "summary_auth_missing" : "summary_model_missing";
           } else metric.budget_recovery_skipped = "no_completed_history";
+        }
+        // Either history recovery or the budget pass may have recorded a
+        // provider limit. Select an available route before the first answer send.
+        if (metric.auto_fallback && route.commonModel && !getFallbackState().available(route.provider)) {
+          const state = getFallbackState();
+          let replacement;
+          let key;
+          while (fallbackRoutes.length && !key) {
+            const candidate = fallbackRoutes.shift();
+            if (!state.available(candidate.provider)) continue;
+            key = candidate.provider === 'opencode' ? bridgeKey() : manualKey(candidate.provider);
+            if (key) replacement = candidate;
+          }
+          if (!replacement) {
+            const earliest = state.earliestUnblockAt(SHARED_PROVIDERS);
+            if (earliest) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
+            fail(response, 429, "provider_limits_exhausted", "選択モデルの提供元が一時制限または利用枠制限中です。履歴は保持しています。");
+            return;
+          }
+          const isGo = replacement.provider === 'opencode';
+          if (!isGo) {
+            const guarded = manualGuard.check(cliThreadId(body, request.headers));
+            if (!guarded.allowed) {
+              response.setHeader("retry-after", String(guarded.retryAfterSeconds));
+              fail(response, 429, "rate_limit_exceeded", "この会話の手動プロバイダー要求が1分間に40回を超えました。しばらく待って再試行してください");
+              return;
+            }
+          }
+          route = replacement;
+          headers = { 'content-type': 'application/json', accept: 'text/event-stream, application/json',
+            ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: 'Bearer ' + key }) };
+          destination = isGo ? bridge.href.replace(/\/$/, '') : CHAT_PROVIDERS[route.provider].base;
+          metric.provider = route.provider;
+          routedObject = routedBody(body, route, maxForwardedBytes);
+          routed = JSON.stringify(routedObject);
         }
         if (Buffer.byteLength(routed) > maxForwardedBytes) throw new RangeError("expanded request too large");
       } catch (error) {
