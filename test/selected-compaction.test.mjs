@@ -45,8 +45,8 @@ async function fixture(t, { openai = () => usageLimit(), ...options } = {}) {
     }, ...options });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  const send = (body, path = '/v1/responses', token = 'owner-native-token') => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
-    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+  const send = (body, path = '/v1/responses', token = 'owner-native-token', headers = {}) => fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) });
   const health = () => fetch(`http://127.0.0.1:${server.address().port}/health`).then(response => response.json());
   return { calls, metrics, send, health };
 }
@@ -62,6 +62,25 @@ function compactionItems(text) {
   const done = events(text).filter(event => event.type === 'response.output_item.done').map(event => event.item);
   return done.filter(item => item.type === 'compaction');
 }
+
+test('fallback compaction opens the physical thread from the header even with an unrelated cache key', async t => {
+  const received = [];
+  const f = await fixture(t, { restoreHistory: async (body, { threadId }) => {
+    received.push(threadId);
+    return { body: { ...body, input: [{ type: 'message', role: 'user', content: 'RESTORED' }, trigger] } };
+  } });
+  for (const prompt_cache_key of [undefined, '01a1777d-4508-72a1-9dbe-dcd799f721ac']) {
+    const response = await f.send(compactionRequest({ prompt_cache_key, input: [
+      { type: 'compaction', encrypted_content: 'opaque-native-checkpoint' }, trigger,
+    ] }), '/v1/responses', 'owner-native-token', { 'thread-id': thread });
+    assert.equal(response.status, 200);
+    assert.equal(compactionItems(await response.text()).length, 1);
+    assert.equal(f.metrics.at(-1).history_identity_source, 'thread_header');
+  }
+  assert.deepEqual(received, [thread, thread]);
+  assert.ok(f.calls.filter(call => call.provider === 'opencode').every(call =>
+    !JSON.stringify(call.body).includes('opaque-native-checkpoint')));
+});
 
 test('AC-01/AC-06: OpenAI 429 makes the selected model write one router-owned compaction item', async t => {
   const f = await fixture(t);

@@ -129,7 +129,10 @@ export function commonCatalog(catalog, entries = COMMAND_MODEL_SEED) {
       input_modalities: vision ? ['text', 'image'] : ['text'], supports_image_detail_original: vision,
       router_transport: 'chat', router_common_model: target.id });
   }
-  return { models: [...catalog.models.filter(model => model.router_provider === 'openai'), ...shared] };
+  return {
+    models: [...catalog.models.filter(model => model.router_provider === 'openai'), ...shared],
+    fixedModels: catalog.models.filter(model => model.router_provider !== 'openai' && !model.router_common_model),
+  };
 }
 
 export function publicCommonCatalog(catalog) {

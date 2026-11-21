@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createLiveCatalog, discoveredModels, boundedJSON } from "../src/live-catalog.mjs";
 import { createRouter } from "../src/model-router.mjs";
 import { codexHomeId } from "../src/local-security.mjs";
+import { ProviderFallbackState } from "../src/provider-fallback.mjs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -176,6 +177,64 @@ test("a cached client model can refresh a restarted router before model/list run
  const missing = await fetch(base + "/v1/responses", { method: "POST", headers: { ...headers, version: "0.164.0" },
   body: JSON.stringify({ model: "opencode/never-provided", input: "continue" }) });
  assert.equal(missing.status, 400); await missing.text(); assert.equal(forwarded.length, 1);
+});
+
+test("a restarted router rediscovers a cached shared ID without registering unknown shared IDs", async context => {
+ const model = "deepseek-v4-pro";
+ const f = setup({ commonModelsEnabled: true }); f.ids([model]);
+ const forwarded = [];
+ const router = createRouter({ catalog: initial, catalogProvider: f.live, commonModelsEnabled: true,
+  authenticate: () => true, bridgeKey: () => "INTERNAL",
+  fetcher: async (_url, init) => { forwarded.push(JSON.parse(init.body)); return Response.json({ status: "completed", output: [] }); } });
+ router.listen(0, "127.0.0.1"); await once(router, "listening");
+ context.after(() => { router.closeAllConnections(); router.close(); });
+ const base = "http://127.0.0.1:" + router.address().port;
+ const send = model => fetch(base + "/v1/responses", { method: "POST", headers: { ...headers, version: "0.164.0" },
+  body: JSON.stringify({ model, input: "continue" }) });
+ assert.equal((await (await fetch(base + "/health")).json()).model_ids.includes("shared/" + model), false);
+ assert.equal((await send("shared/" + model)).status, 200);
+ const missing = await send("shared/never-provided");
+ assert.equal(missing.status, 400);
+ assert.equal((await missing.json()).error.type, "unknown_model");
+ assert.deepEqual(forwarded.map(body => body.model), [model]);
+});
+
+test("shared publishing preserves fixed model routing at startup and after catalog refresh", async context => {
+ const flash = "deepseek-v4.1-flash";
+ const shared = "shared/" + flash;
+ const fixed = ["commandcode/" + flash, "ollama/" + flash, "opencode/old"];
+ const catalog = { models: [...initial.models, { slug: "opencode/" + flash, router_provider: "opencode", router_model: flash }] };
+ const f = setup({ commonModelsEnabled: true }); f.ids([flash]);
+ const destinations = [];
+ const router = createRouter({ catalog, catalogProvider: f.live, commonModelsEnabled: true,
+  manualProvidersEnabled: true, autoProviderFallback: true, authenticate: () => true,
+  providerFallbackState: new ProviderFallbackState(),
+  bridgeKey: () => "INTERNAL", manualKey: () => "MANUAL",
+  fetcher: async (url, init) => {
+   destinations.push([new URL(url).hostname, JSON.parse(init.body).model]);
+   return Response.json(url.endsWith("/chat/completions")
+    ? { choices: [{ message: { content: "answer" }, finish_reason: "stop" }] }
+    : { status: "completed", output: [] });
+  } });
+ router.listen(0, "127.0.0.1"); await once(router, "listening");
+ context.after(() => { router.closeAllConnections(); router.close(); });
+ const base = "http://127.0.0.1:" + router.address().port;
+ const send = model => fetch(base + "/v1/responses", { method: "POST", headers,
+  body: JSON.stringify({ model, input: "continue" }) });
+ for (const refresh of [false, true]) {
+  if (refresh) {
+   const response = await fetch(base + "/codex/models?client_version=0.164.0", { headers });
+   assert.equal(response.status, 200);
+   assert.deepEqual((await response.json()).models.map(model => model.slug), ["gpt-test", shared]);
+  }
+  for (const model of [...fixed, shared]) {
+   const response = await send(model);
+   assert.equal(response.status, 200, await response.text());
+  }
+ }
+ const expected = [["api.commandcode.ai", "deepseek/" + flash], ["ollama.com", flash],
+  ["127.0.0.1", "old"], ["127.0.0.1", flash]];
+ assert.deepEqual(destinations, [...expected, ...expected]);
 });
 
 test("health reports which CODEX_HOME the catalog authenticates against without exposing credentials", async context => {

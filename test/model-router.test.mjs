@@ -553,6 +553,23 @@ test("refuses provider-specific continuation IDs and oversized bodies", async (c
   assert.equal(calls.length, 0);
 });
 
+test("normal forwarding can exceed the independent compaction buffer limit", async context => {
+  const { base, calls, send } = await fixture(context, {
+    maxBytes: 512, maxForwardedBytes: 1024, maxRequestBytes: 2048, summaryModel: "gpt-test",
+  });
+  const health = await (await fetch(base.replace(/\/v1$/, "/health"))).json();
+  assert.equal(health.request_limits.forwarded_bytes, 1024);
+  const input = [{ role: "user", content: "x".repeat(650) }];
+  const normal = await send({ model: "opencode/deepseek-test", input });
+  assert.equal(normal.status, 200);
+  await normal.text();
+  assert.ok(Buffer.byteLength(JSON.stringify(calls[0].body)) > 512);
+  const summary = await send({ model: "opencode/deepseek-test", input: [...input, { type: "compaction_trigger" }] });
+  assert.equal(summary.status, 413);
+  assert.equal((await summary.json()).error.type, "summary_input_budget_exceeded");
+  assert.equal(calls.length, 1);
+});
+
 test("accepts compressed Codex requests without forwarding encoding headers", async (context) => {
   const { base, calls } = await fixture(context);
   const compression = [["gzip", zlib.gzipSync], ["zstd", zlib.zstdCompressSync]].filter(([_name, compress]) => compress);
