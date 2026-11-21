@@ -131,6 +131,18 @@ test('parallel tool batches retain inert server history in order after every mat
   assert.equal(messages[5].content,'synthetic continuation');
 });
 
+test('interleaved turns place every tool result beside its own assistant batch', () => {
+  const input=[historicalCall('c1'),historicalCall('c2'),historicalOutput('c1'),
+    historicalCall('c3'),historicalOutput('c3'),historicalOutput('c2')];
+  const before=structuredClone(input), messages=chatMessages({input});
+  assert.deepEqual(messages.map(message=>message.role),['assistant','tool','tool','assistant','tool']);
+  assert.deepEqual(messages[0].tool_calls.map(call=>call.id),['c1','c2']);
+  assert.deepEqual(messages.slice(1,3).map(message=>message.tool_call_id),['c1','c2']);
+  assert.equal(messages[3].tool_calls[0].id,'c3');
+  assert.equal(messages[4].tool_call_id,'c3');
+  assert.deepEqual(input,before);
+});
+
 test('unfinished tool batches fail instead of dropping queued server history', () => {
   for (const input of [
     [historicalCall('missing'),...serverSearchHistory],
