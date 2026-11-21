@@ -1,4 +1,5 @@
 import http from "node:http";
+import { commonCatalog, publicCommonCatalog, commandIdentity, SHARED_PROVIDERS } from "./common-models.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import { Readable, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -16,13 +17,14 @@ import { HandoffStatus, failHandoffStatus, isHandoffStatusItem, readUpstreamFail
 import { authenticateCodex, codexHomeId, codexRoot as defaultCodexRoot, diagnoseCodexAuth, INTERNAL_AUTH_HEADER, localRequestError, readBridgeKey, readOpenCodeApiKey, SECURITY_VERSION, LOCAL_AUTH_HELP } from "./local-security.mjs";
 import { createRequestGuard } from "./request-guard.mjs";
 import { HISTORY_MODES, readHistoryMode, modeHelp } from "./history-mode.mjs";
-import { restoreRolloutHistory } from "./rollout-history.mjs";
+import { restoreRolloutHistory, RolloutHistoryError } from "./rollout-history.mjs";
+import { writeFileAtomic } from "./catalog-safety.mjs";
 import { SELECTED_COMPACTION_NOTICE, SummaryLimitWindow, containsSelectedCompaction, exceedsNesting, encodeSelectedCompaction, isSelectedCompaction,
   restoreSelectedCompactions, selectedCompactionResponse } from "./selected-compaction.mjs";
 import { createLiveCatalog } from "./live-catalog.mjs";
 import { CHAT_PROVIDERS, KIMI_MODEL, KIMI_SLUG, manualSlug, autoManualSlug, withManualModels, readManualKey, fetchManualProvider } from "./manual-providers.mjs";
 import { providerHelp, allProviderHelp, directRecoveryHelp, providerNoticeStream } from "./provider-help.mjs";
-import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel } from "./cli-model-sync.mjs";
+import { CliModelSync, CLI_AUTO_MODEL, cliThreadId, cliProviderModel, resolveThreadIdentity } from "./cli-model-sync.mjs";
 import { WhatstokenFreeGate } from "./whatstoken-free.mjs";
 import { AUTO_DEEPSEEK_MODEL, AUTO_DEEPSEEK_PROVIDERS, ProviderFallbackState,
   classifyProviderLimit, classifyTransientProviderLimit } from "./provider-fallback.mjs";
@@ -42,6 +44,7 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./sync-models.mjs", import.meta.url)))
   .update(readFileSync(new URL("./catalog-safety.mjs", import.meta.url)))
   .update(readFileSync(new URL("./manual-providers.mjs", import.meta.url)))
+  .update(readFileSync(new URL("./common-models.mjs", import.meta.url)))
   .update(readFileSync(new URL("./whatstoken-free.mjs", import.meta.url)))
   .update(readFileSync(new URL("./provider-fallback.mjs", import.meta.url)))
   .update(readFileSync(new URL("./cli-control.mjs", import.meta.url)))
@@ -58,7 +61,7 @@ const IMPLEMENTATION = createHash("sha256").update(readFileSync(new URL(import.m
   .update(readFileSync(new URL("./models.json", import.meta.url))).digest("hex");
 const NATIVE_HEADERS = ["authorization", "chatgpt-account-id", "openai-beta", "originator", "version", "session_id", "session-id", "thread-id", "x-client-request-id", "user-agent", "x-openai-account-routing-override", "x-codex-turn-state"];
 
-export function catalogRoutes(catalog) {
+export function catalogRoutes(catalog, { manualAliases = true } = {}) {
   const routes = new Map();
   for (const model of catalog.models) {
     if (!model.slug || !["openai", "opencode", ...Object.keys(CHAT_PROVIDERS)].includes(model.router_provider)) {
@@ -72,12 +75,17 @@ export function catalogRoutes(catalog) {
         && (!Number.isSafeInteger(model.context_window) || model.context_window < 1024 || model.context_window > 10000000)) {
       throw new Error("モデルのコンテキスト上限が不正です");
     }
+    if (model.router_common_model && (model.router_provider !== 'opencode' || model.router_transport !== 'chat'
+        || model.slug !== 'shared/' + model.router_model
+        || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,191}$/.test(model.router_common_model)
+        || commandIdentity(model.router_common_model) !== model.router_model.toLowerCase()))
+      throw new Error('共通モデルの定義が不正です');
     const manual = CHAT_PROVIDERS[model.router_provider];
     const kimi = model.router_provider === 'commandcode' && model.slug === KIMI_SLUG && model.router_model === KIMI_MODEL;
     if (manual && ((!kimi && (![manualSlug(model.router_provider), autoManualSlug(model.router_provider)].includes(model.slug) || model.router_model !== manual.model)) || model.router_transport !== "chat")) {
       throw new Error("手動プロバイダーのモデル定義が不正です");
     }
-    routes.set(model.slug, { provider: model.router_provider, model: model.router_model ?? model.slug,
+    routes.set(model.slug, { ...(model.router_common_model ? { commonModel: model.router_common_model, autoFallback: true } : {}), provider: model.router_provider, model: model.router_model ?? model.slug,
       ...(model.context_window !== undefined ? { contextWindow: model.context_window } : {}),
       ...(model.router_transport ? { transport: model.router_transport } : {}),
       ...((model.router_provider === "opencode" && (model.router_model ?? model.slug) === AUTO_DEEPSEEK_MODEL)
@@ -86,6 +94,15 @@ export function catalogRoutes(catalog) {
   for (const model of catalog.models) {
     if (model.router_provider === "opencode" && model.router_model && !routes.has(model.router_model)) {
       routes.set(model.router_model, { ...routes.get(model.slug), model: model.router_model });
+    }
+  }
+  for (const model of catalog.models.filter(m => m.router_common_model)) {
+    const route = routes.get(model.slug);
+    const aliases = ['opencode/' + model.router_model];
+    if (manualAliases) aliases.push('commandcode/' + model.router_common_model,
+      'auto-commandcode/' + model.router_model, 'commandcode/' + model.router_model);
+    for (const alias of aliases) {
+      if (!routes.has(alias)) routes.set(alias, route);
     }
   }
   return routes;
@@ -188,6 +205,20 @@ function envLimit(name, fallback) {
   return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
+// Finite local safety ceiling, not a guarantee about any upstream provider.
+const INPUT_BYTES_CEILING = 512 * 1024 * 1024;
+const DEFAULT_INPUT_BYTES = 128 * 1024 * 1024;
+function inputBytesEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be a positive integer in bytes`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > INPUT_BYTES_CEILING) {
+    throw new Error(`${name} must be between 1 and ${INPUT_BYTES_CEILING} bytes`);
+  }
+  return value;
+}
+
 export const readOpenCodeKey = readOpenCodeApiKey;
 
 export async function fetchWithAvailabilityRetry(fetcher, url, options, onRetry = () => {}, { retry429 = true } = {}) {
@@ -245,12 +276,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   catalogAuthReady = () => diagnoseCodexAuth(codexRoot).ok,
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
+  // Reply buffering and selected-model compaction retain their own 32 MiB
+  // budget. Normal requests may forward more. Native handoff can summarize
+  // an oversized request within the receive budget, including image items.
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
-  // Accept bounded history before reducing it to the smaller forwarding budget.
-  maxRequestBytes = maxBytes * 4,
+  maxForwardedBytes = inputBytesEnv("ROUTER_MAX_FORWARDED_BYTES", maxBytes),
+  maxRequestBytes = inputBytesEnv("ROUTER_MAX_REQUEST_BYTES", maxBytes * 4),
   whatstokenFreeEnabled = process.env.CODEX_WHATSTOKEN_FREE === "1", whatstokenFreeGate,
   manualProvidersEnabled = false, manualKey = provider => readManualKey(provider, codexRoot),
-  cliModelSync, cliModelSyncEnabled = false,
+  cliModelSync, cliModelSyncEnabled = false, commonModelsEnabled = false,
   providerFallbackState, providerFallbackFile = join(codexRoot, "provider-fallback-state.json"),
   providerFallbackCooldownMs = envLimit("CODEX_PROVIDER_FALLBACK_COOLDOWN_MS", 300000),
   autoProviderFallback = manualProvidersEnabled && process.env.CODEX_AUTO_PROVIDER_FALLBACK !== "0",
@@ -260,11 +294,25 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   autoBudgetHandoff = process.env.OPENCODE_AUTO_BUDGET_HANDOFF !== "0",
   opencodeSoftLimitTokens = envLimit("OPENCODE_SOFT_LIMIT_TOKENS", 900000),
   opencodeHardLimitTokens = envLimit("OPENCODE_HARD_LIMIT_TOKENS", 1000000) } = {}) {
-  if (![maxBytes, maxRequestBytes].every(n => Number.isSafeInteger(n) && n > 0) || maxRequestBytes < maxBytes) {
+  autoProviderFallback = manualProvidersEnabled && autoProviderFallback;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1
+      || ![maxForwardedBytes, maxRequestBytes].every(n => Number.isSafeInteger(n) && n > 0 && n <= INPUT_BYTES_CEILING)
+      || maxRequestBytes < maxForwardedBytes) {
     throw new Error("受信上限は送信上限以上の正の整数で指定してください");
   }
-  if (manualProvidersEnabled) catalog = withManualModels(catalog, { whatstoken: whatstokenFreeEnabled });
-  let routes = catalogRoutes(catalog);
+  const initialCatalog = catalog;
+  const withEnabledManualModels = candidate => manualProvidersEnabled
+    ? withManualModels(candidate, { whatstoken: whatstokenFreeEnabled })
+    : { ...candidate, models: candidate.models.filter(model => !Object.hasOwn(CHAT_PROVIDERS, model.router_provider)) };
+  const routesFor = candidate => {
+    if (!commonModelsEnabled) return catalogRoutes(candidate);
+    // The live snapshot owns OpenCode membership. Its fallback before the
+    // first successful refresh is already seeded by the fixed catalog.
+    const routingCatalog = withEnabledManualModels({ models: [...candidate.models, ...(candidate.fixedModels ?? [])] });
+    return catalogRoutes(routingCatalog, { manualAliases: manualProvidersEnabled });
+  };
+  catalog = commonModelsEnabled ? commonCatalog(initialCatalog) : withEnabledManualModels(initialCatalog);
+  let routes = routesFor(catalog);
   let modelSync = cliModelSync;
   const getModelSync = () => modelSync ??= new CliModelSync({ root: codexRoot,
     routerBase: `http://127.0.0.1:${server.address()?.port ?? 8790}/v1` });
@@ -275,32 +323,81 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   const manualGuard = createRequestGuard();
   const freeGate = whatstokenFreeGate ?? new WhatstokenFreeGate({ reserveMs: timeoutMs });
   const commitCatalog = candidate => {
-    if (manualProvidersEnabled) candidate = withManualModels(candidate, { whatstoken: whatstokenFreeEnabled });
-    const nextRoutes = catalogRoutes(candidate);
-    const models = candidate.models.map(({ router_provider, router_model, router_transport, ...model }) => model);
-    const serialized = JSON.stringify({ models });
+    if (commonModelsEnabled && !Array.isArray(candidate.fixedModels) && !candidate.models.some(model => model.router_common_model)) {
+      candidate = commonCatalog(candidate);
+    }
+    else if (!commonModelsEnabled) candidate = withEnabledManualModels(candidate);
+    const nextRoutes = routesFor(candidate);
+    const serialized = JSON.stringify(publicCommonCatalog(candidate));
     if (Buffer.byteLength(serialized) > 1024 * 1024) throw new Error("catalog_too_large");
     catalog = candidate; routes = nextRoutes;
     return serialized;
   };
+  const summaryForwardLimit = Math.min(maxBytes, maxForwardedBytes);
   const expandCompaction = compactionHandoff({ fetcher, model: summaryModel, maxBytes, maxInputBytes: maxRequestBytes, inputLimitTokens: summaryInputLimitTokens, measureTokens: estimateInputTokens });
   const selectedSummaries = new Map();
   // Store only successful portable prefixes, never a second raw transcript.
   const restoredSummaries = new Map();
   const selectedSummary = route => {
-    const key = JSON.stringify([route.provider, route.model, route.transport]);
+    const key = JSON.stringify(route.commonModel && autoProviderFallback
+      ? ['shared', route.commonModel] : [route.provider, route.model, route.transport]);
     if (selectedSummaries.has(key)) return selectedSummaries.get(key);
-    const summarize = compactionHandoff({ model: route.model, maxBytes, maxInputBytes: maxBytes,
+    const summarize = compactionHandoff({ model: route.model, maxBytes, maxInputBytes: summaryForwardLimit,
       inputLimitTokens: summaryInputLimitTokens, measureTokens: estimateInputTokens,
-      fetcher: async (url, options) => {
+      fetcher: async (url, options, context) => {
         const body = JSON.parse(options.body);
         // No opaque OpenAI data or native credentials may enter this path.
         if (body.input.some(item => item.type === 'compaction' || item.type === 'reasoning' && item.encrypted_content)) {
           throw new HandoffError('選択モデルへ暗号化履歴は送信できません。元ログを確認してください');
         }
+        if (route.commonModel && autoProviderFallback) {
+          const state = getFallbackState();
+          for (const provider of SHARED_PROVIDERS) {
+            options.signal.throwIfAborted();
+            if (!state.available(provider)) continue;
+            const isGo = provider === 'opencode';
+            const key = isGo ? bridgeKey() : manualKey(provider);
+            if (!key) continue;
+            const guard = manualGuard.check(context.threadId);
+            if (!guard.allowed) {
+              throw Object.assign(new HandoffError('要約要求の頻度制限中です。履歴は保持しています。時間を置いて再試行してください。'),
+                { status: 429, upstreamCode: 'summary_local_rate_limit', retryable: false, retryAfterSeconds: guard.retryAfterSeconds });
+            }
+            const candidate = { ...route, provider, model: isGo ? commandIdentity(route.commonModel) : route.commonModel };
+            // Rebuild credentials for each owner. In particular, never forward
+            // native authorization or the local bridge key to Command Code.
+            const headers = { 'content-type': 'application/json', accept: 'text/event-stream, application/json',
+              ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: 'Bearer ' + key }) };
+            const target = isGo ? bridge.href.replace(/\/$/, '') : CHAT_PROVIDERS[provider].base;
+            const request = { ...options, headers, body: JSON.stringify(routedBody(body, candidate, maxBytes)) };
+            context.diagnose({ summary_provider: provider, summary_model: candidate.model });
+            const upstream = isGo ? await fetcher(target + '/responses', request)
+              : await fetchManualProvider(provider, target + '/responses', request, fetcher, maxBytes, undefined, [], route.commonModel, undefined, { maxForwardedBytes: summaryForwardLimit });
+            if (![402, 429].includes(upstream.status)) return upstream;
+            const limit = await classifyProviderLimit(upstream, { now: state.now(), unknownCooldownMs: providerFallbackCooldownMs });
+            const transient = !limit ? await classifyTransientProviderLimit(upstream, { now: state.now() }) : null;
+            // Keep local guards and unrecognized refusals on their own route.
+            if (!limit && !transient) {
+              if (upstream.status !== 429) return upstream;
+              void upstream.body?.cancel().catch(() => {});
+              throw Object.assign(new HandoffError('要約要求の頻度制限中です。履歴は保持しています。時間を置いて再試行してください。'),
+                { status: 429, upstreamCode: 'summary_local_rate_limit', retryable: false });
+            }
+            if (limit) {
+              try { state.recordLimit(provider, limit); } catch { /* In-memory limit remains active. */ }
+            } else state.recordTransient(provider, transient);
+            context.diagnose({ summary_limited_provider: provider });
+            void upstream.body?.cancel().catch(() => {});
+          }
+          const earliest = state.earliestUnblockAt(SHARED_PROVIDERS);
+          throw Object.assign(new HandoffError('選択モデルの要約先が利用枠制限中です。履歴と完了済みの要約を保持しています。制限解除後に再試行してください。'),
+            { status: 429, upstreamCode: 'summary_provider_limits_exhausted', retryable: false,
+              ...(earliest ? { retryAfterSeconds: Math.max(1, Math.ceil((earliest - state.now()) / 1000)) } : {}) });
+        }
+        context.diagnose({ summary_provider: route.provider, summary_model: route.model });
         const request = { ...options, body: JSON.stringify(routedBody(body, route, maxBytes)) };
         return CHAT_PROVIDERS[route.provider]
-          ? fetchManualProvider(route.provider, url, request, fetcher, maxBytes)
+          ? fetchManualProvider(route.provider, url, request, fetcher, maxBytes, undefined, [], route.commonModel, undefined, { maxForwardedBytes: summaryForwardLimit })
           : fetcher(url, request);
       } });
     if (selectedSummaries.size >= 16) selectedSummaries.delete(selectedSummaries.keys().next().value);
@@ -339,7 +436,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         summary_model: summaryModel, history_mode: activeHistoryMode,
         summary_limit_until: summaryLimitWindow.latestUntil(),
         whatstoken_free: { enabled: whatstokenFreeEnabled, configured: Boolean(manualKey('whatstoken')) },
-        request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxBytes },
+        request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxForwardedBytes },
         history_transport: allowDirectResponses ? "model" : "chat",
         direct_header: "x-codex-bridge-direct",
         direct_models: (allowDirectResponses ? catalog.models : []).filter((model) => model.router_provider === "opencode" && model.router_transport === "responses").map((model) => model.slug),
@@ -367,7 +464,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
     if (request.method === "GET" && path === "/v1/models") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ object: "list", data: catalog.models.map((model) => ({
-        id: model.slug, object: "model", owned_by: model.router_provider,
+        id: model.slug, object: "model", owned_by: model.router_common_model ? "shared" : model.router_provider,
       })) }));
       return;
     }
@@ -467,10 +564,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       }
       let route = nativeTool ? { provider: "openai" } : routes.get(body.model);
       // A session may retain its automatic ID after the feature is disabled.
-      if (!route && !whatstokenFreeEnabled && body.model === autoManualSlug('whatstoken'))
+      if (!route && (!manualProvidersEnabled || !whatstokenFreeEnabled) && body.model === autoManualSlug('whatstoken'))
         route = routes.get(CLI_AUTO_MODEL);
       if (!route && catalogProvider && typeof body.model === "string"
-          && /^(?:opencode\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.model)) {
+          && /^(?:opencode\/|shared\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.model)
+          && (commonModelsEnabled || !body.model.startsWith("shared/"))) {
         const version = typeof request.headers.version === "string" ? request.headers.version.split("-")[0] : undefined;
         if (/^\d+\.\d+\.\d+$/.test(version ?? "")) {
           try {
@@ -490,7 +588,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       const requestedProvider = route.provider;
       const providerNotices = [];
       let cliContext;
-      if (cliModelSyncEnabled && autoProviderFallback && route.transport !== "responses" && path === "/v1/responses"
+      if (!commonModelsEnabled && cliModelSyncEnabled && autoProviderFallback && route.transport !== "responses" && path === "/v1/responses"
           && !body.input?.some?.(item => item.type === "compaction_trigger")) {
         cliContext = await getModelSync().prepare(cliThreadId(body, request.headers),
           route.provider === "opencode" && route.autoFallback ? CLI_AUTO_MODEL : body.model,
@@ -502,14 +600,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       if (autoProviderFallback && route.autoFallback && route.transport !== "responses"
           && path === "/v1/responses" && !body.input?.some?.(item => item.type === "compaction_trigger")) {
         const state = getFallbackState();
-        const goRoute = routes.get(CLI_AUTO_MODEL) ?? (route.provider === "opencode" ? route : null);
+        const goRoute = route.commonModel ? route : routes.get(CLI_AUTO_MODEL) ?? (route.provider === "opencode" ? route : null);
         const providerRoutes = new Map(goRoute ? [["opencode", { ...goRoute, transport: "chat" }]] : []);
-        for (const provider of AUTO_DEEPSEEK_PROVIDERS.slice(1)) {
+        for (const provider of (route.commonModel ? [] : AUTO_DEEPSEEK_PROVIDERS.slice(1))) {
           const candidate = routes.get(autoManualSlug(provider)) ?? routes.get(manualSlug(provider));
           if (candidate && CHAT_PROVIDERS[candidate.provider]) providerRoutes.set(provider, candidate);
         }
-        let order = AUTO_DEEPSEEK_PROVIDERS;
-        if (whatstokenFreeEnabled && manualKey('whatstoken')) {
+        if (route.commonModel) providerRoutes.set('commandcode', { ...route, provider: 'commandcode', model: route.commonModel });
+        let order = route.commonModel ? SHARED_PROVIDERS : AUTO_DEEPSEEK_PROVIDERS;
+        if (!route.commonModel && whatstokenFreeEnabled && manualKey('whatstoken')) {
           const eligibility = await freeGate.check(abort.signal);
           metric.whatstoken_free = eligibility.allowed ? 'eligible' : eligibility.reason;
           const candidate = routes.get(autoManualSlug('whatstoken'));
@@ -527,7 +626,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             const earliest = state.earliestUnblockAt(order);
             if (earliest) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
             fail(response, 429, "provider_limits_exhausted",
-              "DeepSeek V4.1 Flashの全提供元が一時制限または利用枠制限中です。制限解除を待つか、利用枠・支払い設定を確認してください。" + allProviderHelp());
+              `${body.model}の全提供元が一時制限または利用枠制限中です。制限解除を待つか、利用枠・支払い設定を確認してください。` + (route.commonModel ? "" : allProviderHelp()));
           } else {
             fail(response, 503, "auto_provider_credentials_required",
               "自動切替候補の認証情報を準備してください。選択モデルと会話履歴は保持しています。" + allProviderHelp());
@@ -550,6 +649,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         fail(response, 503, 'history_mode_invalid', '履歴モード設定の形式・所有者・権限を確認してください。外部送信は行っていません'); return;
       }
       metric.history_mode = mode;
+      const historyIdentity = resolveThreadIdentity(body, request.headers);
+      metric.history_identity_source = historyIdentity.source;
+      // Existing summary caches also accept non-UUID affinity strings.
+      const summaryThreadId = historyIdentity.id ?? body.client_metadata?.thread_id ?? body.prompt_cache_key
+        ?? body.client_metadata?.session_id ?? request.headers.session_id ?? request.headers['session-id'];
       // #186: the OpenAI summary model is at its usage limit. Summarize with the
       // selected model (the automatic DeepSeek route also tries its configured
       // same-model providers) and return exactly one router-owned compaction item.
@@ -560,8 +664,6 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         if (source.provider === "whatstoken") {
           fail(response, 422, "history_mode_summary_unsupported", WHATSTOKEN_SUMMARY_UNSUPPORTED); return;
         }
-        const threadId = original.client_metadata?.thread_id ?? original.prompt_cache_key
-          ?? original.client_metadata?.session_id ?? request.headers.session_id;
         // Opaque OpenAI reasoning cannot be read by another model and carries no
         // visible conversation content; the trigger is re-appended as the boundary.
         const portable = input => input.filter(item => item.type !== "compaction_trigger"
@@ -572,12 +674,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         let work = { ...original, input: [...portable(plain), { type: "compaction_trigger" }] };
         if (work.input.some(item => item.type === "compaction")) {
           // An earlier OpenAI compaction: rebuild plain history from the owner's log.
-          const restored = await restoreHistory(work, { root: codexRoot, threadId, signal: abort.signal });
+          const restored = await restoreHistory(work, { root: codexRoot, threadId: historyIdentity.id, signal: abort.signal });
           work = { ...restored.body, input: [...portable(restored.body.input), { type: "compaction_trigger" }] };
           metric.history_source = "owner_rollout";
         }
         let candidates = [source.provider === "opencode" ? { ...source, transport: "chat" } : source];
-        if (autoProviderFallback && source.autoFallback) {
+        // Shared (common) models already walk their same-model providers inside
+        // selectedSummary (#173). Use that single chain instead of a second one.
+        const sharedChain = Boolean(source.commonModel && autoProviderFallback);
+        if (!sharedChain && autoProviderFallback && source.autoFallback) {
           const goRoute = routes.get(CLI_AUTO_MODEL) ?? (source.provider === "opencode" ? source : null);
           const byProvider = new Map(goRoute ? [["opencode", { ...goRoute, transport: "chat" }]] : []);
           for (const provider of AUTO_DEEPSEEK_PROVIDERS.slice(1)) {
@@ -594,22 +699,26 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           const isGo = candidate.provider === "opencode";
           const manualProvider = CHAT_PROVIDERS[candidate.provider];
           const key = isGo ? bridgeKey() : manualProvider && candidate.provider !== "whatstoken" ? manualKey(candidate.provider) : null;
-          if (!key) continue;
-          const target = { destination: isGo ? bridge.href.replace(/\/$/, "") : manualProvider.base,
+          // The shared chain supplies its own headers when it selects a provider.
+          if (!key && !sharedChain) continue;
+          const target = { destination: isGo || !manualProvider ? bridge.href.replace(/\/$/, "") : manualProvider.base,
             headers: { "content-type": "application/json", accept: "text/event-stream, application/json",
-              ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: "Bearer " + key }) } };
+              ...(sharedChain ? {} : isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: "Bearer " + key }) } };
           const budget = Math.min(summaryInputLimitTokens, candidate.contextWindow ? Math.floor(candidate.contextWindow * 0.8) : summaryInputLimitTokens);
           try {
-            summary = await selectedSummary(candidate)(work, { ...target, signal: abort.signal, threadId, cacheIdentity,
+            summary = await selectedSummary(candidate)(work, { ...target, signal: abort.signal, threadId: summaryThreadId, cacheIdentity,
               prefixEnd: work.input.length - 1, inputBudgetTokens: budget, returnSummary: true,
               diagnose: details => Object.assign(metric, details) });
-            metric.remote_compaction_provider = candidate.provider;
+            metric.remote_compaction_provider = sharedChain ? metric.summary_provider ?? candidate.provider : candidate.provider;
             break;
           } catch (error) {
-            if (abort.signal.aborted || !(error instanceof HandoffError) || ![402, 429].includes(error.upstreamStatus)) throw error;
-            limited.push(candidate.provider);
+            if (abort.signal.aborted || !(error instanceof HandoffError)) throw error;
+            const sharedExhausted = error.upstreamCode === "summary_provider_limits_exhausted";
+            if (!sharedExhausted && ![402, 429].includes(error.upstreamStatus)) throw error;
+            limited.push(sharedExhausted ? "shared" : candidate.provider);
             lastError = error;
             if (Number.isFinite(error.limitResetAt)) resetAts.push(error.limitResetAt);
+            if (sharedExhausted && error.retryAfterSeconds) resetAts.push(Date.now() + error.retryAfterSeconds * 1000);
           }
         }
         if (limited.length) metric.remote_compaction_limited_providers = limited;
@@ -770,8 +879,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       handoffStatus = new HandoffStatus(response, { model: body.model,
         enabled: body.stream === true && route.provider !== "openai" && !directResponses, delayMs: handoffStatusDelayMs });
       const handoffOptions = { destination: nativeDestination, headers: summaryHeaders, signal: abort.signal,
-        diagnose: details => Object.assign(metric, details),
-        threadId: body.client_metadata?.thread_id ?? body.prompt_cache_key ?? body.client_metadata?.session_id ?? request.headers.session_id };
+        diagnose: details => Object.assign(metric, details), threadId: summaryThreadId };
       const nativeHandoffOptions = { ...handoffOptions };
       const selected = mode === 'selected' && route.provider !== 'openai';
       const selectedSummaryUnsupported = selected && route.provider === 'whatstoken';
@@ -787,7 +895,15 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         } else expandHistory = selectedSummary(route);
         handoffOptions.destination = destination;
         handoffOptions.headers = { ...headers };
-        handoffOptions.cacheIdentity = createHash('sha256').update(codexRoot).update('\0').update(request.headers.authorization).digest('hex');
+        if (route.commonModel && autoProviderFallback) {
+          // Provider selection may change between chunks/retries. Keep the
+          // logical job identity stable; the summary sender builds real auth.
+          handoffOptions.destination = bridge.href.replace(/\/$/, '');
+          handoffOptions.headers = { 'content-type': 'application/json', accept: 'text/event-stream, application/json' };
+        }
+        handoffOptions.cacheIdentity = createHash('sha256').update(JSON.stringify([codexRoot, request.headers.authorization,
+          request.headers['chatgpt-account-id'],
+          ...(route.commonModel ? [bridgeKey(), manualKey('commandcode')] : [])])).digest('hex');
       }
       if (remoteCompaction) {
         const reserved = Math.max(16384, Number.isSafeInteger(body.max_output_tokens) ? body.max_output_tokens : 0);
@@ -796,14 +912,14 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           fail(response, 413, "summary_input_budget_exceeded", "保護された指示だけで要約モデルの入力上限を超えています。履歴と選択モデルは保持しています");
           return;
         }
-        if (estimateInputTokens(body) + reserved >= summaryBudget || Buffer.byteLength(JSON.stringify(body)) > maxBytes) {
+        if (estimateInputTokens(body) + reserved >= summaryBudget || Buffer.byteLength(JSON.stringify(body)) > summaryForwardLimit) {
           if (body.input.at(-1)?.type !== "compaction_trigger" || body.input.length < 2
               || body.input.slice(0, -1).some(item => item.type === "compaction_trigger")) {
             fail(response, 422, "invalid_compaction_trigger", "圧縮要求の履歴境界が不正です。履歴は保持しています");
             return;
           }
-          const plan = budgetHandoffPlan(body, route, maxRequestBytes, summaryBudget - reserved, maxBytes);
-          if (!(plan.prefixEnd > 0) || plan.minimum + reserved >= summaryBudget || plan.minimumBytes >= maxBytes) {
+          const plan = budgetHandoffPlan(body, route, maxRequestBytes, summaryBudget - reserved, summaryForwardLimit);
+          if (!(plan.prefixEnd > 0) || plan.minimum + reserved >= summaryBudget || plan.minimumBytes > summaryForwardLimit) {
             fail(response, 413, "summary_input_budget_exceeded", "最新依頼・指示・未完了ツールを保持すると要約モデルの入力上限を超えます。履歴と選択モデルは保持しています");
             return;
           }
@@ -820,7 +936,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             return;
           }
         }
-        if (estimateInputTokens(body) + reserved >= summaryBudget || Buffer.byteLength(JSON.stringify(body)) > maxBytes) {
+        if (estimateInputTokens(body) + reserved >= summaryBudget || Buffer.byteLength(JSON.stringify(body)) > summaryForwardLimit) {
           fail(response, 413, "summary_input_budget_exceeded", "要約後も圧縮要求が入力上限を超えています。履歴と選択モデルは保持しています");
           return;
         }
@@ -843,25 +959,26 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         metric.effective_input_limit_tokens = hardLimitTokens;
       }
       let compactionExpanded = false;
+      const reuseBudgetPrefix = () => {
+        if (route.provider === 'openai' || directResponses || !autoBudgetHandoff) return;
+        const reused = expandHistory.reuseBudget(body, handoffOptions);
+        if (!reused) return;
+        const preview = JSON.stringify(routedBody(reused, route, maxRequestBytes));
+        const threshold = softLimitTokens > 0
+          ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
+        if (threshold > 0 && estimateInputTokens(preview) <= threshold && Buffer.byteLength(preview) <= maxForwardedBytes) {
+          body = reused;
+          metric.budget_prefix_cache = 'hit';
+          compactionExpanded = true;
+        }
+      };
       if (selectedSummaryUnsupported && Array.isArray(body.input)
           && body.input.some(item => item.type === 'compaction')) {
         metric.stage = 'handoff_rejected';
         fail(response, 422, 'history_mode_summary_unsupported', WHATSTOKEN_SUMMARY_UNSUPPORTED);
         return;
       }
-      if (route.provider !== "openai" && !directResponses && autoBudgetHandoff) {
-        const reused = expandHistory.reuseBudget(body, handoffOptions);
-        if (reused) {
-          const preview = JSON.stringify(routedBody(reused, route, maxRequestBytes));
-          const threshold = softLimitTokens > 0
-            ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
-          if (threshold > 0 && estimateInputTokens(preview) <= threshold && Buffer.byteLength(preview) <= maxBytes) {
-            body = reused;
-            metric.budget_prefix_cache = "hit";
-            compactionExpanded = true;
-          }
-        }
-      }
+      reuseBudgetPrefix();
       if (!compactionExpanded && route.provider !== "openai" && (!directResponses || mode !== 'openai') && Array.isArray(body.input) && body.input.some((item) => item.type === "compaction")) {
         if (mode === 'ask') {
           fail(response, 422, 'history_mode_confirmation_required', HISTORY_MODES.ask.notice + modeHelp); return;
@@ -870,7 +987,6 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           fail(response, 422, "summary_model_required", "圧縮履歴の引き継ぎに使うOpenAIモデルがカタログにありません");
           return;
         }
-        if (!selected) providerNotices.push(HISTORY_MODES.openai.notice);
         metric.stage = "handoff";
         const summaryStart = performance.now();
         try {
@@ -886,6 +1002,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             if (cached) {
               body = { ...body, input: [...cached, ...sourceSuffix] };
               metric.history_source = 'portable_prefix_cache';
+              metric.summary_cache = 'hit';
             } else {
               const restored = await restoreHistory(body, { root: codexRoot, threadId: handoffOptions.threadId, signal: abort.signal });
               if (Buffer.byteLength(JSON.stringify(restored.body)) > 8 * 1024 * 1024) {
@@ -895,40 +1012,55 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
                 if (routes.get(summaryModel)?.provider !== 'openai' || !summaryHeaders.authorization) {
                   throw new HandoffError('大きな既存履歴の引き継ぎにはOpenAI形式のcheckpoint読み取りが必要です。認証と要約モデルを確認してください。元ログは保持しています。');
                 }
-                body = await expandCompaction(body, nativeHandoffOptions);
+                body = await expandCompaction(body, { ...nativeHandoffOptions,
+                  observe: ({ cache }) => {
+                    metric.summary_cache = cache;
+                    handoffStatus.observe(cache, 'handoff');
+                    if (cache !== 'hit') providerNotices.push(HISTORY_MODES.openai.notice);
+                  } });
                 metric.history_source = 'native_checkpoint';
-                providerNotices.push(HISTORY_MODES.openai.notice);
               } else {
                 body = restored.body;
                 restoredPlan = { prefixEnd: restored.prefixEnd };
                 metric.history_source = 'owner_rollout';
               }
             }
-            if (metric.history_source !== 'native_checkpoint') providerNotices.push(HISTORY_MODES.selected.notice);
           }
           const threshold = softLimitTokens > 0
             ? Math.min(softLimitTokens, hardLimitTokens) : hardLimitTokens;
-          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
+          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxForwardedBytes);
           const preview = JSON.stringify(routedBody(body, route, maxRequestBytes));
           const extend = autoBudgetHandoff && hardLimitTokens > 0
             && plan.prefixEnd > body.input.findLastIndex((item) => item.type === "compaction") + 1
-            && (estimateInputTokens(preview) > threshold || Buffer.byteLength(preview) > maxBytes);
+            && (estimateInputTokens(preview) > threshold || Buffer.byteLength(preview) > maxForwardedBytes);
           if (extend) metric.budget_compaction_extended = true;
           if (extend && plan.preserveRecentUsers) metric.budget_intra_turn = true;
           if (!selected || restoredPlan) {
             body = await expandHistory(body, { ...handoffOptions, ...(extend ? plan : {}), ...restoredPlan,
-              observe: ({ cache }) => { metric.summary_cache = cache; handoffStatus.observe(cache, extend ? "budget" : "handoff"); } });
-            if (selected && restoredCacheKey && !abort.signal.aborted) {
-              const prefix = body.input.slice(0, body.input.length - sourceSuffix.length);
-              if (Buffer.byteLength(JSON.stringify(prefix)) <= 65536) {
-                if (restoredSummaries.size >= 32) restoredSummaries.delete(restoredSummaries.keys().next().value);
-                restoredSummaries.set(restoredCacheKey, prefix);
-              }
+              observe: ({ cache }) => {
+                metric.summary_cache = cache;
+                handoffStatus.observe(cache, extend ? "budget" : "handoff");
+                if (cache !== 'hit') providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
+              } });
+            // Selected restoration summarizes only the checkpoint prefix; its
+            // untouched tool suffix may still need the separate budget pass.
+            compactionExpanded = !selected;
+          }
+          // Both owner-rollout summaries and decoded native checkpoints are
+          // portable prefixes. Reuse them before re-reading a multi-day log.
+          if (selected && restoredCacheKey && !abort.signal.aborted) {
+            const prefix = body.input.slice(0, body.input.length - sourceSuffix.length);
+            if (Buffer.byteLength(JSON.stringify(prefix)) <= 65536) {
+              if (restoredSummaries.size >= 32) restoredSummaries.delete(restoredSummaries.keys().next().value);
+              restoredSummaries.set(restoredCacheKey, prefix);
             }
-            compactionExpanded = true;
           }
         } finally { metric.summary_ms = Math.round(performance.now() - summaryStart); }
       }
+      // Budget summaries made from a restored checkpoint cannot match the
+      // opaque wire input. Match that same restored representation before
+      // advancing the boundary and paying for another summary on every tool.
+      if (!compactionExpanded && metric.history_source) reuseBudgetPrefix();
       const suffix = nativeTool ? path.slice(3) : path.endsWith("/compact") ? "/responses/compact" : "/responses";
       let routed;
       let routedObject;
@@ -943,13 +1075,13 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           metric.budget_limit_clamped = true;
         }
         if (route.provider !== "openai" && !directResponses && autoBudgetHandoff && hardLimitTokens > 0
-            && (initialTokens > threshold || initialBytes > maxBytes) && !compactionExpanded) {
+            && (initialTokens > threshold || initialBytes > maxForwardedBytes) && !compactionExpanded) {
           if (mode === 'ask') {
             fail(response, 422, 'history_mode_confirmation_required', HISTORY_MODES.ask.notice + modeHelp); return;
           }
           metric.budget_initial_tokens = initialTokens;
           metric.budget_initial_bytes = initialBytes;
-          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxBytes);
+          const plan = budgetHandoffPlan(body, route, maxRequestBytes, threshold, maxForwardedBytes);
           const { prefixEnd, minimum, minimumBytes } = plan;
           if (prefixEnd > 0 && prefixEnd < body.input.length) {
             if (selectedSummaryUnsupported) {
@@ -958,24 +1090,62 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
               fail(response, 422, 'history_mode_summary_unsupported', WHATSTOKEN_SUMMARY_UNSUPPORTED);
               return;
             }
-            if (minimum < hardLimitTokens && minimumBytes < maxBytes && (selected || routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization)) {
+            if (minimum < hardLimitTokens && minimumBytes < maxForwardedBytes && (selected || routes.get(summaryModel)?.provider === "openai" && summaryHeaders.authorization)) {
               metric.stage = "budget_handoff";
-              providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
               if (plan.preserveRecentUsers) metric.budget_intra_turn = true;
               const summaryStart = performance.now();
               try {
                 body = await expandHistory(body, { ...handoffOptions, ...plan,
-                  observe: ({ cache }) => { metric.budget_summary_cache = cache; handoffStatus.observe(cache, "budget"); } });
+                  observe: ({ cache }) => {
+                    metric.budget_summary_cache = cache;
+                    handoffStatus.observe(cache, "budget");
+                    if (cache !== 'hit') providerNotices.push(HISTORY_MODES[selected ? 'selected' : 'openai'].notice);
+                  } });
               } finally { metric.budget_summary_ms = Math.round(performance.now() - summaryStart); }
-              routedObject = routedBody(body, route, maxBytes);
+              routedObject = routedBody(body, route, maxForwardedBytes);
               routed = JSON.stringify(routedObject);
-              if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
+              if (Buffer.byteLength(routed) > maxForwardedBytes) throw new RangeError("expanded request too large");
               metric.budget_recovered = estimateInputTokens(routed) <= hardLimitTokens;
-            } else metric.budget_recovery_skipped = minimum >= hardLimitTokens || minimumBytes >= maxBytes ? "protected_input_too_large"
+            } else metric.budget_recovery_skipped = minimum >= hardLimitTokens || minimumBytes >= maxForwardedBytes ? "protected_input_too_large"
               : !summaryHeaders.authorization ? "summary_auth_missing" : "summary_model_missing";
           } else metric.budget_recovery_skipped = "no_completed_history";
         }
-        if (Buffer.byteLength(routed) > maxBytes) throw new RangeError("expanded request too large");
+        // Either history recovery or the budget pass may have recorded a
+        // provider limit. Select an available route before the first answer send.
+        if (metric.auto_fallback && route.commonModel && !getFallbackState().available(route.provider)) {
+          const state = getFallbackState();
+          let replacement;
+          let key;
+          while (fallbackRoutes.length && !key) {
+            const candidate = fallbackRoutes.shift();
+            if (!state.available(candidate.provider)) continue;
+            key = candidate.provider === 'opencode' ? bridgeKey() : manualKey(candidate.provider);
+            if (key) replacement = candidate;
+          }
+          if (!replacement) {
+            const earliest = state.earliestUnblockAt(SHARED_PROVIDERS);
+            if (earliest && !response.headersSent) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
+            fail(response, 429, "provider_limits_exhausted", "選択モデルの提供元が一時制限または利用枠制限中です。履歴は保持しています。");
+            return;
+          }
+          const isGo = replacement.provider === 'opencode';
+          if (!isGo) {
+            const guarded = manualGuard.check(cliThreadId(body, request.headers));
+            if (!guarded.allowed) {
+              if (!response.headersSent) response.setHeader("retry-after", String(guarded.retryAfterSeconds));
+              fail(response, 429, "rate_limit_exceeded", "この会話の手動プロバイダー要求が1分間に40回を超えました。しばらく待って再試行してください");
+              return;
+            }
+          }
+          route = replacement;
+          headers = { 'content-type': 'application/json', accept: 'text/event-stream, application/json',
+            ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: 'Bearer ' + key }) };
+          destination = isGo ? bridge.href.replace(/\/$/, '') : CHAT_PROVIDERS[route.provider].base;
+          metric.provider = route.provider;
+          routedObject = routedBody(body, route, maxForwardedBytes);
+          routed = JSON.stringify(routedObject);
+        }
+        if (Buffer.byteLength(routed) > maxForwardedBytes) throw new RangeError("expanded request too large");
       } catch (error) {
         if (!(error instanceof RangeError)) throw error;
         metric.input_limit_reason = "forwarded_bytes";
@@ -1021,7 +1191,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           candidateRoute.provider === 'whatstoken' ? [
             ...Object.keys(CHAT_PROVIDERS).map(manualKey), bridgeKey(), openCodeKey(),
             request.headers.authorization?.replace(/^Bearer /i, ''),
-          ] : []); }
+          ] : [], candidateRoute.commonModel, details => Object.assign(metric, details), { maxForwardedBytes }); }
           catch (error) {
             if (error instanceof ToolSearchError || candidateRoute.provider !== 'whatstoken' || options.signal?.aborted) throw error;
             return Response.json({ error: { code: 'whatstoken_unavailable' } }, { status: 503 });
@@ -1093,7 +1263,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
             metric.provider_request_rejected_status = upstream.status;
           }
           if (route.provider === 'whatstoken') freeGate.unavailable?.();
-          providerNotices.push(requestRejection ? 'Command Codeが要求形式を受け付けなかったため、次の設定済み提供元を試します。'
+          if (!route.commonModel) providerNotices.push(requestRejection ? 'Command Codeが要求形式を受け付けなかったため、次の設定済み提供元を試します。'
             : transient ? `${route.provider}が一時制限中のため、別の提供元へ切り替えます。` : route.provider === 'whatstoken'
             ? 'WhatsTokenの無料経路が利用できないため、既存の提供元へ切り替えます。' + providerHelp('whatstoken')
             : `提供元の利用枠を確認してください。${providerHelp(route.provider)}`);
@@ -1281,14 +1451,23 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
       await pipeline(...streams, sink, { signal: abort.signal });
       metric.upstream_stream_ms = Math.round(performance.now() - streamStart);
       metric.stage = "complete";
+      if (metric.provider_response_status === 'failed') terminationReason = 'provider_response_failed';
     } catch (error) {
       terminationReason ??= metric.stage === "upstream_stream" ? "upstream_stream_error" : "upstream_error";
       const safeCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_SOCKET",
         "ERR_STREAM_PREMATURE_CLOSE", "ERR_STREAM_DESTROYED", "ABORT_ERR"]);
       const errorCode = [error?.code, error?.cause?.code].find(code => safeCodes.has(code));
       if (errorCode && !terminationReason.startsWith("client_")) metric.transport_error_code = errorCode;
+      if (!terminationReason.startsWith('client_')) {
+        const kinds = new Set(['TypeError', 'SyntaxError', 'RangeError', 'Error', 'ProtocolError', 'ToolSearchError']);
+        metric.failure_error_class = kinds.has(error?.constructor?.name) ? error.constructor.name : 'OtherError';
+      }
       const timeout = terminationReason === "deadline_exceeded";
-      if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, error instanceof ToolSearchError ? 422 : error instanceof HandoffError && error.status === 422 ? 422 : timeout ? 504 : 502,
+      if (error instanceof RolloutHistoryError) metric.history_restore_reason = error.reason;
+      if (error instanceof HandoffError && error.status === 429 && !response.headersSent && error.retryAfterSeconds) {
+        response.setHeader('retry-after', String(error.retryAfterSeconds));
+      }
+      if (!response.destroyed && !terminationReason.startsWith("client_")) fail(response, error instanceof ToolSearchError ? 422 : error instanceof HandoffError && [422, 429].includes(error.status) ? error.status : timeout ? 504 : 502,
         error instanceof ToolSearchError ? "unsupported_tool_search" : error instanceof HandoffError ? "compaction_handoff_failed" : timeout ? "request_timeout" : terminationReason,
         error instanceof ToolSearchError ? error.message : error instanceof HandoffError ? error.message : timeout ? "応答の待機がタイムアウトしました" : "転送先への接続が中断されました");
     } finally {
@@ -1313,12 +1492,17 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const catalog = JSON.parse(readFileSync(join(root, "unified-model-catalog.json"), "utf8"));
-  const catalogProvider = createLiveCatalog({ initial: catalog,
+  const saveSharedCatalog = candidate => writeFileAtomic(join(root, 'shared-model-catalog.json'),
+    JSON.stringify(publicCommonCatalog(candidate), null, 2), 0o600);
+  saveSharedCatalog(commonCatalog(catalog));
+  const catalogProvider = createLiveCatalog({ initial: catalog, onUpdate: saveSharedCatalog,
     seed: JSON.parse(readFileSync(new URL("./models.json", import.meta.url), "utf8")).models,
-    key: readOpenCodeKey, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
+    key: readOpenCodeKey, commonModelsEnabled: true, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
   const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
     summaryModel: process.env.CODEX_SUMMARY_MODEL ?? "gpt-6-luna",
-    catalogProvider, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
+    maxForwardedBytes: inputBytesEnv("ROUTER_MAX_FORWARDED_BYTES", DEFAULT_INPUT_BYTES),
+    maxRequestBytes: inputBytesEnv("ROUTER_MAX_REQUEST_BYTES", DEFAULT_INPUT_BYTES),
+    catalogProvider, commonModelsEnabled: true, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
     cliModelSyncEnabled: process.env.CODEX_CLI_MODEL_SYNC !== "0",
     onMetric: (metric) => console.log(JSON.stringify(metric)) });
   server.listen(Number(process.env.ROUTER_PORT ?? 8790), "127.0.0.1", () => {

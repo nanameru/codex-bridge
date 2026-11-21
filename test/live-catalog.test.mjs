@@ -4,6 +4,8 @@ import { once } from "node:events";
 import { createLiveCatalog, discoveredModels, boundedJSON } from "../src/live-catalog.mjs";
 import { createRouter } from "../src/model-router.mjs";
 import { codexHomeId } from "../src/local-security.mjs";
+import { manualModels, automaticModels } from "../src/manual-providers.mjs";
+import { ProviderFallbackState } from "../src/provider-fallback.mjs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,6 +180,72 @@ test("a cached client model can refresh a restarted router before model/list run
  assert.equal(missing.status, 400); await missing.text(); assert.equal(forwarded.length, 1);
 });
 
+test("a restarted router rediscovers a cached shared ID without registering unknown shared IDs", async context => {
+ const model = "deepseek-v4-pro";
+ const f = setup({ commonModelsEnabled: true }); f.ids([model]);
+ const forwarded = [];
+ const router = createRouter({ catalog: initial, catalogProvider: f.live, commonModelsEnabled: true,
+  authenticate: () => true, bridgeKey: () => "INTERNAL",
+  fetcher: async (_url, init) => { forwarded.push(JSON.parse(init.body)); return Response.json({ status: "completed", output: [] }); } });
+ router.listen(0, "127.0.0.1"); await once(router, "listening");
+ context.after(() => { router.closeAllConnections(); router.close(); });
+ const base = "http://127.0.0.1:" + router.address().port;
+ const send = model => fetch(base + "/v1/responses", { method: "POST", headers: { ...headers, version: "0.164.0" },
+  body: JSON.stringify({ model, input: "continue" }) });
+ assert.equal((await (await fetch(base + "/health")).json()).model_ids.includes("shared/" + model), false);
+ assert.equal((await send("shared/" + model)).status, 200);
+ const missing = await send("shared/never-provided");
+ assert.equal(missing.status, 400);
+ assert.equal((await missing.json()).error.type, "unknown_model");
+ assert.deepEqual(forwarded.map(body => body.model), [model]);
+});
+
+test("shared publishing preserves fixed model routing at startup and after catalog refresh", async context => {
+ const flash = "deepseek-v4.1-flash";
+ const shared = "shared/" + flash;
+ const fixed = ["commandcode/" + flash, "ollama/" + flash, "opencode/old"];
+ const catalog = { models: [...initial.models, { slug: "opencode/" + flash, router_provider: "opencode", router_model: flash }] };
+ const f = setup({ commonModelsEnabled: true }); f.ids([flash]);
+ const destinations = [];
+ const router = createRouter({ catalog, catalogProvider: f.live, commonModelsEnabled: true,
+  manualProvidersEnabled: true, autoProviderFallback: true, authenticate: () => true,
+  providerFallbackState: new ProviderFallbackState(),
+  bridgeKey: () => "INTERNAL", manualKey: () => "MANUAL",
+  fetcher: async (url, init) => {
+   destinations.push([new URL(url).hostname, JSON.parse(init.body).model]);
+   return Response.json(url.endsWith("/chat/completions")
+    ? { choices: [{ message: { content: "answer" }, finish_reason: "stop" }] }
+    : { status: "completed", output: [] });
+  } });
+ router.listen(0, "127.0.0.1"); await once(router, "listening");
+ context.after(() => { router.closeAllConnections(); router.close(); });
+ const base = "http://127.0.0.1:" + router.address().port;
+ const send = model => fetch(base + "/v1/responses", { method: "POST", headers,
+  body: JSON.stringify({ model, input: "continue" }) });
+ for (const refresh of [false, true]) {
+  if (refresh) {
+   const response = await fetch(base + "/codex/models?client_version=0.164.0", { headers });
+   assert.equal(response.status, 200);
+   assert.deepEqual((await response.json()).models.map(model => model.slug), ["gpt-test", shared]);
+  }
+  for (const model of [...fixed.filter(model => !refresh || model !== "opencode/old"), shared]) {
+   const response = await send(model);
+   assert.equal(response.status, 200, await response.text());
+  }
+ }
+ f.clock(101); f.fail(true);
+ const stale = await fetch(base + "/codex/models?client_version=0.164.0", { headers });
+ assert.equal(stale.status, 200); await stale.text();
+ for (const model of ["opencode/old", "old"]) {
+  const removed = await send(model);
+  assert.equal(removed.status, 400);
+  assert.equal((await removed.json()).error.type, "unknown_model");
+ }
+ const manual = [["api.commandcode.ai", "deepseek/" + flash], ["ollama.com", flash]];
+ assert.deepEqual(destinations, [...manual, ["127.0.0.1", "old"], ["127.0.0.1", flash],
+  ...manual, ["127.0.0.1", flash]]);
+});
+
 test("health reports which CODEX_HOME the catalog authenticates against without exposing credentials", async context => {
  const root = mkdtempSync(join(tmpdir(), "catalog-auth-")); context.after(() => rmSync(root, { recursive: true, force: true }));
  for (const [catalogProvider, ready] of [[setup().live, false], [setup().live, true], [undefined, true]]) {
@@ -188,4 +256,87 @@ test("health reports which CODEX_HOME the catalog authenticates against without 
   assert.deepEqual(health.catalog_auth, catalogProvider ? { codex_home: codexHomeId(root), ready } : undefined);
   assert.ok(!JSON.stringify(health).includes(root));
  }
+});
+
+test("disabled manual providers cannot be chosen from saved IDs or shared aliases", async context => {
+ const flash = "deepseek-v4.1-flash";
+ const catalog = { models: [...initial.models,
+  { slug: "opencode/" + flash, router_provider: "opencode", router_model: flash },
+  ...manualModels(), ...automaticModels({ whatstoken: true })] };
+ for (const commonModelsEnabled of [true, false]) {
+  const calls = [];
+  const router = createRouter({ catalog, commonModelsEnabled, manualProvidersEnabled: false,
+   whatstokenFreeEnabled: true, autoProviderFallback: true, authenticate: () => true,
+   bridgeKey: () => "INTERNAL", manualKey: () => assert.fail("manual key must not be read"),
+   fetcher: async (url, init) => {
+    calls.push([new URL(url).hostname, JSON.parse(init.body).model]);
+    return Response.json({ status: "completed", output: [] });
+   } });
+  router.listen(0, "127.0.0.1"); await once(router, "listening");
+  context.after(() => { router.closeAllConnections(); router.close(); });
+  const send = model => fetch("http://127.0.0.1:" + router.address().port + "/v1/responses", {
+   method: "POST", headers, body: JSON.stringify({ model, input: "resume" }) });
+  for (const model of ["commandcode/" + flash, "commandcode/deepseek/" + flash,
+   "ollama/" + flash, "auto-commandcode/" + flash]) {
+   const response = await send(model);
+   assert.equal(response.status, 400);
+   assert.equal((await response.json()).error.type, "unknown_model");
+  }
+  assert.deepEqual(calls, []);
+  const response = await send("auto-whatstoken/" + flash);
+  assert.equal(response.status, 200); await response.text();
+  assert.deepEqual(calls, [["127.0.0.1", flash]]);
+ }
+});
+
+test("hidden fixed models do not consume the public catalog response budget", async () => {
+ const f = setup({ commonModelsEnabled: true, fetcher: async url => {
+  if (url.includes("chatgpt.com")) return Response.json({ models: [{ slug: "gpt-test", base_instructions: "x".repeat(1048000) }] });
+  if (url.includes("models.dev")) return Response.json({});
+  if (url.includes("opencode.ai")) return Response.json({ data: [{ id: "old" }] });
+  return Response.json({ data: [{ id: "unmatched", context_length: 128000, supported_endpoints: ["/chat/completions"] }] });
+ } });
+ const result = await f.live.get(headers, "0.164.0");
+ assert.equal(result.models.length, 1);
+ assert.equal(result.fixedModels[0].slug, "opencode/old");
+ assert.ok(Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024);
+});
+
+test("a limit learned during a shared input-budget summary changes the first answer destination", async context => {
+ const model = "deepseek-v4-pro";
+ const catalog = { models: [...initial.models, {
+  slug: "opencode/" + model, router_provider: "opencode", router_model: model,
+ }] };
+ const calls = [];
+ const router = createRouter({ catalog, commonModelsEnabled: true, manualProvidersEnabled: true,
+  autoProviderFallback: true, autoBudgetHandoff: true, historyMode: "selected",
+  opencodeSoftLimitTokens: 500, opencodeHardLimitTokens: 2000,
+  authenticate: () => true, bridgeKey: () => "INTERNAL", manualKey: () => "COMMAND",
+  providerFallbackState: new ProviderFallbackState(), fetcher: async (url, init) => {
+   const hostname = new URL(url).hostname;
+   const wire = JSON.parse(init.body);
+   calls.push({ hostname, headers: init.headers, wire });
+   if (hostname === "127.0.0.1") return Response.json({ error: { code: "weekly_limit_exceeded" } }, { status: 429 });
+   if (wire.stream) {
+    const chunk = { choices: [{ index: 0, delta: { content: "summary" }, finish_reason: "stop" }] };
+    return new Response("data: " + JSON.stringify(chunk) + "\n\ndata: [DONE]\n\n",
+     { headers: { "content-type": "text/event-stream" } });
+   }
+   return Response.json({ choices: [{ message: { content: "answer" }, finish_reason: "stop" }] });
+  } });
+ router.listen(0, "127.0.0.1"); await once(router, "listening");
+ context.after(() => { router.closeAllConnections(); router.close(); });
+ const response = await fetch("http://127.0.0.1:" + router.address().port + "/v1/responses", {
+  method: "POST", headers, body: JSON.stringify({
+   model: "shared/" + model, input: [{ role: "user", content: "x".repeat(4000) },
+    { role: "assistant", content: "old answer" }, { role: "user", content: "latest" }],
+  }) });
+ const result = await response.text();
+ assert.equal(response.status, 200, result);
+ assert.match(result, /answer/);
+ assert.deepEqual(calls.map(call => call.hostname), ["127.0.0.1", "api.commandcode.ai", "api.commandcode.ai"]);
+ assert.match(JSON.stringify(calls[1].wire), /Produce only/);
+ assert.match(JSON.stringify(calls[2].wire), /summary.*latest/);
+ assert.equal(calls[2].headers.authorization, "Bearer COMMAND");
+ assert.equal(calls[2].wire.model, "deepseek/" + model);
 });

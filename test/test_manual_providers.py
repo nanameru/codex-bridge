@@ -105,14 +105,17 @@ if(!health.model_ids.includes(id))throw new Error('packaged runtime missing '+id
             module.install_models(root)
             self.assertIn('auto-whatstoken/deepseek-v4.1-flash', [m['slug'] for m in json.loads(catalog.read_text())['models']])
 
-    def test_runtime_preserves_existing_manual_provider_opt_out(self):
+    def test_runtime_exposes_only_shared_models_with_either_manual_provider_flag(self):
         import socket
         import time
         import urllib.request
         for flag in ['0', '1']:
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                (root / 'unified-model-catalog.json').write_text(json.dumps({'models': [{'slug': 'gpt-test', 'router_provider': 'openai'}]}))
+                (root / 'unified-model-catalog.json').write_text(json.dumps({'models': [
+                    {'slug': 'gpt-test', 'router_provider': 'openai'},
+                    {'slug': 'opencode/deepseek-v4.1-flash', 'router_provider': 'opencode', 'router_model': 'deepseek-v4.1-flash'},
+                ]}))
                 with socket.socket() as listener:
                     listener.bind(('127.0.0.1', 0))
                     port = listener.getsockname()[1]
@@ -131,7 +134,12 @@ if(!health.model_ids.includes(id))throw new Error('packaged runtime missing '+id
                             if process.poll() is not None or time.monotonic() >= deadline:
                                 self.fail('isolated router did not start')
                             time.sleep(0.05)
-                    self.assertEqual('commandcode/deepseek-v4.1-flash' in health['model_ids'], flag == '1')
+                    expected = ['gpt-test', 'shared/deepseek-v4.1-flash']
+                    self.assertEqual(health['model_ids'], expected)
+                    self.assertEqual(health['request_limits'], dict.fromkeys(
+                        ['received_bytes', 'decoded_bytes', 'forwarded_bytes'], 128 * 1024 * 1024))
+                    shared_catalog = json.loads((root / 'shared-model-catalog.json').read_text())
+                    self.assertEqual([model['slug'] for model in shared_catalog['models']], expected)
                     self.assertFalse(health['whatstoken_free']['enabled'])
                 finally:
                     process.terminate()

@@ -240,17 +240,14 @@ test('全社が空本文402でも状態を記録する', async t => {
 });
 
 test('前候補の小さいcontextを次候補の入力上限へ引き継がない', async t => {
-  const { manualModels } = await import('../src/manual-providers.mjs');
   const f = await fixture(t, p => p === 'ollama' ? answer(p) : quota(), {
-    manualProvidersEnabled: false, autoProviderFallback: true, opencodeHardLimitTokens: 100000,
-    catalog: { models: [...catalog.models, ...manualModels().map(m => ({ ...m,
-      context_window: m.router_provider === 'commandcode' ? 4000 : 8000 }))] },
+    manualProvidersEnabled: true, autoProviderFallback: true, opencodeHardLimitTokens: 1000000,
   });
   const r = await f.send({ max_output_tokens: 100 });
   assert.equal(r.status, 200); await r.text();
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(f.calls.map(c => c.provider), ['opencode','commandcode','ollama']);
-  assert.equal(f.metrics.at(-1).effective_input_limit_tokens, 7500);
+  assert.equal(f.metrics.at(-1).effective_input_limit_tokens, Math.floor(MANUAL_PROVIDERS.ollama.context * 0.95) - 100);
 });
 
 test('CLI同期で再選択したOpenCodeにも通常経路の制限を適用し直接APIを使わない', async t => {
@@ -292,4 +289,37 @@ test('自動用Command Code/Ollamaの選択IDでもチェーンを維持し上�
   f.advance(61000);
   await (await f.send({model:'auto-ollama/deepseek-v4.1-flash'})).text();
   assert.equal(f.calls.at(-1).provider,'opencode');
+});
+
+test('要約進捗を送った後も切替先の頻度制限をSSEで伝える', async t => {
+  const thread = { client_metadata: { thread_id: 'a7731277-dbd6-4d4d-aeba-642b11cc765b' } };
+  const f = await fixture(t, async (provider, call) => {
+    if (provider === 'opencode') {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return quota('weekly');
+    }
+    if (!call.body.stream) return answer(provider);
+    const chunk = { choices: [{ index: 0, delta: { content: 'summary' }, finish_reason: 'stop' }] };
+    return new Response('data: ' + JSON.stringify(chunk) + '\n\ndata: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } });
+  }, { commonModelsEnabled: true, historyMode: 'selected', autoBudgetHandoff: true,
+    opencodeSoftLimitTokens: 500, opencodeHardLimitTokens: 2000, handoffStatusDelayMs: 1 });
+
+  for (let request = 0; request < 38; request++) {
+    const response = await f.send({ ...thread, model: 'commandcode/deepseek-v4.1-flash' });
+    assert.equal(response.status, 200);
+    await response.text();
+  }
+  f.calls.length = 0;
+  const response = await f.send({ ...thread, model: 'shared/deepseek-v4.1-flash', stream: true, input: [
+    { role: 'user', content: 'x'.repeat(4000) }, { role: 'assistant', content: 'old answer' },
+    { role: 'user', content: 'latest' },
+  ] });
+  assert.equal(response.status, 200);
+  const result = await response.text();
+  assert.match(result, /会話履歴を要約中/);
+  assert.match(result, /event: response.failed/);
+  assert.match(result, /rate_limit_exceeded \(HTTP 429\)/);
+  assert.doesNotMatch(result, /転送先への接続が中断/);
+  assert.deepEqual(f.calls.map(call => call.provider), ['opencode', 'commandcode']);
 });

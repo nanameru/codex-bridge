@@ -136,6 +136,17 @@ test('raw restore stops on missing history, wrong IDs, forks, rollback, malforme
   }
 });
 
+test('a child-local checkpoint still refuses raw restore without verified fork lineage', async t => {
+  const f = await fixture(t);
+  const path = rollout(f.root, { meta: { forked_from_id: '01a1777d-4508-72a1-9dbe-dcd799f71111' } });
+  const original = readFileSync(path, 'utf8');
+  const response = await f.send();
+  assert.equal(response.status, 422);
+  assert.match(await response.text(), /分岐/);
+  assert.deepEqual(f.calls, []);
+  assert.equal(readFileSync(path, 'utf8'), original);
+});
+
 test('default selected mode reconstructs opaque history and calls only the selected external model', async t => {
   const f = await fixture(t); const path = rollout(f.root), original = readFileSync(path, 'utf8');
   const response = await f.send(); const text = await response.text();
