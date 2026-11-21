@@ -1124,7 +1124,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           }
           if (!replacement) {
             const earliest = state.earliestUnblockAt(SHARED_PROVIDERS);
-            if (earliest) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
+            if (earliest && !response.headersSent) response.setHeader("retry-after", String(Math.max(1, Math.ceil((earliest - state.now()) / 1000))));
             fail(response, 429, "provider_limits_exhausted", "選択モデルの提供元が一時制限または利用枠制限中です。履歴は保持しています。");
             return;
           }
@@ -1132,7 +1132,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           if (!isGo) {
             const guarded = manualGuard.check(cliThreadId(body, request.headers));
             if (!guarded.allowed) {
-              response.setHeader("retry-after", String(guarded.retryAfterSeconds));
+              if (!response.headersSent) response.setHeader("retry-after", String(guarded.retryAfterSeconds));
               fail(response, 429, "rate_limit_exceeded", "この会話の手動プロバイダー要求が1分間に40回を超えました。しばらく待って再試行してください");
               return;
             }
