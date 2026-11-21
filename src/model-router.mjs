@@ -206,9 +206,9 @@ function envLimit(name, fallback) {
 // Finite local safety ceiling, not a guarantee about any upstream provider.
 const INPUT_BYTES_CEILING = 512 * 1024 * 1024;
 const DEFAULT_INPUT_BYTES = 128 * 1024 * 1024;
-function inputBytesEnv(name) {
+function inputBytesEnv(name, fallback) {
   const raw = process.env[name];
-  if (raw === undefined) return DEFAULT_INPUT_BYTES;
+  if (raw === undefined) return fallback;
   if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be a positive integer in bytes`);
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < 1 || value > INPUT_BYTES_CEILING) {
@@ -275,8 +275,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
-  maxForwardedBytes = inputBytesEnv("ROUTER_MAX_FORWARDED_BYTES"),
-  maxRequestBytes = inputBytesEnv("ROUTER_MAX_REQUEST_BYTES"),
+  maxForwardedBytes = inputBytesEnv("ROUTER_MAX_FORWARDED_BYTES", maxBytes),
+  maxRequestBytes = inputBytesEnv("ROUTER_MAX_REQUEST_BYTES", maxBytes * 4),
   whatstokenFreeEnabled = process.env.CODEX_WHATSTOKEN_FREE === "1", whatstokenFreeGate,
   manualProvidersEnabled = false, manualKey = provider => readManualKey(provider, codexRoot),
   cliModelSync, cliModelSyncEnabled = false, commonModelsEnabled = false,
@@ -416,6 +416,7 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
         live_catalog: Boolean(catalogProvider),
         catalog_auth: catalogProvider ? { codex_home: codexHomeId(codexRoot), ready: catalogAuthReady() } : undefined,
         summary_model: summaryModel, history_mode: activeHistoryMode,
+        summary_limit_until: summaryLimitWindow.latestUntil(),
         whatstoken_free: { enabled: whatstokenFreeEnabled, configured: Boolean(manualKey('whatstoken')) },
         request_limits: { received_bytes: maxRequestBytes, decoded_bytes: maxRequestBytes, forwarded_bytes: maxForwardedBytes },
         history_transport: allowDirectResponses ? "model" : "chat",
@@ -1468,6 +1469,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     key: readOpenCodeKey, commonModelsEnabled: true, onStatus: status => console.log(JSON.stringify({ event: "catalog_refresh", status })) });
   const server = createRouter({ catalog, bridgeBase: process.env.BRIDGE_BASE ?? "http://127.0.0.1:8788/v1",
     summaryModel: process.env.CODEX_SUMMARY_MODEL ?? "gpt-6-luna",
+    maxForwardedBytes: inputBytesEnv("ROUTER_MAX_FORWARDED_BYTES", DEFAULT_INPUT_BYTES),
+    maxRequestBytes: inputBytesEnv("ROUTER_MAX_REQUEST_BYTES", DEFAULT_INPUT_BYTES),
     catalogProvider, commonModelsEnabled: true, manualProvidersEnabled: process.env.CODEX_MANUAL_PROVIDERS !== "0",
     cliModelSyncEnabled: process.env.CODEX_CLI_MODEL_SYNC !== "0",
     onMetric: (metric) => console.log(JSON.stringify(metric)) });

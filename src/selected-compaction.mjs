@@ -108,6 +108,8 @@ export class SummaryLimitWindow {
     for (const [key, until] of this.windows) if (until <= now) this.windows.delete(key);
   }
   blocked(key = "") { this.prune(); return (this.windows.get(key) ?? 0) > this.now(); }
+  /** Latest reset time across accounts, for the owner-local status display only. */
+  latestUntil() { this.prune(); return this.windows.size ? Math.max(...this.windows.values()) : null; }
   record(key = "", until) {
     if (!Number.isFinite(until) || until <= this.now()) return;
     this.prune();
