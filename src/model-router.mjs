@@ -274,6 +274,8 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
   catalogAuthReady = () => diagnoseCodexAuth(codexRoot).ok,
   bridgeKey = () => readBridgeKey(codexRoot),
   openCodeBase = "https://opencode.ai/inference/go/openai/v1", openCodeKey = readOpenCodeKey,
+  // Reply buffering and selected-model summaries retain a separate 32 MiB
+  // budget. Request limits may be larger without increasing that budget.
   nativeBase, allowTestOrigins = false, allowDirectResponses = false, maxBytes = 32 * 1024 * 1024, timeoutMs = 300000,
   maxForwardedBytes = inputBytesEnv("ROUTER_MAX_FORWARDED_BYTES", maxBytes),
   maxRequestBytes = inputBytesEnv("ROUTER_MAX_REQUEST_BYTES", maxBytes * 4),
@@ -677,11 +679,11 @@ export function createRouter({ catalog, bridgeBase = "http://127.0.0.1:8788/v1",
           const isGo = candidate.provider === "opencode";
           const manualProvider = CHAT_PROVIDERS[candidate.provider];
           const key = isGo ? bridgeKey() : manualProvider && candidate.provider !== "whatstoken" ? manualKey(candidate.provider) : null;
-          // The shared chain checks each provider's own key itself.
+          // The shared chain supplies its own headers when it selects a provider.
           if (!key && !sharedChain) continue;
           const target = { destination: isGo || !manualProvider ? bridge.href.replace(/\/$/, "") : manualProvider.base,
             headers: { "content-type": "application/json", accept: "text/event-stream, application/json",
-              ...(isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: "Bearer " + key }) } };
+              ...(sharedChain ? {} : isGo ? { [INTERNAL_AUTH_HEADER]: key } : { authorization: "Bearer " + key }) } };
           const budget = Math.min(summaryInputLimitTokens, candidate.contextWindow ? Math.floor(candidate.contextWindow * 0.8) : summaryInputLimitTokens);
           try {
             summary = await selectedSummary(candidate)(work, { ...target, signal: abort.signal, threadId, cacheIdentity,
