@@ -7,11 +7,29 @@ export const cliProviderModel = provider => provider === 'opencode' ? CLI_AUTO_M
 const MODELS = new Set([CLI_AUTO_MODEL, autoManualSlug('commandcode'), autoManualSlug('ollama'), autoManualSlug('whatstoken')]);
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export function cliThreadId(body, headers = {}) {
-  for (const value of [body.client_metadata?.thread_id, body.prompt_cache_key, headers.session_id]) {
-    if (typeof value === 'string' && UUID.test(value)) return value.toLowerCase();
+export function resolveThreadIdentity(body, headers = {}) {
+  // Modern Codex separates physical thread identity from session/cache affinity.
+  // Turn metadata is a bounded JSON string on the official Responses wire.
+  let turn;
+  const encoded = body.client_metadata?.['x-codex-turn-metadata'];
+  if (typeof encoded === 'string' && Buffer.byteLength(encoded) <= 8192) {
+    try { turn = JSON.parse(encoded); } catch { /* Ignore malformed metadata. */ }
   }
-  return null;
+  for (const [source, value] of [
+    ['thread_header', headers['thread-id']],
+    ['thread_metadata', body.client_metadata?.thread_id],
+    ['turn_metadata', turn?.session_id],
+    ['legacy_session_header', headers.session_id],
+    ['session_header', headers['session-id']],
+    ['session_metadata', body.client_metadata?.session_id],
+    ['prompt_cache_key', body.prompt_cache_key],
+  ]) {
+    if (typeof value === 'string' && UUID.test(value)) return { id: value.toLowerCase(), source };
+  }
+  return { id: null, source: 'unavailable' };
+}
+export function cliThreadId(body, headers = {}) {
+  return resolveThreadIdentity(body, headers).id;
 }
 
 // Automatic intent lives in the selected catalog ID, not a separate thread DB.

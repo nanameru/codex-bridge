@@ -1,10 +1,10 @@
 /** Chat -> Responses: execute tools only after an explicit, valid completion. */
 import { randomUUID } from 'node:crypto';
-import { chatToolContext, chatSearchHistory } from './tool-search.mjs';
+import { chatToolContext, chatSearchHistory, ToolSearchError } from './tool-search.mjs';
 import { chatUsageToResponses } from './usage.mjs';
 const id = prefix => prefix + randomUUID().replaceAll('-', '');
 const encodeReasoning = text => 'cxb1:' + Buffer.from(text).toString('base64url');
-class ProtocolError extends Error {}
+export class ProtocolError extends Error {}
 const errorCode = error => error.reason === 'invalid_tool_arguments' ? 'server_error' : 'invalid_prompt';
 function primaryChoice(chunk) {
   if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) throw new ProtocolError('Chat応答の形式が不正です。');
@@ -166,6 +166,9 @@ export async function pipeChatStream(upstream, response, model, threadId, option
       ...(normalizedUsage ? { usage: normalizedUsage } : {}) } });
     response.end();
   } catch (error) {
+    const reason = error instanceof ToolSearchError ? error.reasonCode
+      : ['empty_output','max_output_tokens','invalid_tool_arguments'].includes(error.reason) ? error.reason : 'stream_error';
+    try { options.diagnose?.({ provider_response_status: 'failed', provider_response_failure_reason: reason }); } catch {}
     emit('response.failed', { response: { ...envelope, status: 'failed', output: [], error: { code: error instanceof ProtocolError ? errorCode(error) : 'server_error',
       ...(error.reason ? { reason: error.reason } : {}), message: error instanceof ProtocolError ? error.message : 'Chatストリームが中断しました。ツールは実行していません。' } } });
     response.end();
@@ -182,7 +185,7 @@ export function chatMessages(body, thinkingEnabled = false) {
   let assistant, reasoning = '';
   const seenReasoning = new Set();
   const pendingCalls = new Set();
-  let pendingServerHistory = [];
+  const deferredMessages = [];
   let toolImages = [];
   const flushToolImages = () => {
     if (!toolImages.length || pendingCalls.size) return;
@@ -217,13 +220,6 @@ export function chatMessages(body, thinkingEnabled = false) {
   const toolContext = chatToolContext(body);
   for (const originalItem of body.input ?? []) {
     const item = chatSearchHistory(originalItem, toolContext);
-    if (originalItem.execution === 'server' && ['tool_search_call', 'tool_search_output'].includes(originalItem.type)
-        && pendingCalls.size) {
-      // Inert native search data is a user message in Chat. It must not
-      // interrupt an assistant tool batch before all its results arrive.
-      pendingServerHistory.push({role:item.role,content:item.content});
-      continue;
-    }
     if (item.type === 'reasoning') {
       // The Responses adapter may repeat one completed reasoning item before
       // commentary and tools. Chat groups them into one assistant message.
@@ -250,9 +246,9 @@ export function chatMessages(body, thinkingEnabled = false) {
       messages.push({ role: 'tool', tool_call_id: item.call_id, content: value });
       pendingCalls.delete(item.call_id);
       flushToolImages();
-      if (!pendingCalls.size && pendingServerHistory.length) {
-        for (const message of pendingServerHistory) messages.push(message);
-        pendingServerHistory = [];
+      if (!pendingCalls.size) {
+        for (const message of deferredMessages) messages.push(message);
+        deferredMessages.length = 0;
       }
     } else if (item.type == null || item.type === 'message') {
       const role = item.role === 'developer' ? 'system' : item.role ?? 'user';
@@ -265,10 +261,26 @@ export function chatMessages(body, thinkingEnabled = false) {
           const asParts = v=>typeof v==='string' ? [{type:'text',text:v}] : v;
           assistant.content = [...asParts(assistant.content),...asParts(value)];
         }
+      } else if (pendingCalls.size) {
+        // Keep instructions and inert search history in order after all tool results.
+        deferredMessages.push({ role, content: value });
       } else { flush(); messages.push({ role, content: value }); }
     }
   }
-  if (pendingServerHistory.length) throw new ProtocolError('検索履歴を含むツール処理が未完了です。');
+  if (deferredMessages.length) throw new ProtocolError('後続メッセージを含むツール処理が未完了です。');
   if (toolImages.length) throw new ProtocolError('画像を含むツール結果の並列処理が未完了です。');
-  flush(); return messages;
+  flush();
+  // Responses can interleave results from different assistant turns. Chat
+  // requires each assistant's tool results immediately after that assistant.
+  const owners = new Map(), results = new Map(), assigned = new Set();
+  for (const message of messages) {
+    for (const call of message.tool_calls ?? []) owners.set(call.id, message);
+    if (message.role === 'tool' && owners.has(message.tool_call_id)) {
+      const owner = owners.get(message.tool_call_id);
+      if (!results.has(owner)) results.set(owner, []);
+      results.get(owner).push(message);
+      assigned.add(message);
+    }
+  }
+  return messages.flatMap(message => assigned.has(message) ? [] : [message, ...(results.get(message) ?? [])]);
 }
