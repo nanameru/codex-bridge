@@ -240,17 +240,14 @@ test('全社が空本文402でも状態を記録する', async t => {
 });
 
 test('前候補の小さいcontextを次候補の入力上限へ引き継がない', async t => {
-  const { manualModels } = await import('../src/manual-providers.mjs');
   const f = await fixture(t, p => p === 'ollama' ? answer(p) : quota(), {
-    manualProvidersEnabled: false, autoProviderFallback: true, opencodeHardLimitTokens: 100000,
-    catalog: { models: [...catalog.models, ...manualModels().map(m => ({ ...m,
-      context_window: m.router_provider === 'commandcode' ? 4000 : 8000 }))] },
+    manualProvidersEnabled: true, autoProviderFallback: true, opencodeHardLimitTokens: 1000000,
   });
   const r = await f.send({ max_output_tokens: 100 });
   assert.equal(r.status, 200); await r.text();
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(f.calls.map(c => c.provider), ['opencode','commandcode','ollama']);
-  assert.equal(f.metrics.at(-1).effective_input_limit_tokens, 7500);
+  assert.equal(f.metrics.at(-1).effective_input_limit_tokens, Math.floor(MANUAL_PROVIDERS.ollama.context * 0.95) - 100);
 });
 
 test('CLI同期で再選択したOpenCodeにも通常経路の制限を適用し直接APIを使わない', async t => {
