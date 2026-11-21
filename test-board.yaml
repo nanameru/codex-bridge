@@ -5,6 +5,17 @@ project:
   test_command: python3 -m unittest discover -s test -p 'test_*.py'
 source_roots: [src, scripts]
 cases:
+  - id: TC-123
+    title: "Command Code向けのツール履歴を指示で分断しない"
+    feature: "Chat履歴変換"
+    scenario: "単一・並列呼び出しの途中にdeveloper/system指示があっても、全結果をassistant直後に並べ、指示と元履歴を保持する"
+    status: done
+    priority: high
+    type: regression
+    source: [src/chat-protocol.mjs, src/manual-providers.mjs, src/model-router.mjs]
+    test_file: test/manual-providers.test.mjs
+    issues: [205]
+
   - id: TC-122
     title: "OpenAIのturn-stateを往復し他の提供元や未許可ヘッダーへ漏らさない"
     feature: "OpenAI turn-state ヘッダーの中継"
